@@ -42,7 +42,7 @@ REQUISITOS OBRIGATORIOS:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modelo", default="isaac")
+    ap.add_argument("--modelo", default="isaac-granite")
     ap.add_argument("--rodada", default="baseline")
     a = ap.parse_args()
 

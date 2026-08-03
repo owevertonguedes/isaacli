@@ -22,7 +22,7 @@ import tools
 DIARIO_JSON = tools.SANDBOX_ROOT / "diario_juiz.json"
 DIARIO_MD = tools.SANDBOX_ROOT / "diario_juiz.md"
 FERRAMENTAS_ANDAIME = tools.schema_filtrado([
-    "read_file", "replace_between", "checar_arquivo",
+    "read_file", "replace_between", "check_file",
 ])
 
 PROJETO = "financeiro"
@@ -42,7 +42,7 @@ REGRAS DO ARQUIVO:
   comandos do miolo. NUNCA declare a funcao de novo dentro dos marcadores.
 - Todo elemento interativo precisa estar conectado na interface do usuario.
 - Nada de bibliotecas externas via CDN ou links HTTP que dependam de internet. Tudo em um unico arquivo.
-- Apos escrever o arquivo, chame obrigatoriamente checar_arquivo nele para garantir que o portao mecanico o aprove.
+- Apos escrever o arquivo, chame obrigatoriamente check_file nele para garantir que o portao mecanico o aprove.
 """
 
 ESQUELETO_HTML = """<!DOCTYPE html>
@@ -236,7 +236,7 @@ Procedimento obrigatorio:
    Nos argumentos start_marker/end_marker, use somente o nome do marcador, por
    exemplo ISAAC_CSS_START e ISAAC_CSS_END. Nao inclua /* */, <!-- --> nem
    misture familias diferentes de marcador.
-3. Chame checar_arquivo em {arquivo}.
+3. Chame check_file em {arquivo}.
 4. Responda curto.
 
 Nao reescreva o arquivo inteiro se os marcadores existirem."""
@@ -248,7 +248,7 @@ Aqui esta o veredito do Juiz Gemini detalhando o que esta pendente ou com erros:
 {erros_feedback}
 
 Corrija em passos pequenos. Leia o arquivo, use replace_between nos marcadores
-mais proximos do problema e chame checar_arquivo."""
+mais proximos do problema e chame check_file."""
 
 
 def registrar_ciclo(ciclo, total_reqs, cumpridos, tentativas, detalhes, uso=None,
@@ -310,7 +310,7 @@ def garantir_esqueleto(forcar=False):
 
 def checagem_local():
     """Portao mecanico sem Gemini; usado entre etapas para nao empilhar erro."""
-    saida = tools.checar_arquivo(ARQUIVO_RELATIVO)
+    saida = tools.check_file(ARQUIVO_RELATIVO)
     if saida.startswith("OK"):
         return True, saida
     return False, saida
@@ -423,7 +423,7 @@ def avaliacao_sem_gemini():
     }
 
 
-def rodar_loop(modelo="isaac", max_ciclos=5, tentativas_por_ciclo=4,
+def rodar_loop(modelo="isaac-granite", max_ciclos=5, tentativas_por_ciclo=4,
                usar_gemini=True, reset_arquivo=False):
     """Executa o loop principal de desenvolvimento e correção autônoma."""
     print(f"\n=======================================================")
@@ -575,7 +575,7 @@ def rodar_loop(modelo="isaac", max_ciclos=5, tentativas_por_ciclo=4,
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modelo", default="isaac")
+    ap.add_argument("--modelo", default="isaac-granite")
     ap.add_argument("--ciclos", type=int, default=5)
     ap.add_argument("--sem-gemini", action="store_true",
                     help="roda so Isaac + portao mecanico local, sem chamada externa")

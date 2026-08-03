@@ -178,7 +178,7 @@ def _desescapar(s: str) -> str:
     return s
 
 
-def checar_arquivo(path: str) -> str:
+def check_file(path: str) -> str:
     """Checagem mecanica e barata de uma pagina HTML (~1s), SEM opiniao de modelo.
 
     Ordem do mais barato pro mais caro; para no primeiro degrau que falhar:
@@ -209,7 +209,7 @@ def checar_arquivo(path: str) -> str:
     return "OK: o arquivo abre sem erro de JavaScript e mostra conteudo."
 
 
-def executar_comando(cmd: str) -> str:
+def run_command(cmd: str) -> str:
     """Roda comando confinado. A contencao inteira mora em execucao.py.
 
     Import tardio de proposito: `tools` e importado por todo mundo aqui
@@ -217,7 +217,7 @@ def executar_comando(cmd: str) -> str:
     alguem de fato vai rodar comando.
     """
     import execucao
-    return execucao.executar_comando(cmd)
+    return execucao.run_command(cmd)
 
 
 IMPLS = {
@@ -226,8 +226,8 @@ IMPLS = {
     "list_dir": list_dir,
     "append_file": append_file,
     "replace_between": replace_between,
-    "checar_arquivo": checar_arquivo,
-    "executar_comando": executar_comando,
+    "check_file": check_file,
+    "run_command": run_command,
 }
 
 # Schema no formato OpenAI — é isso que vai no campo `tools` da chamada da API.
@@ -303,7 +303,7 @@ SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "checar_arquivo",
+            "name": "check_file",
             "description": (
                 "Testa mecanicamente uma pagina HTML: sintaxe do JavaScript, erro ao abrir "
                 "no navegador, placeholder esquecido. Use SEMPRE depois de escrever um jogo, "
@@ -336,7 +336,7 @@ SCHEMA = [
 
 
 def _juntar_esquema_de_comando():
-    """Anexa o schema de executar_comando sem duplicar a descricao dele aqui.
+    """Anexa o schema de run_command sem duplicar a descricao dele aqui.
 
     A descricao mora junto das regras que ela descreve (execucao.py). Copiar pra
     ca criaria duas versoes da verdade, e a que o modelo LE seria a copia — o

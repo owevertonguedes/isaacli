@@ -74,9 +74,13 @@ string** — a avaliação reportaria `0/8` com o modelo acertando `8/8`.
 Está corrigido (`skip_special_tokens=False`), mas é o exemplo canônico do
 princípio 9 do `AGENTS.md`: **suspeite da régua antes do modelo.**
 
-## Como rodar de novo (precisa da T4 do Colab; 4GB local não treina)
+## Running it again (needs a 16GB GPU; 4GB local will not train)
 
 ```bash
-cat qwen_tools_lora/train.py | ./conectar_colab.sh <CF_HOST> \
-  "cat > ~/qwen_tools_lora/train.py && cd ~/qwen_tools_lora && python train.py"
+python qwen_tools_lora/train.py
 ```
+
+The original runs were done on a Colab T4 over an SSH tunnel. That tunnel was
+removed from this repository: Colab's terms disallow remote control such as SSH
+shells and remote desktops on the free tier, so the script did not belong here.
+Use a rented GPU, or a paid Colab plan with a positive compute unit balance.

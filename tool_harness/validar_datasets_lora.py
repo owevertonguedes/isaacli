@@ -25,8 +25,8 @@ KNOWN_TOOLS = {
     "write_file",
     "append_file",
     "replace_between",
-    "checar_arquivo",
-    "executar_comando",
+    "check_file",
+    "run_command",
 }
 ALLOWED_GRAPHIFY = {"query", "path", "explain", "diagnose"}
 TOOL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.S)
@@ -55,16 +55,16 @@ def commit_answer(row):
     out = []
     for cmd in commands:
         if isinstance(cmd, str) and cmd.startswith("git "):
-            out.append(tool_line("executar_comando", {"cmd": cmd}))
+            out.append(tool_line("run_command", {"cmd": cmd}))
     pedido = row.get("pedido", "")
     assinatura_literal = re.search(r"assin.*(t[ií]tulo|texto|corpo|mensagem)", pedido, re.I)
     if not out and assinatura_literal:
         out.extend([
-            tool_line("executar_comando", {"cmd": "git status"}),
-            tool_line("executar_comando", {"cmd": "git diff"}),
-            tool_line("executar_comando", {"cmd": "git add ."}),
-            tool_line("executar_comando", {"cmd": "git commit -m \"Registra ajuste solicitado\" -m \"A mudança foi commitada porque o usuário pediu para preservar o ajuste atual.\" -m \"Assinado por: Isaac\""}),
-            tool_line("executar_comando", {"cmd": "git log -1 --format=%B"}),
+            tool_line("run_command", {"cmd": "git status"}),
+            tool_line("run_command", {"cmd": "git diff"}),
+            tool_line("run_command", {"cmd": "git add ."}),
+            tool_line("run_command", {"cmd": "git commit -m \"Registra ajuste solicitado\" -m \"A mudança foi commitada porque o usuário pediu para preservar o ajuste atual.\" -m \"Assinado por: Isaac\""}),
+            tool_line("run_command", {"cmd": "git log -1 --format=%B"}),
         ])
     elif not out and re.search(r"assin|assine", pedido, re.I):
         out.append("Esse pedido e ambiguo: autoria/coautoria estrutural e responsabilidade do CLI/app. Se voce quer assinatura textual no commit, diga se deve ser no titulo, corpo ou trailer. Nao vou usar `git commit -S` por conta propria.")
@@ -85,8 +85,8 @@ def intent_answer(row):
             out.append(tool_line("write_file", {"path": "index.html", "content": "<!DOCTYPE html>\n<html lang=\"pt-BR\"></html>"}))
         elif isinstance(cmd, str) and cmd.startswith("read_file"):
             out.append(tool_line("read_file", {"path": "index.html"}))
-        elif isinstance(cmd, str) and cmd.startswith("checar_arquivo"):
-            out.append(tool_line("checar_arquivo", {"path": "index.html"}))
+        elif isinstance(cmd, str) and cmd.startswith("check_file"):
+            out.append(tool_line("check_file", {"path": "index.html"}))
     return "\n".join(out).strip() if out else row.get("resposta_esperada", "").strip()
 
 
@@ -177,10 +177,10 @@ def validate_row(dataset_name, path, lineno, row):
             continue
         if call["name"] not in KNOWN_TOOLS:
             issues.append(f"ferramenta gerada desconhecida: {call['name']!r}")
-        if call["name"] == "executar_comando":
+        if call["name"] == "run_command":
             cmd = (call["arguments"] or {}).get("cmd", "")
             if not isinstance(cmd, str):
-                issues.append("executar_comando sem cmd string")
+                issues.append("run_command sem cmd string")
             else:
                 command_strings.append(cmd)
                 issues.extend(command_issues(cmd))

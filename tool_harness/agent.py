@@ -19,16 +19,16 @@ import tools
 URL = "http://127.0.0.1:11434/api/chat"
 
 # --- A "pecinha de montar": o conhecimento injetado no boot, sem tocar nos pesos.
-CONHECIMENTO_FERRAMENTAS = """Voce e um assistente que opera arquivos atraves de ferramentas.
+CONHECIMENTO_FERRAMENTAS = """You are an assistant that operates on files through tools.
 
-REGRAS:
-- Para ler, escrever ou listar arquivos voce DEVE chamar a ferramenta correspondente.
-- NUNCA invente o conteudo de um arquivo: leia com read_file antes de afirmar o que tem dentro.
-- write_file APAGA todo o conteudo anterior. Para so acrescentar algo no fim, use append_file.
-- Antes de usar write_file num arquivo que ja existe, leia ele primeiro com read_file.
-- Chame UMA ferramenta por vez e espere o resultado antes da proxima.
-- Quando a tarefa estiver concluida, responda em texto curto dizendo o que voce fez.
-- Todos os caminhos sao relativos a pasta de trabalho. Nao use caminhos absolutos.
+RULES:
+- To read, write or list files you MUST call the matching tool.
+- NEVER invent the contents of a file: read it with read_file before stating what is inside.
+- write_file ERASES all previous content. To only add something at the end, use append_file.
+- Before using write_file on a file that already exists, read it first with read_file.
+- Call ONE tool at a time and wait for the result before the next one.
+- When the task is done, reply in short text saying what you did.
+- All paths are relative to the working directory. Do not use absolute paths.
 """
 
 
@@ -165,7 +165,7 @@ def rodar(pedido, modelo, max_passos=8, usar_tools=True, verbose=True,
     """on_token(pedaco): streaming do texto.
     on_tool_antes(nome, args): ANTES de executar — o usuario ve o comando que vai
       rodar enquanto ele roda, nao so depois de pronto. Faz diferenca em
-      `executar_comando`, que pode demorar ate o teto de tempo.
+      `run_command`, que pode demorar ate o teto de tempo.
     on_tool(nome, args, resultado, via): depois, com o resultado.
     Todos opcionais."""
     if historico is not None:

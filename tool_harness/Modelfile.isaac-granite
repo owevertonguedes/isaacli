@@ -1,0 +1,43 @@
+# The "isaac-granite" model: the tuned Granite 4 build that isaacli ships with.
+#
+#   ollama create isaac-granite -f Modelfile.isaac-granite
+#
+# WHY GRANITE 4 (measured 2026-07-19, not a matter of taste):
+#   - native tool calling (capabilities: ['completion', 'tools']). qwen2.5-coder:3b
+#     needed a LoRA on a T4 just to emit <tool_call>, and still wrote garbage.
+#     Granite got it right with no training at all.
+#   - 2.1GB, roughly the same size as qwen2.5-coder:3b (1.9GB), and it won on the
+#     code bench: 3/4 against 2/4, solving an N3 problem (merging intervals) that
+#     qwen got wrong. Running ON THE LAPTOP, at 18.6 tok/s.
+#   - hybrid Mamba-2/Transformer architecture, designed for low memory, which is
+#     exactly the constraint on this machine (4GB of VRAM).
+#
+# This does not duplicate the model on disk: it points at the granite4:micro that
+# is already there and stacks configuration on top. To detach, run
+# `ollama rm isaac-granite`; the base model stays intact.
+#
+# num_ctx is set explicitly on purpose. Ollama defaults the context window far
+# below what an agent needs, and the truncation is silent: the tool schema gets
+# cut, the model stops seeing the tools it is supposed to call, and it invents
+# plausible names instead. Setting it here means the value travels with the model
+# instead of depending on how the server was started.
+
+FROM granite4:micro
+
+PARAMETER temperature 0
+PARAMETER num_ctx 8192
+
+SYSTEM """You are an assistant that operates on files through tools.
+
+RULES:
+- To read, write or list files you MUST call the matching tool.
+- NEVER invent the contents of a file: read it with read_file before stating
+  what is inside.
+- write_file ERASES all previous content. To only add something at the end, use
+  append_file.
+- Before using write_file on a file that already exists, read it first with
+  read_file.
+- Call ONE tool at a time and wait for the result before the next one.
+- When the task is done, reply in short text saying what you did.
+- All paths are relative to the working directory. Do not use absolute paths.
+"""

@@ -7,7 +7,7 @@ Motivo: a primeira versao da avaliacao `commit_workflow` contava strings como
 fora de `<tool_call>`. Isso inflava o placar antes/depois.
 
 Regra corrigida: comandos Git so contam quando aparecem dentro de tool-call
-valido para `executar_comando`.
+valido para `run_command`.
 
 Resultado estrito sobre o `report.json` ja salvo:
 
@@ -26,6 +26,6 @@ Leitura:
 - `workflow-s80` nao e adapter aprovado;
 - task05 continuou aprendendo, mas commit regrediu na metrica correta;
 - o modelo voltou a emitir ferramenta inexistente (`git`) em vez de
-  `executar_comando`;
+  `run_command`;
 - nao rodar novo ciclo em cima desse pacote sem ampliar exemplos de workflow e
   manter a avaliacao estrita.

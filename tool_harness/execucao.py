@@ -281,7 +281,7 @@ def montar_bwrap(argv, raiz, rede=False):
     return linha
 
 
-def executar_comando(cmd: str) -> str:
+def run_command(cmd: str) -> str:
     """Roda um comando confinado e devolve a saida CRUA.
 
     Crua de proposito: stdout, stderr e codigo de saida, sem resumir e sem
@@ -344,7 +344,7 @@ def executar_comando(cmd: str) -> str:
 ESQUEMA = {
     "type": "function",
     "function": {
-        "name": "executar_comando",
+        "name": "run_command",
         "description": (
             "Roda UM comando no terminal, confinado na pasta de trabalho, e "
             "devolve a saida crua (stdout, stderr e codigo de saida). "

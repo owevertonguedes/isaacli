@@ -68,7 +68,7 @@ def avaliar(repo):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modelo", default="isaac")
+    ap.add_argument("--modelo", default="isaac-granite")
     ap.add_argument("--pedido", default=(
         "Faça o commit do que está pendente. A mensagem do commit deve explicar "
         "por que estamos commitando isso e incluir sua assinatura. Não faça push."
@@ -79,7 +79,7 @@ def main(argv=None):
 
     repo = Path(args.repo).resolve() if args.repo else criar_repo_temporario()
     if not args.somente_avaliar:
-        cmd = [str(RAIZ_REPO / "isaac"), "--model", args.modelo,
+        cmd = [str(RAIZ_REPO / "isaacli"), "--model", args.modelo,
                "--workspace", str(repo), args.pedido]
         r = rodar(cmd, RAIZ_REPO)
         isaac_saida = (r.stdout or "") + (r.stderr or "")

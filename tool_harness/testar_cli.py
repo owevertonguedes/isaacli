@@ -25,7 +25,7 @@ raiz = Path(tempfile.mkdtemp())
 sub = raiz / "projeto"
 sub.mkdir()
 
-cli = isaac_cli.IsaacCLI("isaac", sub, 4, autostart_ollama=False)
+cli = isaac_cli.IsaacCLI("isaac-granite", sub, 4, autostart_ollama=False)
 checar(tools.SANDBOX_ROOT == sub.resolve(), "workspace inicial vira SANDBOX_ROOT")
 checar(str(sub.resolve()) in cli.historico[0]["content"], "system prompt informa workspace")
 checar(cli.session_path.exists(), "CLI cria log JSONL da sessao")
@@ -57,9 +57,9 @@ out = io.StringIO()
 with redirect_stdout(out):
     cli.comando_interno("/tools")
 tools_out = out.getvalue()
-checar("executar_comando" in tools_out and "git:" in tools_out, "/tools lista ferramentas e git")
+checar("run_command" in tools_out and "git:" in tools_out, "/tools lista ferramentas e git")
 
-cli._tool_depois("executar_comando", {"cmd": "git status"}, "$ git status\nok\n(código de saída: 0)", "teste")
+cli._tool_depois("run_command", {"cmd": "git status"}, "$ git status\nok\n(código de saída: 0)", "teste")
 out = io.StringIO()
 with redirect_stdout(out):
     cli.comando_interno("/show 1")

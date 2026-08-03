@@ -88,7 +88,7 @@ def julgar(caminho_arquivo, nome_projeto="financeiro"):
 
     # --- 1) PORTÃO MECÂNICO ---
     print(f"[Portão Mecânico] Verificando sanidade de {p.name}...")
-    saida_checar = tools.checar_arquivo(str(p.relative_to(tools.SANDBOX_ROOT) if p.is_relative_to(tools.SANDBOX_ROOT) else p))
+    saida_checar = tools.check_file(str(p.relative_to(tools.SANDBOX_ROOT) if p.is_relative_to(tools.SANDBOX_ROOT) else p))
     
     if not saida_checar.startswith("OK"):
         # Se falhou na checagem mecânica, retorna o erro imediatamente sem gastar Gemini

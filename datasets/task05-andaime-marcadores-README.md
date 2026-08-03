@@ -15,14 +15,14 @@ Origem:
 Escopo ensinado:
 
 - usar `replace_between` com `path`, `start_marker`, `end_marker` e `content`;
-- chamar `checar_arquivo` depois do patch;
+- chamar `check_file` depois do patch;
 - escrever somente o miolo quando o marcador fica dentro de funcao existente;
 - nao redeclarar `function saveTransactions`, `function loadTransactions` ou
   `function deleteTransaction`;
 - nao usar placeholder como `javascript aqui`;
 - nao colocar `<style>` dentro de marcador CSS;
 - nao colocar `<script>`, `<body>` ou `<html>` dentro de marcador JS;
-- finalizar com resposta curta depois de `checar_arquivo` retornar OK.
+- finalizar com resposta curta depois de `check_file` retornar OK.
 
 Curadoria:
 

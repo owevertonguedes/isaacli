@@ -98,16 +98,16 @@ def commit_example(row):
     out = []
     for cmd in commands:
         if isinstance(cmd, str) and cmd.startswith("git "):
-            out.append(tool_line("executar_comando", {"cmd": cmd}))
+            out.append(tool_line("run_command", {"cmd": cmd}))
     pedido = row.get("pedido", "")
     assinatura_literal = re.search(r"assin.*(t[ií]tulo|texto|corpo|mensagem)", pedido, re.I)
     if not out and assinatura_literal:
         out.extend([
-            tool_line("executar_comando", {"cmd": "git status"}),
-            tool_line("executar_comando", {"cmd": "git diff"}),
-            tool_line("executar_comando", {"cmd": "git add ."}),
-            tool_line("executar_comando", {"cmd": "git commit -m \"Registra ajuste solicitado\" -m \"A mudança foi commitada porque o usuário pediu para preservar o ajuste atual.\" -m \"Assinado por: Isaac\""}),
-            tool_line("executar_comando", {"cmd": "git log -1 --format=%B"}),
+            tool_line("run_command", {"cmd": "git status"}),
+            tool_line("run_command", {"cmd": "git diff"}),
+            tool_line("run_command", {"cmd": "git add ."}),
+            tool_line("run_command", {"cmd": "git commit -m \"Registra ajuste solicitado\" -m \"A mudança foi commitada porque o usuário pediu para preservar o ajuste atual.\" -m \"Assinado por: Isaac\""}),
+            tool_line("run_command", {"cmd": "git log -1 --format=%B"}),
         ])
     elif not out and re.search(r"assin|assine", pedido, re.I):
         out.append("Esse pedido e ambiguo: autoria/coautoria estrutural e responsabilidade do CLI/app. Se voce quer assinatura textual no commit, diga se deve ser no titulo, corpo ou trailer. Nao vou usar `git commit -S` por conta propria.")
@@ -137,8 +137,8 @@ def intent_example(row):
                 out.append(tool_line("write_file", {"path": "index.html", "content": "<!DOCTYPE html>\n<html lang=\"pt-BR\"><head><meta charset=\"UTF-8\"><title>Jogo local</title></head><body><main><h1>Jogo local</h1><script>console.log('ok');</script></main></body></html>"}))
             elif cmd.startswith("read_file"):
                 out.append(tool_line("read_file", {"path": "index.html"}))
-            elif cmd.startswith("checar_arquivo"):
-                out.append(tool_line("checar_arquivo", {"path": "index.html"}))
+            elif cmd.startswith("check_file"):
+                out.append(tool_line("check_file", {"path": "index.html"}))
         if not out:
             out.append("Vou criar somente arquivos locais, sem git, pip, npm ou internet.")
         answer = "\n".join(out)
@@ -219,13 +219,13 @@ def collate(tokenizer):
 EVALS = [
     {
         "id": "task05_save",
-        "system": "Voce edita arquivos usando ferramentas. Use replace_between para trocar apenas o miolo entre marcadores e chame checar_arquivo depois.",
+        "system": "Voce edita arquivos usando ferramentas. Use replace_between para trocar apenas o miolo entre marcadores e chame check_file depois.",
         "user": "Implemente somente o miolo de saveTransactions em jogos/financeiro.html. Nao declare a funcao de novo.",
         "checks": {
             "has_replace_between": "replace_between",
             "has_save_marker": "ISAAC_SAVE_START",
             "has_localstorage": "localStorage.setItem",
-            "has_check": "checar_arquivo",
+            "has_check": "check_file",
             "no_wrapper": "!function saveTransactions",
         },
     },
@@ -305,7 +305,7 @@ def generate_one(model, tokenizer, item, max_new_tokens=220):
 
 
 TOOL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.S)
-KNOWN_TOOLS = {"read_file", "write_file", "append_file", "replace_between", "checar_arquivo", "executar_comando"}
+KNOWN_TOOLS = {"read_file", "write_file", "append_file", "replace_between", "check_file", "run_command"}
 
 
 def parsed_tool_calls(text):
@@ -330,7 +330,7 @@ def tool_commands(calls):
     return [
         (c.get("arguments") or {}).get("cmd", "")
         for c in calls
-        if c.get("ok") and c.get("name") == "executar_comando"
+        if c.get("ok") and c.get("name") == "run_command"
         and isinstance((c.get("arguments") or {}).get("cmd"), str)
     ]
 

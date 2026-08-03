@@ -81,7 +81,19 @@ def run_text(cmd, *, cwd=RAIZ, timeout=None):
 
 
 def conectar(host, comando):
-    return [str(RAIZ / "conectar_colab.sh"), host, comando]
+    """Build the remote-execution command for the training host.
+
+    This used to shell out to a Colab SSH tunnel, which was removed: Colab's
+    terms disallow remote control such as SSH shells on the free tier. Point
+    REMOTE_RUNNER at your own runner (a rented GPU box, a paid Colab plan) that
+    accepts `<runner> <host> <command>` and reads stdin.
+    """
+    runner = os.environ.get("REMOTE_RUNNER")
+    if not runner:
+        raise SystemExit(
+            "REMOTE_RUNNER is not set. This script needs a remote GPU runner; "
+            "the bundled Colab tunnel was removed for terms-of-service reasons.")
+    return [runner, host, comando]
 
 
 def preparar_pacote():

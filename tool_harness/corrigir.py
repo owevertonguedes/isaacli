@@ -28,7 +28,7 @@ REGRAS DO ARQUIVO:
 - Todo elemento interativo precisa estar ligado: se voce escreve uma funcao jogar(),
   precisa existir um <button onclick="jogar()"> que a chame.
 - Nada de biblioteca externa, nada de link http. Um arquivo so.
-- Depois de escrever o arquivo, chame checar_arquivo nele. Se vier problema,
+- Depois de escrever o arquivo, chame check_file nele. Se vier problema,
   conserte e escreva de novo ANTES de dizer que terminou.
 """
 
@@ -58,7 +58,7 @@ def checagem_rapida(arquivo_relativo):
     NAO e criterio de sucesso (quem aprova continua sendo o juiz comportamental);
     so evita gastar o juiz com codigo obviamente quebrado.
     """
-    saida = tools.checar_arquivo(arquivo_relativo)
+    saida = tools.check_file(arquivo_relativo)
     if saida.startswith("OK"):
         return {"ok": True, "problemas": [], "evidencias": []}
     probs = [l[2:] for l in saida.splitlines() if l.startswith("- ")] or [saida]
@@ -137,7 +137,7 @@ JOGOS = [
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modelo", default="isaac")
+    ap.add_argument("--modelo", default="isaac-granite")
     ap.add_argument("--tentativas", type=int, default=4)
     ap.add_argument("--visivel", action="store_true")
     ap.add_argument("--jogo", help="roda so um jogo (nome do arquivo)")

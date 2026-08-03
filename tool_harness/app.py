@@ -55,7 +55,7 @@ import processos  # noqa: E402
 import tools  # noqa: E402
 
 APP_NOME = "Oficina"                                  # o app
-MODELO = os.environ.get("AGENTE_MODELO", "isaac")     # o modelo dentro dele
+MODELO = os.environ.get("AGENTE_MODELO", "isaac-granite")     # o modelo dentro dele
 URL_SAUDE = "http://127.0.0.1:11434/api/tags"
 URL_CARREGADOS = "http://127.0.0.1:11434/api/ps"      # quem esta ocupando memoria
 
@@ -955,7 +955,7 @@ class Janela(Adw.ApplicationWindow):
     def _tool_antes(self, nome, args):
         """Mostra o que VAI rodar, antes de rodar.
 
-        Importa mesmo pro executar_comando: ele pode levar ate o teto de tempo, e
+        Importa mesmo pro run_command: ele pode levar ate o teto de tempo, e
         sem isto o usuario ficaria olhando pra uma tela parada sem saber o que a
         maquina esta fazendo — que e exatamente o que a Oficina existe pra evitar.
         """
@@ -963,14 +963,14 @@ class Janela(Adw.ApplicationWindow):
             dados = json.loads(args) if isinstance(args, str) else (args or {})
         except json.JSONDecodeError:
             dados = {}
-        if nome == "executar_comando":
+        if nome == "run_command":
             self.terminal(f"⟩ rodando: {dados.get('cmd', args)}")
         else:
             self.terminal(f"⟩ {nome}({str(args)[:80]})")
 
     def _tool_ao_vivo(self, nome, args, resultado, via):
         """Chamado pelo agente NO MOMENTO em que cada ferramenta roda (thread de trabalho)."""
-        if nome == "executar_comando":
+        if nome == "run_command":
             # Saida de comando vai INTEIRA (o execucao.py ja cortou no teto e
             # avisou). Cortar de novo em 100 chars aqui esconderia justamente o
             # traceback que o usuario quer ler — o oposto do "terminal bruto".

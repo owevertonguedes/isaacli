@@ -33,27 +33,27 @@ out = raiz / "curadoria"
 
 sessao_ruim = sessoes / "sessao-ruim.jsonl"
 escrever_jsonl(sessao_ruim, [
-    {"tipo": "meta", "session_id": "sessao-ruim", "modelo": "isaac", "workspace": "/repo"},
+    {"tipo": "meta", "session_id": "sessao-ruim", "modelo": "isaac-granite", "workspace": "/repo"},
     {"tipo": "user", "content": "refaca a mensagem do commit com assinatura e pushe"},
-    {"tipo": "tool_result", "nome": "executar_comando", "cmd": "git commit -m \"nova\"",
+    {"tipo": "tool_result", "nome": "run_command", "cmd": "git commit -m \"nova\"",
      "codigo": 1, "resultado": "no changes added to commit\n(codigo de saida: 1)"},
     {"tipo": "assistant_final", "content": "O commit foi realizado com sucesso."},
 ])
 
 sessao_amend = sessoes / "sessao-amend.jsonl"
 escrever_jsonl(sessao_amend, [
-    {"tipo": "meta", "session_id": "sessao-amend", "modelo": "isaac", "workspace": "/repo"},
+    {"tipo": "meta", "session_id": "sessao-amend", "modelo": "isaac-granite", "workspace": "/repo"},
     {"tipo": "user", "content": "corrija o ultimo commit para ficar assinado, sem push"},
-    {"tipo": "tool_result", "nome": "executar_comando", "cmd": "git commit --amend -m \"Mensagem\"",
+    {"tipo": "tool_result", "nome": "run_command", "cmd": "git commit --amend -m \"Mensagem\"",
      "codigo": 0, "resultado": "[main abc] Mensagem\n(codigo de saida: 0)"},
     {"tipo": "assistant_final", "content": "O ultimo commit foi corrigido e assinado."},
 ])
 
 sessao_boa = sessoes / "sessao-boa.jsonl"
 escrever_jsonl(sessao_boa, [
-    {"tipo": "meta", "session_id": "sessao-boa", "modelo": "isaac", "workspace": "/repo"},
+    {"tipo": "meta", "session_id": "sessao-boa", "modelo": "isaac-granite", "workspace": "/repo"},
     {"tipo": "user", "content": "rode git status"},
-    {"tipo": "tool_result", "nome": "executar_comando", "cmd": "git status",
+    {"tipo": "tool_result", "nome": "run_command", "cmd": "git status",
      "codigo": 0, "resultado": "ok\n(codigo de saida: 0)"},
     {"tipo": "assistant_final", "content": "Rodei git status e nao ha pendencias."},
 ])

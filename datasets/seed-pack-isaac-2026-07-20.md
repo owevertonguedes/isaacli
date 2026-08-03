@@ -8,7 +8,7 @@ subir o nivel do Isaac nos fluxos reais do usuario.
 1. `datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl`
    - 8 exemplos.
    - Ensina tool-call por marcador: usar `replace_between`, escrever somente
-     miolo, chamar `checar_arquivo`, nao repetir ferramenta depois de OK.
+     miolo, chamar `check_file`, nao repetir ferramenta depois de OK.
 
 2. `datasets/commit-assinatura-isaac-2026-07-20.jsonl`
    - 4 exemplos.

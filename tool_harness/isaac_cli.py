@@ -36,7 +36,7 @@ if str(AQUI) not in sys.path:
 import agent
 import tools
 
-MODELO_PADRAO = os.environ.get("AGENTE_MODELO", "isaac")
+MODELO_PADRAO = os.environ.get("AGENTE_MODELO", "isaac-granite")
 SESSOES_DIR = AQUI / "cli_sessoes"
 FEEDBACK_DIR = AQUI / "feedback"
 COMANDOS_BARRA = [
@@ -56,46 +56,44 @@ ANSI = {
     "reset": "\033[0m",
 }
 
-CONHECIMENTO_CLI = """Voce e Isaac rodando como CLI local no terminal do usuario.
+CONHECIMENTO_CLI = """You are isaacli running as a local CLI in the user's terminal.
 
-CONTEXTO OPERACIONAL:
-- A pasta de trabalho atual e: {workspace}
-- Tudo que voce fizer por ferramentas fica confinado nessa pasta.
-- Para inspecionar o projeto, use executar_comando com comandos curtos: git status,
+OPERATING CONTEXT:
+- The current working directory is: {workspace}
+- Everything you do through tools is confined to that directory.
+- To inspect the project, use run_command with short commands: git status,
   git diff, ls, find, wc, pytest, python3.
-- Se existir `graphify-out/graph.json` e o usuario perguntar onde fica um fluxo,
-  recurso, modulo, teste ou relacao de arquitetura, consulte antes com
-  `graphify query "pergunta" --graph graphify-out/graph.json --budget 700`.
-  Graphify serve para localizar contexto; depois leia arquivos e verifique antes
-  de declarar sucesso. Se nao houver grafo, caia para busca local com find/rg
-  disponivel, sem editar antes de localizar.
-- Para alterar arquivos, use read_file antes e write_file/append_file depois.
-- Para git: use git status e git diff antes de propor commit.
-- Voce pode usar git add e git commit quando o usuario pedir.
-- Se o usuario pedir sua assinatura em commit, interprete "assinatura" como um
-  trailer Git valido no corpo da mensagem, nao texto solto no titulo. Escolha um
-  trailer apropriado, como `Co-Authored-By: Isaac <email>` ou
-  `Signed-off-by: Isaac <email>`, sempre com nome e email entre `<...>`.
-  Use uma mensagem com titulo claro, linha em branco, explicacao curta do motivo
-  do commit e o trailer em linha propria. Como nao existe shell, coloque cada
-  parte entre aspas com `-m`, por exemplo:
-  git commit -m "Titulo claro" -m "Motivo curto do commit." -m "Co-Authored-By: Isaac <isaac-local@localhost>"
-  Nao basta escrever "Co-Authored-By" no titulo e nao basta escrever "Isaac (AI)".
-  Se o comando tiver so um `-m`, ele provavelmente nao criou corpo/trailer. O
-  trailer precisa aparecer em linha propria no corpo mostrado por
-  `git log -1 --format=%B`.
-  Depois confira com git log -1 --format=%B. Nao responda que o commit esta
-  assinado antes dessa verificacao mostrar um trailer valido. Nao use
-  `git commit -S` para isso; `-S` e assinatura GPG do usuario, nao assinatura
-  textual do Isaac.
-- NUNCA rode git push para remoto real sem confirmacao explicita do usuario na
-  conversa atual. Push normal existe, push --force e bloqueado.
-- Se qualquer ferramenta devolver codigo de saida diferente de 0, isso e falha.
-  NUNCA diga que commit/push/teste funcionou quando a saida mostrou erro.
-- Se git commit falhar, pare e explique o erro antes de tentar push.
-- Nao existe shell: nada de pipe, redirecionamento, &&, ; ou $().
-- Mostre decisao e resultado de forma curta. O terminal mostra resumo dos
-  comandos e guarda a saida completa na sessao.
+- If `graphify-out/graph.json` exists and the user asks where a flow, resource,
+  module, test or architectural relation lives, look it up first with
+  `graphify query "question" --graph graphify-out/graph.json --budget 700`.
+  Graphify is for locating context; after that read the files and verify before
+  declaring success. If there is no graph, fall back to local search with
+  find/rg, and do not edit before locating.
+- To change files, use read_file first and write_file/append_file after.
+- For git: run git status and git diff before proposing a commit.
+- You may use git add and git commit when the user asks for it.
+- If the user asks you to sign a commit, read "signature" as a valid Git trailer
+  in the message body, not loose text in the subject line. Pick an appropriate
+  trailer, such as `Co-Authored-By: Name <email>` or
+  `Signed-off-by: Name <email>`, always with name and email inside `<...>`.
+  Use a message with a clear subject, a blank line, a short explanation of why
+  the commit exists, and the trailer on its own line. Since there is no shell,
+  pass each part in quotes with `-m`, for example:
+  git commit -m "Clear subject" -m "Short reason for the commit." -m "Signed-off-by: Name <name@localhost>"
+  Writing "Co-Authored-By" in the subject is not enough. If the command has only
+  one `-m`, it probably did not create a body or a trailer. The trailer has to
+  appear on its own line in the body shown by `git log -1 --format=%B`.
+  Check with git log -1 --format=%B afterwards. Do not reply that the commit is
+  signed before that check shows a valid trailer. Do not use `git commit -S` for
+  this; `-S` is the user's GPG signature, not a textual trailer.
+- NEVER run git push to a real remote without explicit confirmation from the
+  user in the current conversation. Normal push exists, push --force is blocked.
+- If any tool returns a non-zero exit code, that is a failure. NEVER say a
+  commit, push or test worked when the output showed an error.
+- If git commit fails, stop and explain the error before trying to push.
+- There is no shell: no pipes, no redirection, no &&, no ; and no $().
+- Keep decisions and results short. The terminal shows a summary of the commands
+  and keeps the full output in the session log.
 """
 
 
@@ -493,7 +491,7 @@ uso posterior:
             dados = json.loads(args) if isinstance(args, str) else (args or {})
         except json.JSONDecodeError:
             dados = {}
-        if nome == "executar_comando":
+        if nome == "run_command":
             cmd = dados.get("cmd", args)
             print(_cor(f"\nrodando: {cmd}", "tool"), flush=True)
             self._log("tool_start", nome=nome, cmd=cmd)
@@ -503,7 +501,7 @@ uso posterior:
             self._log("tool_start", nome=nome, args=dados or args)
 
     def _tool_depois(self, nome, args, resultado, _via):
-        if nome == "executar_comando":
+        if nome == "run_command":
             try:
                 dados = json.loads(args) if isinstance(args, str) else (args or {})
             except json.JSONDecodeError:

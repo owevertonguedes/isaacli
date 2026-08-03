@@ -24,7 +24,7 @@ import tasks
 AQUI = Path(__file__).parent
 CONHECIMENTO = AQUI / "conhecimento.md"
 MODELFILE = AQUI / "Modelfile.gerado"
-MODELO = "isaac"
+MODELO = "isaac-granite"
 BASE = "granite4:micro"
 
 BASE_CONHECIMENTO = """Voce e um assistente que opera arquivos atraves de ferramentas.
