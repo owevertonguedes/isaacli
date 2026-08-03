@@ -1,0 +1,76 @@
+{
+  "date": "2026-08-04",
+  "hardware": {"gpu": "NVIDIA GeForce GTX 1650", "vram_mb": 4096, "ram_gb": 15},
+  "ollama_version": "0.30.10",
+  "model_under_test": {
+    "name": "granite-16k",
+    "base": "granite4:micro",
+    "size_gb": 2.1,
+    "num_ctx": 16384,
+    "temperature": 0,
+    "note": "identical model served to every harness in this comparison"
+  },
+  "results": [
+    {
+      "harness": "isaac (this repo)",
+      "task": "create file",
+      "success": true,
+      "tokens_prompt": 2249,
+      "tokens_completion": 60,
+      "tokens_total": 2309,
+      "seconds": 9.3,
+      "tool_calls": ["write_file"]
+    },
+    {
+      "harness": "isaac (this repo)",
+      "task": "multi-step: list, run command, append",
+      "success": true,
+      "tokens_prompt": 4781,
+      "tokens_completion": 137,
+      "tokens_total": 4918,
+      "seconds": 7.8,
+      "tool_calls": ["list_dir", "executar_comando", "append_file"]
+    },
+    {
+      "harness": "codex-cli 0.146.0",
+      "task": "create file",
+      "success": false,
+      "tokens_total": 34752,
+      "failure_mode": "hallucinated tool names, then reported success for a file that was never created",
+      "evidence": "codex-create-file.log"
+    },
+    {
+      "harness": "codex-cli 0.146.0",
+      "task": "multi-step: list, run command, append",
+      "success": false,
+      "tokens_total": 52193,
+      "failure_mode": "executed nothing, printed shell commands as prose, and hallucinated the file as empty when it contained data",
+      "evidence": "codex-multistep.log"
+    },
+    {
+      "harness": "ollama run --experimental --experimental-yolo",
+      "task": "create file",
+      "success": false,
+      "failure_mode": "printed a Python snippet describing how to create the file; no file was written"
+    },
+    {
+      "harness": "ollama run --experimental-websearch",
+      "task": "fetch current BBC headline",
+      "success": false,
+      "failure_mode": "fabricated a headline instead of searching; no OLLAMA_API_KEY configured and the failure was silent"
+    },
+    {
+      "harness": "aider 0.86.2",
+      "task": "create file",
+      "success": true,
+      "caveat": "only after switching the provider prefix from ollama/ to ollama_chat/; the model also wrote test_aider.txt instead of the requested teste_aider.txt"
+    },
+    {
+      "harness": "aider 0.86.2",
+      "task": "multi-step: list, run command, append",
+      "success": false,
+      "failure_mode": "no arbitrary-command tool is exposed to the model by design; aider is a git-paired code editor, so shell appears as a suggestion rather than an executed action",
+      "note": "this is a scope difference, not a defect in aider"
+    }
+  ]
+}
