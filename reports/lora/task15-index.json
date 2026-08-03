@@ -1,0 +1,124 @@
+{
+  "runs": [
+    {
+      "run": "task15-smoke",
+      "model": "ibm-granite/granite-4.0-micro",
+      "adapter_archive": "lora_runs/task15/granite-seed-smoke-lite.tgz",
+      "examples": 18,
+      "max_steps": 3,
+      "save_steps": 1,
+      "train": {
+        "train_runtime": 3.4069,
+        "train_samples_per_second": 0.881,
+        "train_steps_per_second": 0.881,
+        "total_flos": 10587958886400.0,
+        "train_loss": 3.188447872797648,
+        "epoch": 0.16666666666666666
+      },
+      "trainable_percent_of_base_params": 0.1538,
+      "note": "trainable_percent is adapter capacity, not percent of general knowledge improved",
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "gpu_end": {
+        "cuda": true,
+        "name": "Tesla T4",
+        "total_mib": 14912,
+        "allocated_mib": 6566,
+        "reserved_mib": 7156,
+        "max_allocated_mib": 6873
+      }
+    },
+    {
+      "run": "task15-r120",
+      "model": "ibm-granite/granite-4.0-micro",
+      "adapter_archive": "lora_runs/task15/granite-seed-r120-lite.tgz",
+      "examples": 18,
+      "max_steps": 120,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 76.0845,
+        "train_samples_per_second": 1.577,
+        "train_steps_per_second": 1.577,
+        "total_flos": 514064311004160.0,
+        "train_loss": 0.9067655639106912,
+        "epoch": 6.666666666666667
+      },
+      "trainable_percent_of_base_params": 0.1538,
+      "note": "trainable_percent is adapter capacity, not percent of general knowledge improved",
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        }
+      ],
+      "gpu_end": {
+        "cuda": true,
+        "name": "Tesla T4",
+        "total_mib": 14912,
+        "allocated_mib": 6566,
+        "reserved_mib": 8068,
+        "max_allocated_mib": 7134
+      }
+    }
+  ]
+}

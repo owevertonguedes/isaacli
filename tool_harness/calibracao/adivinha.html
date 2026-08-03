@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Adivinhe o Numero</title>
+<style>
+body{font-family:sans-serif;background:#1e2430;color:#eee;text-align:center;padding-top:50px}
+input{font-size:20px;padding:8px;width:100px;text-align:center}
+button{font-size:18px;padding:10px 24px;margin-left:8px;background:#4a90d9;color:#fff;border:none;border-radius:6px;cursor:pointer}
+#dica{font-size:22px;margin-top:24px;min-height:30px}
+</style>
+</head>
+<body>
+<h1>Adivinhe o Numero (1 a 100)</h1>
+<input type="number" id="palpite" min="1" max="100">
+<button onclick="tentar()">Tentar</button>
+<p id="dica">Digite um palpite e clique em Tentar.</p>
+<p>Tentativas: <span id="cont">0</span></p>
+<script>
+const secreto = Math.floor(Math.random() * 100) + 1;
+let tentativas = 0;
+function tentar() {
+  const v = parseInt(document.getElementById('palpite').value, 10);
+  if (isNaN(v)) return;
+  tentativas++;
+  document.getElementById('cont').textContent = tentativas;
+  const dica = document.getElementById('dica');
+  if (v === secreto) {
+    dica.textContent = 'Acertou! O numero era ' + secreto + '.';
+  } else if (secreto > v) {
+    dica.textContent = 'O numero secreto e MAIOR que ' + v + '.';
+  } else {
+    dica.textContent = 'O numero secreto e MENOR que ' + v + '.';
+  }
+}
+</script>
+</body>
+</html>

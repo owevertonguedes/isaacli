@@ -1,0 +1,26 @@
+[
+  {
+    "titulo": "Adicionar Transação",
+    "descricao": "O formulário deve conter campos obrigatórios para: Descrição (campo de texto), Valor (número decimal estritamente maior que zero), Tipo (um seletor dropdown ou botões de rádio para selecionar Receita ou Despesa), Categoria (campo de texto ou dropdown) e Data. Deve haver um botão para enviar o formulário e adicionar a transação."
+  },
+  {
+    "titulo": "Lista de Transações",
+    "descricao": "A página deve exibir uma tabela ou lista estruturada contendo todas as transações cadastradas, exibindo claramente a Descrição, Valor, Tipo, Categoria e Data de cada uma."
+  },
+  {
+    "titulo": "Remover Transação",
+    "descricao": "Cada transação exibida na lista ou tabela deve conter um botão ou ícone de 'Excluir'. Ao clicar nesse botão, a transação correspondente deve ser removida da lista e todos os totais e gráficos devem ser recalculados imediatamente."
+  },
+  {
+    "titulo": "Painel de Resumo Financeiro",
+    "descricao": "A página deve exibir em destaque três blocos ou caixas de resumo atualizados em tempo real: Total de Receitas (soma de todas as receitas), Total de Despesas (soma de todas as despesas) e Saldo Atual (Total de Receitas menos o Total de Despesas)."
+  },
+  {
+    "titulo": "Gráfico ou Indicador Visual de Desempenho",
+    "descricao": "A aplicação deve possuir uma representação visual (usando barras coloridas CSS dinâmicas, SVG ou um elemento Canvas) que reflita a proporção entre Receitas e Despesas ou o percentual de gastos em relação às receitas."
+  },
+  {
+    "titulo": "Persistência com localStorage",
+    "descricao": "Todas as transações devem ser salvas no localStorage do navegador para que não se percam ao recarregar ou fechar a página. Ao abrir a aplicação, as transações salvas devem ser carregadas e exibidas automaticamente."
+  }
+]

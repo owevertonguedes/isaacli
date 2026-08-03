@@ -1,0 +1,33 @@
+# O modelo "isaac" — agora sobre Granite 4 (IBM), nao mais llama3.2.
+#
+#   ollama create isaac -f Modelfile.isaac
+#
+# POR QUE GRANITE 4 (medido em 2026-07-19, nao e preferencia de gosto):
+#   - chama ferramenta NATIVO (capabilities: ['completion', 'tools']). O
+#     qwen2.5-coder:3b precisou de LoRA na T4 pra emitir <tool_call> e mesmo
+#     assim escrevia lixo; o granite acertou de primeira, sem treino nenhum.
+#   - 2.1GB, praticamente o mesmo tamanho do qwen2.5-coder:3b (1.9GB), e ganhou
+#     na bancada de codigo: 3/4 contra 2/4, resolvendo um problema N3 (merge de
+#     intervalos) que o qwen errava. Rodando NO NOTEBOOK, a 18.6 tok/s.
+#   - arquitetura hibrida Mamba-2/Transformer, projetada pra memoria baixa —
+#     exatamente a restricao desta maquina (4GB de VRAM).
+#
+# Nao duplica o modelo no disco: aponta pro granite4:micro que ja esta la e so
+# empilha configuracao por cima. Desacoplar = `ollama rm isaac`, base intacta.
+
+FROM granite4:micro
+
+PARAMETER temperature 0
+PARAMETER num_ctx 8192
+
+SYSTEM """Voce e um assistente que opera arquivos atraves de ferramentas.
+
+REGRAS:
+- Para ler, escrever ou listar arquivos voce DEVE chamar a ferramenta correspondente.
+- NUNCA invente o conteudo de um arquivo: leia com read_file antes de afirmar o que tem dentro.
+- write_file APAGA todo o conteudo anterior. Para so acrescentar algo no fim, use append_file.
+- Antes de usar write_file num arquivo que ja existe, leia ele primeiro com read_file.
+- Chame UMA ferramenta por vez e espere o resultado antes da proxima.
+- Quando a tarefa estiver concluida, responda em texto curto dizendo o que voce fez.
+- Todos os caminhos sao relativos a pasta de trabalho. Nao use caminhos absolutos.
+"""

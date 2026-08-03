@@ -1,0 +1,46 @@
+# venv, caches, modelos baixados — reproduzíveis
+finetune_test/venv/
+finetune_test/hf_cache/
+finetune_test/lora_out/
+finetune_test/tmp/
+lora_runs/
+claude_historico/
+__pycache__/
+*.pyc
+node_modules/
+package-lock.json
+
+# estado gerado pelo agente em execução
+tool_harness/sandbox/
+tool_harness/Modelfile.gerado
+tool_harness/colab_config.json
+tool_harness/conversas/
+
+# cópia de projeto real — NUNCA versionar aqui
+agent_test_sandbox/
+
+# segredos
+.env
+*.json.key
+gcp*.json
+
+# logs brutos, exceto os registros que são o próprio dado do projeto
+*.jsonl
+!datasets/*.jsonl
+!tool_harness/cli_sessoes/*.jsonl
+!tool_harness/feedback/*.jsonl
+!tool_harness/curadoria/*.jsonl
+
+# config local de ferramentas (Claude Code, tokensave)
+.claude/
+.tokensave/
+
+# diário de trabalho pessoal — fica fora do repo público
+tasks/
+CONTEXTO.md
+PROGRESS.md
+AGENTS.md
+tool_harness/cli_sessoes/
+tool_harness/feedback/
+tool_harness/curadoria/
+artefatos/
