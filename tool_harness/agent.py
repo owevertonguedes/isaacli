@@ -10,13 +10,24 @@ O que ele faz, em ciclo:
 """
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.request
 
 import tools
 
-URL = "http://127.0.0.1:11434/api/chat"
+# Honours OLLAMA_HOST, the same variable the ollama CLI reads, so pointing the
+# harness at another host does not require editing code. Accepts it with or
+# without a scheme, because the CLI accepts both.
+def _url_do_ollama():
+    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434").strip()
+    if not host.startswith(("http://", "https://")):
+        host = "http://" + host
+    return host.rstrip("/") + "/api/chat"
+
+
+URL = _url_do_ollama()
 
 # --- A "pecinha de montar": o conhecimento injetado no boot, sem tocar nos pesos.
 CONHECIMENTO_FERRAMENTAS = """You are an assistant that operates on files through tools.

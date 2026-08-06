@@ -1,7 +1,7 @@
 # Experimento LoRA no Qwen2.5-Coder-3B — CONCLUÍDO, deu certo
 
 **Não é código ativo.** É a prova de um experimento encerrado em 2026-07-19.
-O app não usa mais o Qwen (usa `granite4:micro`). Mantido porque documenta a
+O app não usa mais o Qwen (usa `granite4:micro-h`). Mantido porque documenta a
 resposta a uma pergunta que custou dias.
 
 ## A pergunta
