@@ -128,7 +128,7 @@ def _binarios_do_sistema():
     return reais, links
 
 
-def revisar(cmd):
+def revisar(cmd, autorizado=False):
     """Decide se o comando pode rodar. Devolve a lista de argumentos ja quebrada.
 
     Levanta Recusado com o MOTIVO. Nunca recusa em silencio: modelo pequeno que
@@ -170,7 +170,7 @@ def revisar(cmd):
         raise Recusado(
             f"chame o programa pelo nome ('{Path(programa).name}'), nao pelo "
             f"caminho ('{programa}').")
-    if programa not in PERMITIDOS:
+    if programa not in PERMITIDOS and not autorizado:
         raise Recusado(
             f"'{programa}' nao esta na lista de comandos permitidos.\n"
             f"Permitidos: {', '.join(sorted(PERMITIDOS))}")
@@ -191,7 +191,7 @@ def revisar(cmd):
         sub = next((p for p in partes[1:] if not p.startswith("-")), None)
         if sub is None:
             raise Recusado("diga o subcomando do git (ex: git status)")
-        if sub not in GIT_PERMITIDOS:
+        if sub not in GIT_PERMITIDOS and not autorizado:
             raise Recusado(
                 f"'git {sub}' nao e permitido.\n"
                 f"Permitidos: {', '.join(sorted(GIT_PERMITIDOS))}")
@@ -204,7 +204,7 @@ def revisar(cmd):
         sub = next((p for p in partes[1:] if not p.startswith("-")), None)
         if sub is None:
             raise Recusado("diga o subcomando do graphify (ex: graphify query)")
-        if sub not in GRAPHIFY_PERMITIDOS:
+        if sub not in GRAPHIFY_PERMITIDOS and not autorizado:
             raise Recusado(
                 f"'graphify {sub}' nao e permitido.\n"
                 f"Permitidos: {', '.join(sorted(GRAPHIFY_PERMITIDOS))}")
@@ -281,7 +281,7 @@ def montar_bwrap(argv, raiz, rede=False):
     return linha
 
 
-def run_command(cmd: str) -> str:
+def run_command(cmd: str, autorizado=False) -> str:
     """Roda um comando confinado e devolve a saida CRUA.
 
     Crua de proposito: stdout, stderr e codigo de saida, sem resumir e sem
@@ -296,7 +296,7 @@ def run_command(cmd: str) -> str:
                 "Instale com: sudo dnf install bubblewrap")
 
     try:
-        argv = revisar(cmd)
+        argv = revisar(cmd, autorizado=autorizado)
     except Recusado as e:
         return f"$ {cmd}\nRECUSADO: {e}\n(código de saída: 126)"
 
@@ -349,7 +349,9 @@ ESQUEMA = {
             "Roda UM comando no terminal, confinado na pasta de trabalho, e "
             "devolve a saida crua (stdout, stderr e codigo de saida). "
             "Nao existe shell: nada de pipe, '>', '&&' ou ';' — um comando por "
-            "vez. Permitidos: "
+            "vez. Comandos de leitura seguros podem rodar automaticamente; "
+            "outros comandos, como 'rm arquivo.txt', são mostrados ao usuário "
+            "e só rodam após aprovação. Disponíveis por padrão: "
             + ", ".join(sorted(PERMITIDOS)) +
             f" (git: {', '.join(sorted(GIT_PERMITIDOS))} — sem --force no "
             "push; a identidade de commit vem do git global do host, entao "

@@ -91,26 +91,68 @@ Requires [Ollama](https://ollama.com), Python 3.10+, and `bwrap`
 ```bash
 git clone https://github.com/owevertonguedes/isaacli.git
 cd isaacli
-ollama pull granite4:micro-h
-./scripts/build-model.sh
+
+./isaacli setup                         # choose model, context and reasoning
 
 ./isaacli                                 # interactive REPL
 ./isaacli "run git status and tell me what is pending"
 ./isaacli --workspace /path/to/project
+./isaacli --resume 2026-08-07-200018-589c03
 ```
 
-The base model is not baked in. `build-model.sh` reads `BASE_MODEL`,
-`MODEL_NAME`, `NUM_CTX` and `TEMPERATURE` from the environment, because the right
-base is a measurement result rather than a constant, and it changes as models
-improve. It refuses a base that does not advertise the `tools` capability, since
-that failure otherwise shows up as the agent narrating work instead of doing it.
+On the first interactive run, isaacli also opens the setup automatically when no
+profile exists. It reads installed tags from the live Ollama API. The model menu
+shows a small curated recommendation section (Qwen3.6 35B-A3B UD-IQ1_M first)
+and a second section containing every local tag returned by Ollama. Long lists
+scroll inside the selector instead of overflowing the terminal. A
+recommended tag that is not registered in Ollama is shown as not installed and
+is downloaded only after confirmation. The setup detects model capabilities and
+context from Ollama instead of assigning behavior from its catalog. Context and
+reasoning are separate. Recommendations are data in
+`tool_harness/model_catalog.json`, not model-specific branches in the setup.
+In a terminal, setup choices use the arrow keys and Enter;
+manual context accepts friendly values such as `12K` (the safe minimum is `8K`).
+After setup, the interactive Isaac prompt opens immediately.
+
+The same setup can create a generic OpenAI-compatible API profile. It asks for
+provider label, base endpoint, exact model ID, API key and reasoning mode; no
+provider or model is compiled into the adapter. The key is stored separately in
+`~/.config/isaacli/secrets.json` with mode `0600`, never in the workspace,
+session log or regular `config.json`. For example, Groq can be configured with
+base endpoint `https://api.groq.com/openai/v1` and model
+`openai/gpt-oss-20b`.
+
+Setup text comes from JSON catalogs in `tool_harness/locales/`. Portuguese and
+English are available, and the agent is instructed to answer in the language
+used by the user.
+
+The advanced `build-model.sh` flow remains available for automation. It reads
+`BASE_MODEL`, `MODEL_NAME`, `NUM_CTX` and `TEMPERATURE` from the environment and
+refuses a base that does not advertise the `tools` capability.
 
 ```bash
 BASE_MODEL=granite4:micro NUM_CTX=16384 ./scripts/build-model.sh
 ```
 
-Inside the REPL, `/help` lists the commands, `/tools` shows which tools and which
-binaries are allowed, and `/status` reports token usage for the session.
+Inside the REPL, `/help` lists the commands, `/model` lists configured profiles,
+`/tools` shows which tools and binaries are allowed, and `/status` reports token
+usage for the session. On exit, isaacli prints the exact `--resume` command. A
+resumed run restores the workspace, model, messages and tool results into a new
+session log; recent user and assistant messages are also redrawn in the terminal.
+The original JSONL remains unchanged.
+
+The interactive REPL uses the terminal's alternate screen, so shell history is
+hidden while Isaac is open and restored when it exits. During streaming, a dim
+status line reports approximate live tokens/second; after each response Ollama's
+exact evaluation duration is used when available.
+
+Terminal commands are shown before execution. The default safe mode accepts
+only read-only commands automatically; commands that may change the workspace
+offer four choices: allow once, always allow in this workspace, always allow
+globally, or deny. `Shift+Tab` (or `/mode`) switches to the stricter mode where
+only saved permissions run automatically. `/permissions` lists the rules and
+can clear workspace or global rules. Approval never bypasses `bwrap`, the
+no-shell parser, or the hard block on force-push.
 
 ## Why it works
 
@@ -137,7 +179,7 @@ Command execution is contained in three independent layers, in
 [`tool_harness/execucao.py`](tool_harness/execucao.py):
 
 - **Direct execve**, no shell, so there is no injection through `;`, `&&` or `$()`
-- **A short allowlist** of binaries, widened by use rather than in anticipation
+- **A short default allowlist**, with explicit user approval required to widen it
 - **`bwrap`** with the whole disk read-only, networking closed, and only the
   working directory writable
 

@@ -40,6 +40,10 @@ tasks/
 CONTEXTO.md
 PROGRESS.md
 AGENTS.md
+FUTURO_IDIOMAS.md
+FUTURO_MOTORES_API.md
+FUTURO_RECOMENDACAO_MODELOS.md
+RECOMENDACOES_QWEN_ISAACLI.md
 tool_harness/cli_sessoes/
 tool_harness/feedback/
 tool_harness/curadoria/

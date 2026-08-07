@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import shlex
 from pathlib import Path
 
 try:
@@ -34,15 +35,16 @@ if str(AQUI) not in sys.path:
     sys.path.insert(0, str(AQUI))
 
 import agent
+import config
+import terminal_ui
 import tools
 
-MODELO_PADRAO = os.environ.get("AGENTE_MODELO", "isaac-granite")
 SESSOES_DIR = AQUI / "cli_sessoes"
 FEEDBACK_DIR = AQUI / "feedback"
 COMANDOS_BARRA = [
-    "/help", "/status", "/tools", "/sessions", "/show", "/log", "/feedback",
+    "/help", "/setup", "/status", "/tools", "/sessions", "/show", "/log", "/feedback",
     "/bom", "/ruim", "/nota",
-    "/workspace", "/model", "/clear", "/exit",
+    "/workspace", "/model", "/permissions", "/mode", "/clear", "/exit",
 ]
 MAX_PREVIEW_CHARS = 1800
 MAX_PREVIEW_LINHAS = 28
@@ -56,11 +58,20 @@ ANSI = {
     "reset": "\033[0m",
 }
 
+COMANDOS_SOMENTE_LEITURA = {"ls", "cat", "head", "tail", "wc", "grep", "find"}
+GIT_SOMENTE_LEITURA = {"status", "diff", "log", "show"}
+
 CONHECIMENTO_CLI = """You are isaacli running as a local CLI in the user's terminal.
 
 OPERATING CONTEXT:
+- Always answer in the same language as the user's latest message. If the user
+  writes in Portuguese, answer in Brazilian Portuguese; do not switch to English.
 - The current working directory is: {workspace}
 - Everything you do through tools is confined to that directory.
+- Before asking the user to clarify a local file, directory or project target,
+  try to resolve it with list_dir, find, grep or read_file. If the user says
+  "the txt file", "the config" or similar and the workspace can identify it,
+  inspect the workspace instead of asking for an exact name.
 - To inspect the project, use run_command with short commands: git status,
   git diff, ls, find, wc, pytest, python3.
 - If `graphify-out/graph.json` exists and the user asks where a flow, resource,
@@ -70,6 +81,12 @@ OPERATING CONTEXT:
   declaring success. If there is no graph, fall back to local search with
   find/rg, and do not edit before locating.
 - To change files, use read_file first and write_file/append_file after.
+- To delete a file or perform another operation not covered by a specialized
+  file tool, call run_command with the exact terminal command (for example,
+  `rm hello-world.txt`). The CLI, not you, handles user approval.
+- Never claim that you created, edited, deleted, committed, tested or otherwise
+  changed something unless at least one tool actually performed that action in
+  this turn and its result confirms success.
 - For git: run git status and git diff before proposing a commit.
 - You may use git add and git commit when the user asks for it.
 - If the user asks you to sign a commit, read "signature" as a valid Git trailer
@@ -101,7 +118,13 @@ def _instalar_sinais():
     def sair(_signum, _frame):
         raise SystemExit(130)
 
-    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+    # SIGINT precisa virar KeyboardInterrupt para o REPL restaurar a tela e
+    # imprimir o resumo da sessão. HUP/TERM continuam encerrando imediatamente.
+    try:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    except (AttributeError, ValueError):
+        pass
+    for sig in (signal.SIGHUP, signal.SIGTERM):
         try:
             signal.signal(sig, sair)
         except (AttributeError, ValueError):
@@ -130,9 +153,50 @@ def _cor(texto, nome):
     return f"{ANSI[nome]}{texto}{ANSI['reset']}"
 
 
+def _prompt_colorido(texto, nome="prompt"):
+    """Marca ANSI como não imprimível para o readline calcular quebras corretamente."""
+    if not _usa_cor():
+        return texto
+    return f"\001{ANSI[nome]}\002{texto}\001{ANSI['reset']}\002"
+
+
 def _codigo_saida(resultado):
     m = re.search(r"\(c[oó]digo de sa[ií]da: (-?\d+)\)\s*$", resultado.strip())
     return int(m.group(1)) if m else None
+
+
+def _partes_comando(cmd):
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return []
+
+
+def _regra_comando(cmd):
+    partes = _partes_comando(cmd)
+    if not partes:
+        return ""
+    if partes[0] == "git" and len(partes) > 1:
+        sub = next((p for p in partes[1:] if not p.startswith("-")), "*")
+        return f"git {sub}"
+    return partes[0]
+
+
+def _comando_leitura_segura(cmd):
+    partes = _partes_comando(cmd)
+    if not partes:
+        return False
+    if partes[0] in COMANDOS_SOMENTE_LEITURA:
+        return True
+    return (partes[0] == "git" and len(partes) > 1
+            and next((p for p in partes[1:] if not p.startswith("-")), None)
+            in GIT_SOMENTE_LEITURA)
+
+
+def _contexto_curto(valor):
+    if isinstance(valor, int) and valor % 1024 == 0:
+        return f"{valor // 1024}K"
+    return str(valor)
 
 
 def _preview(texto):
@@ -161,6 +225,9 @@ def _instalar_autocomplete():
     readline.set_completer(completar)
     readline.set_completer_delims(" \t\n")
     readline.parse_and_bind("tab: complete")
+    # Shift+Tab envia /mode como se o usuário o tivesse digitado. Funciona no
+    # GNU readline sem substituir o editor de linha (e suas quebras corretas).
+    readline.parse_and_bind('"\\e[Z": "/mode\\n"')
 
 
 def _montar_historico(workspace):
@@ -170,9 +237,74 @@ def _montar_historico(workspace):
     )}]
 
 
+def _carregar_sessao(session_id):
+    """Reconstrói conversa e tool calls de um JSONL local pelo ID exato."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[a-f0-9]{6}", session_id):
+        raise ValueError("ID de sessão inválido")
+    caminho = SESSOES_DIR / f"{session_id}.jsonl"
+    if not caminho.is_file():
+        raise ValueError(f"sessão não encontrada: {session_id}")
+    if caminho.stat().st_size > 20 * 1024 * 1024:
+        raise ValueError("sessão grande demais para retomada automática")
+
+    eventos = []
+    for numero, linha in enumerate(caminho.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            evento = json.loads(linha)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"log de sessão inválido na linha {numero}") from e
+        if isinstance(evento, dict):
+            eventos.append(evento)
+    if not eventos:
+        raise ValueError("sessão vazia")
+
+    workspace = Path(eventos[-1].get("workspace") or os.getcwd()).expanduser().resolve()
+    if not workspace.is_dir():
+        raise ValueError(f"workspace da sessão não existe mais: {workspace}")
+    modelo = next((e.get("modelo") for e in reversed(eventos) if e.get("modelo")), None)
+    historico = _montar_historico(workspace)
+    transcript = []
+    tool_pendente = None
+    tool_numero = 0
+    for evento in eventos:
+        tipo = evento.get("tipo")
+        if tipo == "meta" and evento.get("evento") == "clear":
+            historico = _montar_historico(workspace)
+            transcript = []
+        elif tipo == "user" and isinstance(evento.get("content"), str):
+            historico.append({"role": "user", "content": evento["content"]})
+            transcript.append(("user", evento["content"]))
+        elif tipo == "tool_start":
+            tool_numero += 1
+            nome = evento.get("nome") or "unknown"
+            args = evento.get("args")
+            if args is None and nome == "run_command":
+                args = {"cmd": evento.get("cmd", "")}
+            tool_pendente = f"resume-tool-{tool_numero}"
+            historico.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": tool_pendente, "type": "function",
+                                "function": {"name": nome, "arguments": args or {}}}],
+            })
+        elif tipo == "tool_result" and isinstance(evento.get("resultado"), str):
+            historico.append({"role": "tool", "tool_call_id": tool_pendente or "resume-tool",
+                              "content": evento["resultado"]})
+            tool_pendente = None
+        elif tipo == "assistant_final" and isinstance(evento.get("content"), str):
+            historico.append({"role": "assistant", "content": evento["content"]})
+            if evento["content"]:
+                transcript.append(("assistant", evento["content"]))
+    return {"id": session_id, "path": caminho, "workspace": workspace,
+            "model": modelo, "history": historico, "transcript": transcript}
+
+
 class IsaacCLI:
-    def __init__(self, modelo, workspace, max_passos, autostart_ollama=True):
+    def __init__(self, modelo, workspace, max_passos, autostart_ollama=True,
+                 thinking=None, config_file=None, provider=None):
         self.modelo = modelo
+        self.thinking = thinking
+        self.config_file = config_file
+        self.provider = provider or {"provider": "ollama"}
         self.workspace = Path(workspace).expanduser().resolve()
         self.max_passos = max_passos
         self.autostart_ollama = autostart_ollama
@@ -184,14 +316,38 @@ class IsaacCLI:
         self.turnos = 0
         self.falhas = 0
         self.comandos = []
-        self.uso_total = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
+        self.uso_total = {"prompt_eval_count": 0, "eval_count": 0,
+                          "total_duration": 0, "eval_duration": 0}
         self.ultima_resposta = ""
         self.feedbacks = 0
+        self.modo_permissao = "seguro"
+        self._working_visivel = False
+        self._rotulo_assistente_pendente = True
+        self._geracao_inicio = None
+        self._turno_inicio = None
+        self._geracao_pedacos = 0
+        self._geracao_status_em = 0.0
+        self.transcript_retomada = []
         self.definir_workspace(self.workspace, reset=True)
         self._log("meta", evento="inicio", pid=os.getpid(), modelo=self.modelo,
                   workspace=str(self.workspace))
 
+    def _provider_do_perfil(self, item):
+        if not item or item.get("provider", "ollama") == "ollama":
+            return {"provider": "ollama"}
+        segredo_path = (Path(self.config_file).with_name("secrets.json")
+                        if self.config_file else None)
+        return {
+            "provider": "openai_compatible",
+            "provider_name": item.get("provider_name") or "API",
+            "base_url": item.get("base_url"),
+            "api_key": config.carregar_segredo(item.get("credential"), segredo_path),
+        }
+
     def garantir_ollama(self, avisar=False):
+        if self.provider.get("provider") != "ollama":
+            return ((self.provider.get("provider_name") or "API")
+                    if self.provider.get("api_key") and self.provider.get("base_url") else None)
         versao = _ollama_ok()
         if versao:
             return versao
@@ -272,6 +428,7 @@ class IsaacCLI:
     def ajuda(self):
         print("""comandos:
   /help                 mostra isto
+  /setup                configura ou repara o motor sem fechar o Isaac
   /status               mostra sessao, workspace, modelo e consumo Ollama
   /tools                lista ferramentas e comandos de terminal permitidos
   /sessions             lista sessoes CLI salvas
@@ -282,12 +439,15 @@ class IsaacCLI:
   /ruim [comentario]    marca a ultima tarefa como ruim
   /nota 0-10 [texto]    da uma nota numerica para a ultima tarefa
   /workspace [caminho]  mostra ou troca a pasta de trabalho
-  /model [nome]         mostra ou troca o modelo Ollama
+  /model [perfil|nome]  lista perfis ou troca o modelo Ollama
+  /permissions          mostra autorizações persistentes aplicáveis
+  /mode                 alterna entre automático seguro e somente autorizados
   /clear                limpa o contexto da conversa
   /exit                 sai
 
 atalho:
   digite / e pressione Tab para completar comandos
+  Shift+Tab alterna o modo de aprovação de comandos
 
 exemplos:
   rode git status
@@ -309,6 +469,26 @@ exemplos:
             raise EOFError
         if cmd in ("/help", "/?"):
             self.ajuda()
+            return True
+        if cmd == "/setup":
+            import setup_ollama
+            codigo = setup_ollama.executar_setup(config_file=self.config_file)
+            if codigo == 0:
+                try:
+                    dado = config.carregar(self.config_file)
+                    nome, item = config.perfil(dado)
+                except ValueError as e:
+                    print(f"setup concluiu, mas nao consegui reler a configuracao: {e}")
+                    return True
+                if item:
+                    self.modelo = item["model"]
+                    self.thinking = item.get("thinking")
+                    self.provider = self._provider_do_perfil(item)
+                    self._log("meta", evento="setup", perfil=nome,
+                              modelo=self.modelo, thinking=self.thinking)
+                    print(f"perfil carregado nesta sessao: {nome} ({self.modelo})")
+            else:
+                print("O Isaac continua aberto. Corrija o motor e use /setup novamente.")
             return True
         if cmd == "/status":
             self.status()
@@ -346,11 +526,75 @@ exemplos:
             return True
         if cmd == "/model":
             if not arg:
-                print(self.modelo)
+                print(f"modelo atual: {self.modelo}")
+                try:
+                    dado = config.carregar(self.config_file)
+                except ValueError as e:
+                    print(f"configuracao: {e}")
+                    return True
+                perfis = dado.get("profiles") or {}
+                if perfis:
+                    print("perfis configurados:")
+                    for nome, item in perfis.items():
+                        marca = " *" if item.get("model") == self.modelo else ""
+                        print(
+                            f"  {nome}: {item.get('model')} "
+                            f"(contexto={_contexto_curto(item.get('num_ctx'))}, "
+                            f"raciocinio={item.get('thinking')}){marca}"
+                        )
+                    print("use: /model <perfil>")
+                    print("use /setup para adicionar modelo ou mudar contexto/raciocinio")
             else:
-                self.modelo = arg
-                self._log("meta", evento="model", modelo=self.modelo)
-                print(f"modelo: {self.modelo}")
+                try:
+                    dado = config.carregar(self.config_file)
+                except ValueError:
+                    dado = config.config_vazia()
+                item = (dado.get("profiles") or {}).get(arg)
+                if item:
+                    self.modelo = item["model"]
+                    self.thinking = item.get("thinking")
+                    self.provider = self._provider_do_perfil(item)
+                    origem = f"perfil {arg}"
+                else:
+                    self.modelo = arg
+                    self.thinking = None
+                    self.provider = {"provider": "ollama"}
+                    origem = "nome Ollama direto"
+                self._log("meta", evento="model", modelo=self.modelo,
+                          thinking=self.thinking)
+                print(f"modelo: {self.modelo} ({origem})")
+            return True
+        if cmd == "/mode":
+            self.modo_permissao = (
+                "somente_autorizados" if self.modo_permissao == "seguro" else "seguro"
+            )
+            print("modo de comandos: " + (
+                "somente autorizações salvas" if self.modo_permissao == "somente_autorizados"
+                else "automático seguro (somente leitura)"
+            ))
+            self._log("meta", evento="permission_mode", modo=self.modo_permissao)
+            return True
+        if cmd == "/permissions":
+            try:
+                dado = config.carregar(self.config_file)
+            except ValueError as e:
+                print(f"configuração: {e}")
+                return True
+            permissoes = dado.get("permissions") or {}
+            if arg in ("clear workspace", "clear global"):
+                if arg == "clear global":
+                    permissoes["global"] = []
+                else:
+                    (permissoes.get("workspaces") or {}).pop(str(self.workspace), None)
+                config.salvar(dado, self.config_file)
+                print("autorizações removidas: " + arg.removeprefix("clear "))
+                return True
+            globais = permissoes.get("global") or []
+            locais = (permissoes.get("workspaces") or {}).get(str(self.workspace), [])
+            print(f"modo: {self.modo_permissao}")
+            print("globais: " + (", ".join(globais) if globais else "(nenhuma)"))
+            print("neste workspace: " + (", ".join(locais) if locais else "(nenhuma)"))
+            print("remover: /permissions clear workspace | /permissions clear global")
             return True
         if cmd == "/clear":
             self.historico = _montar_historico(self.workspace)
@@ -362,16 +606,19 @@ exemplos:
         return True
 
     def status(self):
-        versao = _ollama_ok() or "sem resposta"
+        versao = (_ollama_ok() or "sem resposta") if self.provider.get("provider") == "ollama" else (
+            self.provider.get("provider_name") or "API compatível com OpenAI")
         duracao_s = self.uso_total.get("total_duration", 0) / 1_000_000_000
         print(f"sessao: {self.session_id}")
         print(f"log: {self.session_path}")
         print(f"pid: {os.getpid()}")
         print(f"modelo: {self.modelo}")
+        print(f"raciocinio: {self.thinking if self.thinking is not None else 'padrao do modelo'}")
         print(f"workspace: {self.workspace}")
-        print(f"Ollama: {versao}")
+        print(f"motor: {versao}")
         print(f"turnos: {self.turnos}")
         print(f"comandos: {len(self.comandos)}  falhas: {self.falhas}")
+        print(f"permissões: {self.modo_permissao}")
         print(f"feedbacks: {self.feedbacks}  arquivo: {self.feedback_path}")
         print(
             "tokens Ollama: "
@@ -481,24 +728,104 @@ uso posterior:
             return
         if not houve_comando and self.turnos % 3 != 0:
             return
-        print(_cor("avaliacao opcional: /bom [comentario], /ruim [comentario] ou /nota 0-10 [comentario]", "dim"))
+        print()
+        print(_cor("avaliação opcional: /bom [comentário], /ruim [comentário] ou /nota 0-10 [comentário]", "dim"))
+
+    def _mostrar_working(self):
+        self._rotulo_assistente_pendente = True
+        self._geracao_inicio = time.monotonic()
+        self._geracao_pedacos = 0
+        self._geracao_status_em = 0.0
+        terminal_ui.status("Working…")
+        if _usa_cor() and not self._working_visivel:
+            print(_cor("Working…", "dim"), end="", flush=True)
+            self._working_visivel = True
+
+    def _limpar_working(self, limpar_status=True):
+        if limpar_status:
+            terminal_ui.status(None)
+        if self._working_visivel:
+            print("\r\033[2K", end="", flush=True)
+            self._working_visivel = False
 
     def _token(self, pedaco):
+        self._limpar_working(limpar_status=False)
+        self._geracao_pedacos += 1
+        agora = time.monotonic()
+        decorrido = agora - (self._geracao_inicio or agora)
+        if decorrido > 0 and agora - self._geracao_status_em >= 0.2:
+            terminal_ui.status(
+                f"Gerando · ≈ {self._geracao_pedacos / decorrido:.1f} tok/s"
+            )
+            self._geracao_status_em = agora
+        if self._rotulo_assistente_pendente and pedaco:
+            print(_cor("isaac:", "assistant"), end=" ", flush=True)
+            self._rotulo_assistente_pendente = False
         print(pedaco, end="", flush=True)
 
     def _tool_antes(self, nome, args):
+        self._limpar_working()
         try:
             dados = json.loads(args) if isinstance(args, str) else (args or {})
         except json.JSONDecodeError:
             dados = {}
         if nome == "run_command":
             cmd = dados.get("cmd", args)
-            print(_cor(f"\nrodando: {cmd}", "tool"), flush=True)
+            print(_cor(f"$ {cmd}", "tool"), flush=True)
             self._log("tool_start", nome=nome, cmd=cmd)
+            return self._aprovar_e_executar(cmd)
         else:
             resumo = json.dumps(dados, ensure_ascii=False) if dados else str(args)
-            print(_cor(f"\n[{nome}] {resumo[:180]}", "tool"), flush=True)
+            print(_cor(f"[{nome}] {resumo[:180]}", "tool"), flush=True)
             self._log("tool_start", nome=nome, args=dados or args)
+
+    def _aprovar_e_executar(self, cmd):
+        """Aplica política humana antes de entregar o comando ao bwrap."""
+        import execucao
+
+        regra = _regra_comando(cmd)
+        # Valida antes de oferecer uma escolha: aprovar algo que continuará
+        # proibido (shell, find destrutivo, force-push) seria enganoso.
+        try:
+            execucao.revisar(cmd, autorizado=True)
+        except execucao.Recusado as e:
+            return f"$ {cmd}\nRECUSADO: {e}\n(código de saída: 126)"
+        try:
+            dado = config.carregar(self.config_file)
+        except ValueError:
+            dado = config.config_vazia()
+        salvo = regra and regra in config.regras_permissao(dado, self.workspace)
+        automatico = self.modo_permissao == "seguro" and _comando_leitura_segura(cmd)
+        if salvo or automatico:
+            return execucao.run_command(cmd, autorizado=salvo)
+
+        print(_cor("Permissão necessária · use ↑/↓ e Enter ou w/g/n", "warn"))
+        print("O comando poderá alterar este workspace; o sandbox não expõe o restante do computador.")
+        try:
+            indice = terminal_ui.selecionar_inline(
+                [
+                    "Permitir uma vez",
+                    f"Sempre permitir “{regra}” neste workspace  [w]",
+                    f"Sempre permitir “{regra}” globalmente  [g]",
+                    "Recusar  [n]",
+                ],
+                atalhos={"w": 1, "g": 2, "n": 3}, input_fn=input, inicial=0,
+            )
+        except (EOFError, KeyboardInterrupt):
+            indice = 3
+            print()
+        if indice == 3:
+            self._log("permission", cmd=cmd, regra=regra, decisao="recusado")
+            return (f"$ {cmd}\nRECUSADO PELO USUÁRIO: o comando não foi autorizado.\n"
+                    "(código de saída: 126)")
+        if indice in (1, 2) and regra:
+            config.adicionar_permissao(
+                dado, regra, workspace=self.workspace if indice == 1 else None,
+            )
+            config.salvar(dado, self.config_file)
+        decisao = {0: "uma_vez", 1: "workspace", 2: "global"}[indice]
+        self._log("permission", cmd=cmd, regra=regra, decisao=decisao)
+        return execucao.run_command(cmd, autorizado=True)
 
     def _tool_depois(self, nome, args, resultado, _via):
         if nome == "run_command":
@@ -513,12 +840,19 @@ uso posterior:
                 "cmd": cmd,
                 "codigo": codigo,
                 "resultado": resultado,
+                "recusado": "RECUSADO PELO USUÁRIO:" in resultado,
             }
             self.comandos.append(item)
-            if codigo is not None and codigo != 0:
+            if codigo is not None and codigo != 0 and not item["recusado"]:
                 self.falhas += 1
-            status = "ok" if codigo == 0 else (f"falhou codigo {codigo}" if codigo is not None else "sem codigo")
-            print(_cor(f"comando #{item['id']} · {status}", "bad" if codigo else "tool"), flush=True)
+            if item["recusado"]:
+                status, cor = "recusado pelo usuário", "warn"
+            elif codigo == 0:
+                status, cor = "ok", "tool"
+            else:
+                status = f"falhou · código {codigo}" if codigo is not None else "sem código"
+                cor = "bad"
+            print(_cor(f"comando #{item['id']} · {status}", cor), flush=True)
             texto, cortado = _preview(resultado)
             print(texto, flush=True)
             if cortado:
@@ -530,15 +864,21 @@ uso posterior:
             if cortado:
                 print(_cor("[saida recolhida no log da sessao]", "dim"), flush=True)
             self._log("tool_result", nome=nome, resultado=resultado)
+        self._rotulo_assistente_pendente = True
 
     def perguntar(self, pedido):
         if not self.garantir_ollama(avisar=True):
-            print("ERRO: Ollama nao respondeu e nao consegui iniciar automaticamente.")
-            self._log("error", erro="ollama_indisponivel")
+            if self.provider.get("provider") == "ollama":
+                print("ERRO: Ollama não respondeu e não consegui iniciar automaticamente.")
+                erro = "ollama_indisponivel"
+            else:
+                print("ERRO: credencial ou endpoint da API ausente. Use /setup para reparar.")
+                erro = "api_indisponivel"
+            self._log("error", erro=erro)
             return 1
         self._log("user", content=pedido)
         comandos_antes = len(self.comandos)
-        print(_cor("isaac:", "assistant"), end=" ", flush=True)
+        self._turno_inicio = time.monotonic()
         try:
             r = agent.rodar(
                 pedido,
@@ -548,20 +888,33 @@ uso posterior:
                 on_token=self._token,
                 on_tool_antes=self._tool_antes,
                 on_tool=self._tool_depois,
+                on_working=self._mostrar_working,
                 historico=self.historico,
+                thinking=self.thinking,
+                provider=self.provider,
             )
+        except RuntimeError as e:
+            self._limpar_working()
+            print(f"ERRO: {e}")
+            self._log("error", erro=str(e))
+            return 1
         except urllib.error.URLError as e:
-            if self.garantir_ollama(avisar=True):
+            self._limpar_working()
+            if self.provider.get("provider") != "ollama":
+                print(f"ERRO: a API não respondeu ({e}).")
+            elif self.garantir_ollama(avisar=True):
                 print("\nOllama iniciou agora; tente o pedido de novo.")
             else:
                 print(f"\nERRO: Ollama nao respondeu ({e}) e o inicio automatico falhou.")
             self._log("error", erro=str(e))
             return 1
         except KeyboardInterrupt:
+            self._limpar_working()
             print("\ninterrompido")
             self._log("error", erro="interrompido")
             return 130
 
+        self._limpar_working()
         final = (r or {}).get("final") or ""
         self.ultima_resposta = final
         uso = (r or {}).get("uso") or {}
@@ -570,39 +923,97 @@ uso posterior:
         self.turnos += 1
         if final and not final.endswith("\n"):
             print()
-        novos = self.comandos[comandos_antes:]
-        if novos and novos[-1].get("codigo") not in (None, 0):
+        eval_count = int(uso.get("eval_count") or 0)
+        eval_duration = int(uso.get("eval_duration") or 0) / 1_000_000_000
+        tempo_medicao = eval_duration or max(
+            time.monotonic() - (self._turno_inicio or time.monotonic()), 0.001,
+        )
+        if eval_count:
+            aproximado = "" if eval_duration else "≈ "
             print(_cor(
-                f"nota: o ultimo comando falhou com codigo {novos[-1]['codigo']}; "
-                "trate a resposta acima como nao concluida se ela disser sucesso.",
+                f"{aproximado}{eval_count / tempo_medicao:.1f} tok/s · "
+                f"{eval_count} tokens gerados", "dim",
+            ))
+        chamadas = (r or {}).get("chamadas") or []
+        pediu_mutacao = bool(re.search(
+            r"\b(apag(?:ue|ar)|delet(?:e|ar)|remov(?:a|er)|exclu(?:a|ir)|"
+            r"cri(?:e|ar)|edit(?:e|ar)|alter(?:e|ar)|modifi(?:que|car)|"
+            r"delete|remove|create|edit|modify)\b", pedido, re.IGNORECASE,
+        ))
+        if pediu_mutacao and not chamadas:
+            print(_cor(
+                "\nAviso do Isaac CLI: nenhuma ferramenta de alteração foi executada; "
+                "portanto nenhuma mudança foi confirmada.", "warn",
+            ))
+        novos = self.comandos[comandos_antes:]
+        if (novos and not novos[-1].get("recusado")
+                and novos[-1].get("codigo") not in (None, 0)):
+            print(_cor(
+                f"\nNota do Isaac CLI: o último comando falhou com código {novos[-1]['codigo']}; "
+                "trate a resposta acima como não concluída se ela disser sucesso.",
                 "warn",
             ))
         self._log("assistant_final", content=final, uso=uso,
                   chamadas=len((r or {}).get("chamadas") or []))
         self.lembrar_feedback(bool(novos))
+        print()
         return 0
 
     def repl(self):
+        with terminal_ui.tela_alternativa():
+            codigo = self._repl_tela()
+        print()
+        print(_cor("sessão Isaac encerrada · para retomar:", "dim"))
+        print(f"isaacli --resume {self.session_id}")
+        print()
+        return codigo
+
+    def _repl_tela(self):
         _instalar_autocomplete()
-        versao = self.garantir_ollama(avisar=True)
-        print(f"Isaac CLI · modelo={self.modelo} · workspace={self.workspace}")
-        if versao:
-            print(f"Ollama OK · {versao}")
+        versao = self.garantir_ollama(avisar=False)
+        if self.provider.get("provider") == "ollama":
+            motor = f"Ollama {versao}" if versao else "MOTOR INDISPONÍVEL · use /setup"
         else:
-            print("Ollama nao respondeu em 127.0.0.1:11434 e o inicio automatico falhou.")
-        print(f"sessao={self.session_id} · log={self.session_path}")
-        print("Digite / e Enter para comandos; Tab completa; /exit sai.\n")
+            motor = self.provider.get("provider_name") or "API compatível com OpenAI"
+        linhas = [
+            "Isaac CLI",
+            f"modelo     {self.modelo}",
+            f"motor      {motor}",
+            f"workspace  {self.workspace}",
+            "Shift+Tab muda permissões · / para comandos · /exit sai",
+        ]
+        largura = max(len(linha) for linha in linhas)
+        print(_cor("┌" + "─" * (largura + 2) + "┐", "assistant"))
+        for linha in linhas:
+            print(_cor("│", "assistant") + f" {linha:<{largura}} "
+                  + _cor("│", "assistant"))
+        print(_cor("└" + "─" * (largura + 2) + "┘", "assistant") + "\n")
+
+        if self.transcript_retomada:
+            limite = 20
+            itens = self.transcript_retomada[-limite:]
+            omitidas = len(self.transcript_retomada) - len(itens)
+            print(_cor("conversa retomada", "dim"))
+            if omitidas:
+                print(_cor(f"… {omitidas} mensagem(ns) anterior(es) omitida(s)", "dim"))
+            for papel, conteudo in itens:
+                texto = conteudo if len(conteudo) <= 2000 else conteudo[:2000] + "…"
+                rotulo = "❯" if papel == "user" else "isaac:"
+                cor = "prompt" if papel == "user" else "assistant"
+                print("\n" + _cor(rotulo, cor), texto)
+            print("\n" + _cor("fim do histórico retomado", "dim") + "\n")
 
         while True:
             try:
-                texto = input(_cor("isaac> ", "prompt")).strip()
+                texto = input(_prompt_colorido("❯ ")).strip()
             except EOFError:
                 print()
                 self._log("meta", evento="eof")
                 return 0
             except KeyboardInterrupt:
-                print("\nuse /exit para sair")
-                continue
+                print()
+                self._log("meta", evento="ctrl_c_exit")
+                return 130
             if not texto:
                 continue
             try:
@@ -616,14 +1027,93 @@ uso posterior:
 
 def main(argv=None):
     _instalar_sinais()
-    ap = argparse.ArgumentParser(prog="isaac")
+    argumentos = list(sys.argv[1:] if argv is None else argv)
+    setup_solicitado = bool(argumentos and argumentos[0] == "setup")
+    if argumentos and argumentos[0] == "setup":
+        if len(argumentos) > 1:
+            print("use: isaacli setup")
+            return 2
+        argumentos = []
+
+    ap = argparse.ArgumentParser(
+        prog="isaac",
+        epilog="primeiro uso: isaacli setup",
+    )
     ap.add_argument("pedido", nargs="*", help="pedido unico; sem isto abre o REPL")
-    ap.add_argument("--model", "--modelo", dest="modelo", default=MODELO_PADRAO)
+    ap.add_argument("--model", "--modelo", dest="modelo", default=None)
+    ap.add_argument("--resume", metavar="ID", help="retoma uma sessão salva")
     ap.add_argument("--workspace", "--dir", default=os.getcwd())
     ap.add_argument("--max-passos", type=int, default=12, help=argparse.SUPPRESS)
-    args = ap.parse_args(argv)
+    args = ap.parse_args(argumentos)
 
-    cli = IsaacCLI(args.modelo, args.workspace, args.max_passos)
+    retomada = None
+    if args.resume:
+        if args.pedido:
+            print("use --resume sem um pedido na mesma linha")
+            return 2
+        try:
+            retomada = _carregar_sessao(args.resume)
+        except ValueError as e:
+            print(f"ERRO: {e}")
+            return 2
+
+    try:
+        dado_config = config.carregar()
+    except ValueError as e:
+        print(f"AVISO: {e}; usando configuracao padrao.")
+        dado_config = config.config_vazia()
+    _perfil_nome, perfil_padrao = config.perfil(dado_config)
+    precisa_setup = (
+        setup_solicitado
+        or (
+        args.modelo is None
+        and not os.environ.get("AGENTE_MODELO")
+        and perfil_padrao is None
+        and retomada is None
+        and sys.stdin.isatty()
+        )
+    )
+    if precisa_setup:
+        import setup_ollama
+        codigo = setup_ollama.executar_setup()
+        if codigo == 0:
+            dado_config = config.carregar()
+            _perfil_nome, perfil_padrao = config.perfil(dado_config)
+        elif codigo == 130:
+            return 130
+        elif setup_solicitado:
+            # Nunca esconder falha/cancelamento abrindo outro modelo.
+            return codigo
+        elif perfil_padrao is None:
+            # Sem perfil não há motor seguro para abrir; a mensagem abaixo
+            # orienta uma nova tentativa sem escolher um modelo pelo usuário.
+            dado_config = config.config_vazia()
+            perfil_padrao = None
+    modelo = (
+        args.modelo
+        or os.environ.get("AGENTE_MODELO")
+        or (retomada or {}).get("model")
+        or (perfil_padrao or {}).get("model")
+    )
+    if not modelo:
+        print("Nenhum modelo foi configurado. Execute: isaacli setup")
+        return 2
+    if (args.modelo is None and not os.environ.get("AGENTE_MODELO")
+            and retomada is None and perfil_padrao
+            and perfil_padrao.get("model") == modelo):
+        perfil_modelo = perfil_padrao
+    else:
+        _nome_modelo, perfil_modelo = config.perfil_do_modelo(dado_config, modelo)
+    thinking = (perfil_modelo or {}).get("thinking")
+
+    workspace = retomada["workspace"] if retomada else args.workspace
+    cli = IsaacCLI(modelo, workspace, args.max_passos, thinking=thinking)
+    cli.provider = cli._provider_do_perfil(perfil_modelo)
+    if retomada:
+        cli.historico = retomada["history"]
+        cli.transcript_retomada = retomada["transcript"]
+        cli._log("meta", evento="resume", origem=retomada["id"],
+                 origem_log=str(retomada["path"]))
     try:
         if args.pedido:
             return cli.perguntar(" ".join(args.pedido))

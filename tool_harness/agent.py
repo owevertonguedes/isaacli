@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import urllib.request
+import urllib.error
 
 import tools
 
@@ -59,11 +60,12 @@ def _uso(dado):
         "prompt_eval_count": int(dado.get("prompt_eval_count") or 0),
         "eval_count": int(dado.get("eval_count") or 0),
         "total_duration": int(dado.get("total_duration") or 0),
+        "eval_duration": int(dado.get("eval_duration") or 0),
     }
 
 
 def _somar_uso(total, item):
-    for chave in ("prompt_eval_count", "eval_count", "total_duration"):
+    for chave in ("prompt_eval_count", "eval_count", "total_duration", "eval_duration"):
         total[chave] = total.get(chave, 0) + int((item or {}).get(chave) or 0)
 
 
@@ -85,7 +87,128 @@ def _mensagens_para_ollama(mensagens):
     return saida
 
 
-def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=None):
+def _mensagens_para_openai(mensagens):
+    saida = json.loads(json.dumps(mensagens))
+    for msg in saida:
+        for chave in list(msg):
+            if chave.startswith("_"):
+                del msg[chave]
+    return saida
+
+
+def _api_request(payload, api_key, base_url):
+    return urllib.request.Request(
+        base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+
+
+def _api_erro(e):
+    try:
+        detalhe = e.read().decode("utf-8", errors="replace")
+        dado = json.loads(detalhe)
+        mensagem = (dado.get("error") or {}).get("message") or detalhe[:500]
+        return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[oculta]", mensagem)
+    except Exception:
+        return str(e)
+
+
+def chamar_api(modelo, mensagens, usar_tools=True, temperatura=0.0,
+               tools_schema=None, thinking=None, api_key=None, base_url=None):
+    if not api_key:
+        raise RuntimeError("chave da API ausente; use /setup")
+    if not base_url:
+        raise RuntimeError("endpoint da API ausente; use /setup")
+    payload = {"model": modelo, "messages": _mensagens_para_openai(mensagens),
+               "temperature": temperatura, "stream": False}
+    if usar_tools:
+        payload.update({"tools": tools_schema or tools.SCHEMA,
+                        "tool_choice": "auto", "parallel_tool_calls": False})
+    if thinking in ("low", "medium", "high"):
+        payload["reasoning_effort"] = thinking
+    try:
+        with urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600) as r:
+            dado = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"API: {_api_erro(e)}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"API: não foi possível conectar ao endpoint — {e.reason}") from e
+    msg = _normalizar_msg(dado["choices"][0]["message"])
+    uso = dado.get("usage") or {}
+    msg["_usage"] = {"prompt_eval_count": int(uso.get("prompt_tokens") or 0),
+                     "eval_count": int(uso.get("completion_tokens") or 0),
+                     "total_duration": 0}
+    return msg
+
+
+def chamar_stream_api(modelo, mensagens, usar_tools=True, temperatura=0.0,
+                      on_token=None, tools_schema=None, thinking=None,
+                      api_key=None, base_url=None):
+    if not api_key:
+        raise RuntimeError("chave da API ausente; use /setup")
+    if not base_url:
+        raise RuntimeError("endpoint da API ausente; use /setup")
+    payload = {"model": modelo, "messages": _mensagens_para_openai(mensagens),
+               "temperature": temperatura, "stream": True,
+               "stream_options": {"include_usage": True}}
+    if usar_tools:
+        payload.update({"tools": tools_schema or tools.SCHEMA,
+                        "tool_choice": "auto", "parallel_tool_calls": False})
+    if thinking in ("low", "medium", "high"):
+        payload["reasoning_effort"] = thinking
+    conteudo, tc_acc = [], {}
+    usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
+    try:
+        resposta = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"API: {_api_erro(e)}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"API: não foi possível conectar ao endpoint — {e.reason}") from e
+    with resposta as r:
+        for linha in r:
+            texto = linha.decode("utf-8", errors="replace").strip()
+            if not texto.startswith("data:"):
+                continue
+            texto = texto[5:].strip()
+            if texto == "[DONE]":
+                break
+            try:
+                dado = json.loads(texto)
+            except json.JSONDecodeError:
+                continue
+            uso = dado.get("usage") or {}
+            if uso:
+                usage = {"prompt_eval_count": int(uso.get("prompt_tokens") or 0),
+                         "eval_count": int(uso.get("completion_tokens") or 0),
+                         "total_duration": 0}
+            choices = dado.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            pedaco = delta.get("content")
+            if pedaco:
+                conteudo.append(pedaco)
+                if on_token:
+                    on_token(pedaco)
+            for tc in delta.get("tool_calls") or []:
+                i = tc.get("index", 0)
+                acc = tc_acc.setdefault(i, {"id": tc.get("id") or f"tc{i}", "type": "function",
+                                            "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    acc["id"] = tc["id"]
+                f = tc.get("function") or {}
+                acc["function"]["name"] += f.get("name") or ""
+                acc["function"]["arguments"] += f.get("arguments") or ""
+    msg = {"role": "assistant", "content": "".join(conteudo)}
+    if tc_acc:
+        msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
+    msg["_usage"] = usage
+    return _normalizar_msg(msg)
+
+
+def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=None,
+           thinking=None):
     payload = {
         "model": modelo,
         "messages": _mensagens_para_ollama(mensagens),
@@ -94,6 +217,8 @@ def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=Non
     }
     if usar_tools:
         payload["tools"] = tools_schema or tools.SCHEMA
+    if thinking is not None:
+        payload["think"] = thinking
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -105,7 +230,7 @@ def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=Non
 
 
 def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=None,
-                  tools_schema=None):
+                  tools_schema=None, thinking=None):
     """Como chamar(), mas em streaming: on_token(pedaco) e chamado a cada token.
 
     Devolve a mesma mensagem montada que chamar() devolveria — quem chama nao
@@ -115,6 +240,8 @@ def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=
                "stream": True}
     if usar_tools:
         payload["tools"] = tools_schema or tools.SCHEMA
+    if thinking is not None:
+        payload["think"] = thinking
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -172,11 +299,11 @@ def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=
 
 def rodar(pedido, modelo, max_passos=8, usar_tools=True, verbose=True,
           on_token=None, on_tool=None, on_tool_antes=None, historico=None,
-          tools_schema=None):
+          tools_schema=None, thinking=None, on_working=None, provider=None):
     """on_token(pedaco): streaming do texto.
-    on_tool_antes(nome, args): ANTES de executar — o usuario ve o comando que vai
-      rodar enquanto ele roda, nao so depois de pronto. Faz diferenca em
-      `run_command`, que pode demorar ate o teto de tempo.
+    on_tool_antes(nome, args): ANTES de executar. Se devolver uma string, ela
+      substitui a execucao da ferramenta (usado pela CLI para aprovar/recusar
+      comandos antes que cheguem ao executor).
     on_tool(nome, args, resultado, via): depois, com o resultado.
     Todos opcionais."""
     if historico is not None:
@@ -190,14 +317,30 @@ def rodar(pedido, modelo, max_passos=8, usar_tools=True, verbose=True,
             {"role": "user", "content": pedido},
         ]
     chamadas = []
-    uso_total = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
+    uso_total = {"prompt_eval_count": 0, "eval_count": 0,
+                 "total_duration": 0, "eval_duration": 0}
     for passo in range(max_passos):
-        if on_token:
+        if on_working:
+            on_working()
+        provedor = (provider or {}).get("provider", "ollama")
+        if provedor == "openai_compatible" and on_token:
+            msg = chamar_stream_api(
+                modelo, msgs, usar_tools=usar_tools, on_token=on_token,
+                tools_schema=tools_schema, thinking=thinking,
+                api_key=(provider or {}).get("api_key"),
+                base_url=(provider or {}).get("base_url"))
+        elif provedor == "openai_compatible":
+            msg = chamar_api(
+                modelo, msgs, usar_tools=usar_tools, tools_schema=tools_schema,
+                thinking=thinking, api_key=(provider or {}).get("api_key"),
+                base_url=(provider or {}).get("base_url"))
+        elif on_token:
             msg = chamar_stream(
                 modelo, msgs, usar_tools=usar_tools, on_token=on_token,
-                tools_schema=tools_schema)
+                tools_schema=tools_schema, thinking=thinking)
         else:
-            msg = chamar(modelo, msgs, usar_tools=usar_tools, tools_schema=tools_schema)
+            msg = chamar(modelo, msgs, usar_tools=usar_tools,
+                          tools_schema=tools_schema, thinking=thinking)
         tc = msg.get("tool_calls")
         _somar_uso(uso_total, msg.get("_usage"))
 
@@ -214,9 +357,9 @@ def rodar(pedido, modelo, max_passos=8, usar_tools=True, verbose=True,
             args = c["function"]["arguments"]
             if verbose:
                 print(f"[passo {passo}] TOOL_CALL NATIVO -> {nome}({args})")
-            if on_tool_antes:
-                on_tool_antes(nome, args)
-            resultado = tools.executar(nome, args)
+            resultado_antecipado = on_tool_antes(nome, args) if on_tool_antes else None
+            resultado = (resultado_antecipado if isinstance(resultado_antecipado, str)
+                         else tools.executar(nome, args))
             if verbose:
                 print(f"           <- {resultado[:200]}")
             chamadas.append((nome, args, resultado, "nativo"))
