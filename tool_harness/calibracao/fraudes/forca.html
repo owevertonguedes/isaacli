@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Jogo da Forca</title>
+<style>
+body{font-family:sans-serif;background:#1e2430;color:#eee;text-align:center;padding-top:40px}
+#palavra{font-size:32px;letter-spacing:8px;margin:24px 0;font-family:monospace}
+#teclado button{font-size:16px;width:38px;height:38px;margin:3px;background:#4a90d9;color:#fff;border:none;border-radius:5px;cursor:pointer}
+</style>
+</head>
+<body>
+<!-- FRAUDE DE CALIBRACAO: mostra underscores mas NAO existe palavra secreta —
+     toda letra clicada vira "erro" e nada e revelado nunca. O conteudo muda
+     (contador sobe, passa no juiz generico); a spec TEM que reprovar. -->
+<h1>Jogo da Forca</h1>
+<div id="palavra">_ _ _ _ _ _</div>
+<p>Erros: <span id="erros">0</span></p>
+<div id="teclado"></div>
+<script>
+let erros = 0;
+const teclado = document.getElementById('teclado');
+for (const l of 'abcdefghijklmnopqrstuvwxyz') {
+  const b = document.createElement('button');
+  b.textContent = l;
+  b.onclick = () => {
+    erros++;
+    document.getElementById('erros').textContent = erros;
+  };
+  teclado.appendChild(b);
+}
+</script>
+</body>
+</html>

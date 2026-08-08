@@ -1,0 +1,1090 @@
+{
+  "isaac": {
+    "acertos": 12,
+    "total": 25,
+    "por_nivel": {
+      "N2": {
+        "acertos": 6,
+        "total": 10
+      },
+      "N3": {
+        "acertos": 6,
+        "total": 12
+      },
+      "N4": {
+        "acertos": 0,
+        "total": 3
+      }
+    },
+    "seg": 161.8,
+    "tok_s": 21.1,
+    "resultados": [
+      {
+        "nivel": "N2",
+        "nome": "agrupa_por_chave",
+        "ok": true,
+        "seg": 13.6,
+        "tokens": 53,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def agrupa_por_chave(pares):\n    resultado = {}\n    for chave, valor in pares:\n        if chave not in resultado:\n            resultado[chave] = []\n        resultado[chave].append(valor)\n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "valida_parenteses",
+        "ok": true,
+        "seg": 3.7,
+        "tokens": 90,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_parenteses(s):\n    pilhas = []\n    parenses = {'(': ')', '[': ']', '{': '}'}\n    for c in s:\n        if c in parenses:\n            pilhas.append(c)\n        elif c in parenses.values():\n            if not pilhas or parenses[pilhas.pop()] != c:\n                return False\n    return not pilhas"
+      },
+      {
+        "nivel": "N2",
+        "nome": "filtra_e_soma_positivos",
+        "ok": true,
+        "seg": 2.1,
+        "tokens": 39,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def filtra_e_soma_positivos(lista):\n    return sum(x for x in lista if isinstance(x, (int, float)) and x > 0)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "formata_moeda",
+        "ok": false,
+        "seg": 1.8,
+        "tokens": 23,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def formata_moeda(valor):\n    return f'R${valor:,.2f}'"
+      },
+      {
+        "nivel": "N2",
+        "nome": "busca_anagramas",
+        "ok": true,
+        "seg": 4.1,
+        "tokens": 89,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def busca_anagramas(palavras):\n    anagramas = {}\n    for palavra in palavras:\n        # Criar uma chave ordenada das letras da palavra\n        chave = ''.join(sorted(palavra))\n        if chave not in anagramas:\n            anagramas[chave] = []\n        anagramas[chave].append(palavra)\n    \n    return list(anagramas.values())"
+      },
+      {
+        "nivel": "N2",
+        "nome": "inverte_palavras",
+        "ok": true,
+        "seg": 1.7,
+        "tokens": 29,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def inverte_palavras(frase):\n    return ' '.join(word[::-1] for word in frase.split(' '))"
+      },
+      {
+        "nivel": "N2",
+        "nome": "frequencia_caracteres",
+        "ok": true,
+        "seg": 2.8,
+        "tokens": 58,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def frequencia_caracteres(s):\n    s = s.lower()\n    freq = {}\n    for char in s:\n        if char in freq:\n            freq[char] += 1\n        else:\n            freq[char] = 1\n    return freq"
+      },
+      {
+        "nivel": "N2",
+        "nome": "encontra_duplicados",
+        "ok": false,
+        "seg": 2.6,
+        "tokens": 58,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_duplicados(lista):\n    elementos = set()\n    duplicados = []\n    \n    for item in lista:\n        if item in elementos:\n            duplicados.append(item)\n        else:\n            elementos.add(item)\n            \n    return sorted(duplicados)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "compacta_lista",
+        "ok": false,
+        "seg": 2.6,
+        "tokens": 57,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def compacta_lista(lista):\n    if not lista:\n        return []\n    \n    compactada = [lista[0]]\n    for item in lista[1:]:\n        if item != lista[-1]:\n            compactada.append(item)\n    \n    return compactada"
+      },
+      {
+        "nivel": "N2",
+        "nome": "parse_csv_linha",
+        "ok": false,
+        "seg": 2.7,
+        "tokens": 48,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "import csv\n\ndef parse_csv_linha(linha):\n    if not linha.strip():\n        return []\n    \n    reader = csv.reader([linha], strict=True)\n    for campo in next(reader):\n        yield campo"
+      },
+      {
+        "nivel": "N3",
+        "nome": "intervalos_livres",
+        "ok": true,
+        "seg": 4.5,
+        "tokens": 108,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def intervalos_livres(ocupados, inicio, fim):\n    ocupados.sort()\n    livres = []\n    ult_end = inicio\n\n    for start, end in ocupados:\n        if start > ult_end:\n            livres.append((ult_end, start))\n        ult_end = max(ult_end, end)\n\n    if ult_end < fim:\n        livres.append((ult_end, fim))\n\n    return [r for r in livres if r[0] < r[1]]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "parse_config",
+        "ok": false,
+        "seg": 5.9,
+        "tokens": 146,
+        "erro": "KeyError: ''",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_config(texto):\n    config = {}\n    secao_atual = ''\n    \n    for linha in texto.split('\\n'):\n        linha = linha.strip()\n        \n        if not linha or linha.startswith('#'):\n            continue\n        \n        if linha.startswith('[') and linha.endswith(']'):\n            secao_atual = linha[1:-1]\n            config[secao_atual] = {}\n            continue\n        \n        if '=' in linha:\n            chave, valor = linha.split('=', 1)\n            chave = chave.strip()\n            valor = valor.strip()\n            \n            if valor.isdigit():\n                valor = int(valor)\n            \n            config[secao_atual][chave] = valor\n    \n    return config"
+      },
+      {
+        "nivel": "N3",
+        "nome": "soma_subvetor_maximo",
+        "ok": true,
+        "seg": 3.5,
+        "tokens": 83,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def soma_subvetor_maximo(nums):\n    if not nums:\n        return 0\n\n    max_ending_here = max_so_far = nums[0]\n    for num in nums[1:]:\n        max_ending_here = max(num, max_ending_here + num)\n        max_so_far = max(max_so_far, max_ending_here)\n\n    return max_so_far"
+      },
+      {
+        "nivel": "N3",
+        "nome": "merge_intervalos",
+        "ok": false,
+        "seg": 4.8,
+        "tokens": 123,
+        "erro": "NameError: name 'merge_intervalos' is not defined. Did you mean: 'merge_intervals'?",
+        "resposta_vazia": false,
+        "codigo_extraido": "def merge_intervals(intervalos):\n    if not intervalos:\n        return []\n\n    # Ordenar os intervalos pelo in\u00edcio\n    intervalos.sort(key=lambda x: x[0])\n\n    merged = [intervalos[0]]\n\n    for current in intervalos[1:]:\n        last_merged = merged[-1]\n        if current[0] <= last_merged[1]:  # H\u00e1 sobreposi\u00e7\u00e3o\n            merged[-1] = (last_merged[0], max(last_merged[1], current[1]))\n        else:\n            merged.append(current)\n\n    return merged"
+      },
+      {
+        "nivel": "N3",
+        "nome": "maior_retangulo_histograma",
+        "ok": true,
+        "seg": 5.2,
+        "tokens": 124,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def maior_retangulo_histograma(alturas):\n    if not alturas:\n        return 0\n\n    max_area = 0\n    stack = []\n\n    for i, altura in enumerate(alturas + [0]):\n        while stack and (i == len(alturas) or alturas[stack[-1]] >= altura):\n            h = alturas[stack.pop()]\n            w = i if not stack else i - stack[-1] - 1\n            max_area = max(max_area, h * w)\n        stack.append(i)\n\n    return max_area"
+      },
+      {
+        "nivel": "N3",
+        "nome": "valida_ip",
+        "ok": true,
+        "seg": 4.9,
+        "tokens": 107,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "import re\n\ndef valida_ip(ip):\n    if not isinstance(ip, str):\n        return False\n    ip = ip.strip()\n    partes = ip.split('.')\n    if len(partes) != 4:\n        return False\n    for parte in partes:\n        if not parte.isdigit() or not 0 <= int(parte) <= 255:\n            return False\n        if parte[0] == '0' and len(parte) > 1:\n            return False\n    return True"
+      },
+      {
+        "nivel": "N3",
+        "nome": "calculadora_rpn",
+        "ok": false,
+        "seg": 6.9,
+        "tokens": 162,
+        "erro": "ValueError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def calculadora_rpn(expressao):\n    if not expressao:\n        raise ValueError\n\n    stack = []\n    tokens = expressao.split()\n\n    for token in tokens:\n        if token.isdigit():\n            stack.append(int(token))\n        elif token in '+-*/':\n            if len(stack) < 2:\n                raise ValueError\n            b = stack.pop()\n            a = stack.pop()\n            if token == '+':\n                stack.append(a + b)\n            elif token == '-':\n                stack.append(a - b)\n            elif token == '*':\n                stack.append(a * b)\n            elif token == '//':\n                stack.append(a // b)\n        else:\n            raise ValueError\n\n    if len(stack) != 1:\n        raise ValueError\n\n    return stack[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "rle_compress",
+        "ok": true,
+        "seg": 5.4,
+        "tokens": 122,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def rle_compress(texto):\n    if not texto:\n        return \"\"\n    \n    compressed = []\n    count = 1\n    char = texto[0]\n    \n    for i in range(1, len(texto)):\n        if texto[i] == char:\n            count += 1\n        else:\n            compressed.append(char + (str(count) if count > 1 else ''))\n            char = texto[i]\n            count = 1\n    \n    compressed.append(char + (str(count) if count > 1 else ''))\n    \n    return ''.join(compressed)"
+      },
+      {
+        "nivel": "N3",
+        "nome": "encontra_caminho_matriz",
+        "ok": false,
+        "seg": 7.8,
+        "tokens": 189,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_caminho_matriz(matriz):\n    def dfs(x, y):\n        if x == len(matriz) - 1 and y == len(matriz[0]) - 1:\n            return [(x, y)]\n        if x >= len(matriz) or y >= len(matriz[0]) or matriz[x][y] == 1:\n            return None\n        matriz[x][y] = 1\n        caminho = dfs(x + 1, y)\n        if caminho is not None:\n            caminho.append((x, y))\n            return caminho\n        caminho = dfs(x, y + 1)\n        if caminho is not None:\n            caminho.append((x, y))\n            return caminho\n        return None\n\n    return dfs(0, 0) if matriz[0][0] == 0 else None"
+      },
+      {
+        "nivel": "N3",
+        "nome": "janela_deslizante_max",
+        "ok": true,
+        "seg": 5.5,
+        "tokens": 131,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def janela_deslizante_max(nums, k):\n    if not nums or k <= 0 or k > len(nums):\n        return []\n    \n    from collections import deque\n    \n    d = deque()\n    maxima = []\n    \n    for i in range(len(nums)):\n        while d and d[0] < i - k + 1:\n            d.popleft()\n        \n        while d and nums[d[-1]] < nums[i]:\n            d.pop()\n        \n        d.append(i)\n        \n        if i >= k - 1:\n            maxima.append(nums[d[0]])\n    \n    return maxima"
+      },
+      {
+        "nivel": "N3",
+        "nome": "resolve_expressao_simples",
+        "ok": false,
+        "seg": 8.8,
+        "tokens": 210,
+        "erro": "TypeError: can't multiply sequence by non-int of type 'str'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def resolve_expressao_simples(expr):\n    tokens = []\n    num = ''\n    for c in expr:\n        if c.isdigit():\n            num += c\n        else:\n            if num:\n                tokens.append(int(num))\n                num = ''\n            tokens.append(c)\n    if num:\n        tokens.append(int(num))\n\n    i = 1\n    while i < len(tokens):\n        if tokens[i] == '*':\n            tokens[i-1] *= tokens[i+1]\n            del tokens[i:i+2]\n        else:\n            i += 1\n\n    i = 1\n    while i < len(tokens):\n        if tokens[i] in ('+', '-'):\n            op = tokens.pop(i)\n            val = tokens.pop(i-1)\n            if op == '+':\n                tokens[i-1] += val\n            elif op == '-':\n                tokens[i-1] -= val\n            del tokens[i]\n        else:\n            i += 1\n\n    return tokens[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "banco_simplificado",
+        "ok": false,
+        "seg": 10.3,
+        "tokens": 235,
+        "erro": "ValueError: too many values to unpack (expected 2, got 3)",
+        "resposta_vazia": false,
+        "codigo_extraido": "def banco_simplificado(operacoes):\n    contas = {}\n    \n    for operacao in operacoes:\n        if operacao.startswith('CRIAR'):\n            conta = operacao.split()[1]\n            contas[conta] = 0\n        elif operacao.startswith('DEPOSITAR'):\n            conta, valor = operacao.split()\n            valor = int(valor)\n            contas[conta] += valor\n        elif operacao.startswith('SACAR'):\n            conta, valor = operacao.split()\n            valor = int(valor)\n            if conta in contas and contas[conta] >= valor:\n                contas[conta] -= valor\n        elif operacao.startswith('TRANSFERIR'):\n            origem, destino, valor = operacao.split()\n            valor = int(valor)\n            if origem in contas and destino in contas and contas[origem] >= valor:\n                contas[origem] -= valor\n                contas[destino] += valor\n    \n    return {conta: saldo for conta, saldo in contas.items() if saldo > 0}"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ratear_custo",
+        "ok": false,
+        "seg": 11.4,
+        "tokens": 235,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ratear_custo(pesos, total):\n    if not pesos:\n        return {name: 0 for name in pesos}\n    \n    peso_total = sum(pesos.values())\n    \n    if peso_total == 0 or any(weight < 0 for weight in pesos.values()) or total < 0:\n        raise ValueError\n    \n    partes_inteiras = {}\n    for nome, peso in pesos.items():\n        if peso > 0:\n            partes_inteiras[nome] = (total * peso) // peso_total\n    \n    sobra = total - sum(partes_inteiras.values())\n    \n    restos = [(nome, total * pesos[nome] % peso_total) for nome in pesos if pesos[nome] > 0]\n    restos.sort(key=lambda x: (-x[1], x[0]))\n    \n    distribuicao_sobra = {}\n    for i in range(sobra):\n        distribuicao_sobra[restos[i][0]] = 1\n    \n    resultado = partes_inteiras.copy()\n    resultado.update(distribuicao_sobra)\n    \n    return resultado"
+      },
+      {
+        "nivel": "N4",
+        "nome": "simular_esteira",
+        "ok": false,
+        "seg": 18.1,
+        "tokens": 424,
+        "erro": "ValueError: invalid literal for int() with base 10: 'a'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def simular_esteira(n, comandos):\n    esteira = [None] * n\n    pos_braco = 0\n    item_mao = None\n\n    def valida_posicao(pos):\n        if not (0 <= pos < n):\n            raise ValueError(\"Posi\u00e7\u00e3o fora dos limites\")\n\n    for cmd in comandos:\n        if cmd.startswith('POE'):\n            _, X = cmd.split()\n            X = int(X)\n            valida_posicao(pos_braco)\n            if esteira[pos_braco] is not None:\n                raise ValueError(\"Posi\u00e7\u00e3o ocupada\")\n            else:\n                item_mao = esteira[pos_braco]\n                esteira[pos_braco] = X\n\n        elif cmd.startswith('ANDA'):\n            k = int(cmd.split()[1])\n            valida_posicao(pos_braco)\n            pos_braco = (pos_braco + k) % n\n\n        elif cmd == 'GIRA':\n            pos_braco = -pos_braco if esteira[pos_braco] is not None else 0\n\n        elif cmd == 'PEGA':\n            valida_posicao(pos_braco)\n            if item_mao is None:\n                raise ValueError(\"M\u00e3o vazia\")\n            else:\n                item_mao, esteira[pos_braco] = esteira[pos_braco], item_mao\n\n        elif cmd == 'SOLTA':\n            valida_posicao(pos_braco)\n            if item_mao is None:\n                raise ValueError(\"M\u00e3o vazia\")\n            else:\n                pos_libera = next((i for i in range(n) if esteira[i] is None), None)\n                if pos_libera is not None:\n                    esteira[pos_libera] = item_mao\n                elif all(esteira[i] is None or esteira[i] is not None for i in range(n)):\n                    raise ValueError(\"Nenhuma posi\u00e7\u00e3o livre\")\n\n        else:\n            raise ValueError(\"Comando inv\u00e1lido\")\n\n    return pos_braco, item_mao, esteira"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ler_plano",
+        "ok": false,
+        "seg": 21.1,
+        "tokens": 475,
+        "erro": "ValueError: Chave inv\u00e1lida ou ausente na linha de tarefa: duracao: 30m",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ler_plano(texto):\n    def converte_tempo(tempo):\n        minutos = 0\n        for parte in tempo.split():\n            if parte.endswith('h'):\n                minutos += int(parte[:-1]) * 60\n            elif parte.endswith('m'):\n                minutos += int(parte[:-1])\n        return minutos\n\n    plano = {}\n    tarefas = []\n    linha_atual = ''\n    ignore_linha = False\n\n    for line in texto.splitlines():\n        if ignore_linha:\n            ignore_linha = False\n            continue\n\n        line = line.strip()\n        if not line or line.startswith('#'):\n            continue\n\n        if line.endswith('\\\\'):\n            ignore_linha = True\n            continue\n\n        if line.startswith('tarefa:'):\n            if linha_atual and linha_atual not in plano:\n                raise ValueError(f\"Nome de tarefa duplicado ou inv\u00e1lido: {linha_atual}\")\n            nome_tarefa = line.split(':', 1)[1].strip()\n            plano[nome_tarefa] = {'duracao_min': 0, 'depende': []}\n            tarefas.append(nome_tarefa)\n        elif line in plano:\n            if not line.startswith('duracao:'):\n                raise ValueError(f\"Chave inv\u00e1lida na linha de tarefa: {line}\")\n            valor = line.split(':', 1)[1].strip()\n            if valor.endswith('\\\\'):\n                ignore_linha = True\n                continue\n            plano[nome_tarefa]['duracao_min'] = converte_tempo(valor)\n        elif line in plano:\n            if not line.startswith('depende:'):\n                raise ValueError(f\"Chave inv\u00e1lida na linha de tarefa: {line}\")\n            valor = line.split(':', 1)[1].strip()\n            if valor.endswith('\\\\'):\n                ignore_linha = True\n                continue\n            dependes = [dep.strip() for dep in valor.split(',')]\n            plano[nome_tarefa]['depende'] = dependes\n        else:\n            raise ValueError(f\"Chave inv\u00e1lida ou ausente na linha de tarefa: {line}\")\n\n    if any(nome not in plano for nome in tarefas):\n        raise ValueError(\"Alguma tarefa depende de uma tarefa n\u00e3o declarada.\")\n\n    return plano"
+      }
+    ]
+  },
+  "granite4:micro": {
+    "acertos": 15,
+    "total": 25,
+    "por_nivel": {
+      "N2": {
+        "acertos": 8,
+        "total": 10
+      },
+      "N3": {
+        "acertos": 7,
+        "total": 12
+      },
+      "N4": {
+        "acertos": 0,
+        "total": 3
+      }
+    },
+    "seg": 149.0,
+    "tok_s": 23.3,
+    "resultados": [
+      {
+        "nivel": "N2",
+        "nome": "agrupa_por_chave",
+        "ok": true,
+        "seg": 8.3,
+        "tokens": 53,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def agrupa_por_chave(pares):\n    resultado = {}\n    for chave, valor in pares:\n        if chave not in resultado:\n            resultado[chave] = []\n        resultado[chave].append(valor)\n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "valida_parenteses",
+        "ok": true,
+        "seg": 3.9,
+        "tokens": 87,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_parenteses(s):\n    pilhas = []\n    par = {'(': ')', '[': ']', '{': '}'}\n    for c in s:\n        if c in par:\n            pilhas.append(c)\n        elif c in par.values():\n            if not pilhas or par[pilhas.pop()] != c:\n                return False\n    return len(pilhas) == 0"
+      },
+      {
+        "nivel": "N2",
+        "nome": "filtra_e_soma_positivos",
+        "ok": true,
+        "seg": 1.7,
+        "tokens": 30,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def filtra_e_soma_positivos(lista):\n    return sum(x for x in lista if x > 0)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "formata_moeda",
+        "ok": false,
+        "seg": 1.8,
+        "tokens": 23,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def formata_moeda(valor):\n    return f'R${valor:,.2f}'"
+      },
+      {
+        "nivel": "N2",
+        "nome": "busca_anagramas",
+        "ok": true,
+        "seg": 3.6,
+        "tokens": 75,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def busca_anagramas(palavras):\n    anagramas = {}\n    for palavra in palavras:\n        chave = \"\".join(sorted(palavra))\n        if chave not in anagramas:\n            anagramas[chave] = []\n        anagramas[chave].append(palavra)\n    return list(anagramas.values())"
+      },
+      {
+        "nivel": "N2",
+        "nome": "inverte_palavras",
+        "ok": true,
+        "seg": 1.8,
+        "tokens": 29,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def inverte_palavras(frase):\n    return ' '.join(word[::-1] for word in frase.split(' '))"
+      },
+      {
+        "nivel": "N2",
+        "nome": "frequencia_caracteres",
+        "ok": true,
+        "seg": 2.9,
+        "tokens": 58,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def frequencia_caracteres(s):\n    s = s.lower()\n    freq = {}\n    for char in s:\n        if char in freq:\n            freq[char] += 1\n        else:\n            freq[char] = 1\n    return freq"
+      },
+      {
+        "nivel": "N2",
+        "nome": "encontra_duplicados",
+        "ok": true,
+        "seg": 3.3,
+        "tokens": 77,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_duplicados(lista):\n    elementos = {}\n    for item in lista:\n        if item in elementos:\n            elementos[item] += 1\n        else:\n            elementos[item] = 1\n\n    duplicados = [item for item, contagem in elementos.items() if contagem > 1]\n    return sorted(duplicados)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "compacta_lista",
+        "ok": false,
+        "seg": 2.4,
+        "tokens": 57,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def compacta_lista(lista):\n    if not lista:\n        return []\n    \n    compactada = [lista[0]]\n    for item in lista[1:]:\n        if item != lista[-1]:\n            compactada.append(item)\n            \n    return compactada"
+      },
+      {
+        "nivel": "N2",
+        "nome": "parse_csv_linha",
+        "ok": true,
+        "seg": 4.6,
+        "tokens": 105,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_csv_linha(linha):\n    if not linha.strip():\n        return []\n    \n    result = []\n    field = ''\n    in_quotes = False\n    \n    for char in linha:\n        if char == ',' and not in_quotes:\n            result.append(field)\n            field = ''\n        elif char == '\"':\n            in_quotes = not in_quotes\n        else:\n            field += char\n            \n    result.append(field)\n    \n    return [field.replace('\",\"', ',') for field in result]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "intervalos_livres",
+        "ok": true,
+        "seg": 5.0,
+        "tokens": 112,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def intervalos_livres(ocupados, inicio, fim):\n    ocupados.sort()\n    livres = []\n    ult_end = inicio\n\n    for start, end in ocupados:\n        if start > ult_end:\n            livres.append((ult_end, start))\n        ult_end = max(ult_end, end)\n\n    if ult_end < fim:\n        livres.append((ult_end, fim))\n\n    return [intervalo for intervalo in livres if intervalo[1] - intervalo[0]]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "parse_config",
+        "ok": false,
+        "seg": 6.2,
+        "tokens": 132,
+        "erro": "KeyError: ''",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_config(texto):\n    config = {}\n    secao_atual = ''\n    \n    for linha in texto.split('\\n'):\n        linha = linha.strip()\n        \n        if not linha or linha.startswith('#'):\n            continue\n        \n        if linha.startswith('[') and linha.endswith(']'):\n            secao_atual = linha[1:-1]\n            config[secao_atual] = {}\n            continue\n        \n        chave, valor = [x.strip() for x in linha.split('=')]\n        \n        if valor.isdigit():\n            valor = int(valor)\n            \n        config[secao_atual][chave] = valor\n    \n    return config"
+      },
+      {
+        "nivel": "N3",
+        "nome": "soma_subvetor_maximo",
+        "ok": true,
+        "seg": 3.6,
+        "tokens": 83,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def soma_subvetor_maximo(nums):\n    if not nums:\n        return 0\n\n    max_ending_here = max_so_far = nums[0]\n    for num in nums[1:]:\n        max_ending_here = max(num, max_ending_here + num)\n        max_so_far = max(max_so_far, max_ending_here)\n\n    return max_so_far"
+      },
+      {
+        "nivel": "N3",
+        "nome": "merge_intervalos",
+        "ok": false,
+        "seg": 6.0,
+        "tokens": 145,
+        "erro": "NameError: name 'merge_intervalos' is not defined. Did you mean: 'merge_intervals'?",
+        "resposta_vazia": false,
+        "codigo_extraido": "def merge_intervals(intervals):\n    if not intervals:\n        return []\n\n    # Ordena os intervalos por in\u00edcio\n    intervals.sort(key=lambda x: x[0])\n\n    merged = [intervals[0]]\n\n    for current in intervals[1:]:\n        last_merged = merged[-1]\n\n        if current[0] <= last_merged[1]:\n            # H\u00e1 sobreposi\u00e7\u00e3o, atualiza o fim do \u00faltimo intervalo\n            merged[-1] = (last_merged[0], max(last_merged[1], current[1]))\n        else:\n            # Sem sobreposi\u00e7\u00e3o, adiciona o novo intervalo \u00e0 lista\n            merged.append(current)\n\n    return merged"
+      },
+      {
+        "nivel": "N3",
+        "nome": "maior_retangulo_histograma",
+        "ok": true,
+        "seg": 6.5,
+        "tokens": 171,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def maior_retangulo_histograma(alturas):\n    if not alturas:\n        return 0\n\n    stack = []\n    max_area = 0\n    i = 0\n\n    while i < len(alturas):\n        if not stack or alturas[i] >= alturas[stack[-1]]:\n            stack.append(i)\n            i += 1\n        else:\n            top = stack.pop()\n            area = alturas[top] * (i - stack[-1] - 1 if stack else i)\n            max_area = max(max_area, area)\n\n    while stack:\n        top = stack.pop()\n        area = alturas[top] * (i - stack[-1] - 1 if stack else i)\n        max_area = max(max_area, area)\n\n    return max_area"
+      },
+      {
+        "nivel": "N3",
+        "nome": "valida_ip",
+        "ok": true,
+        "seg": 4.0,
+        "tokens": 81,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_ip(ip):\n    partes = ip.split('.')\n    \n    if len(partes) != 4:\n        return False\n    \n    for parte in partes:\n        if not parte.isdigit() or int(parte) < 0 or int(parte) > 255:\n            return False\n        \n        if parte != str(int(parte)):\n            return False\n    \n    return True"
+      },
+      {
+        "nivel": "N3",
+        "nome": "calculadora_rpn",
+        "ok": false,
+        "seg": 8.7,
+        "tokens": 238,
+        "erro": "ValueError: A express\u00e3o \u00e9 inv\u00e1lida.",
+        "resposta_vazia": false,
+        "codigo_extraido": "def calculadora_rpn(expressao):\n    if not expressao:\n        raise ValueError(\"A express\u00e3o est\u00e1 vazia.\")\n    \n    tokens = expressao.split()\n    stack = []\n    \n    for token in tokens:\n        if token.isdigit() or (token[0] == '-' and token[1:].isdigit()):\n            stack.append(int(token))\n        elif token in {'+', '-', '*', '//'}:\n            if len(stack) < 2:\n                raise ValueError(\"A express\u00e3o \u00e9 inv\u00e1lida.\")\n            \n            b = stack.pop()\n            a = stack.pop()\n            \n            if token == '+':\n                stack.append(a + b)\n            elif token == '-':\n                stack.append(a - b)\n            elif token == '*':\n                stack.append(a * b)\n            elif token == '//':\n                if a % b != 0:\n                    raise ValueError(\"A express\u00e3o \u00e9 inv\u00e1lida.\")\n                stack.append(a // b)\n        else:\n            raise ValueError(f\"Token inv\u00e1lido: {token}\")\n    \n    if len(stack) != 1:\n        raise ValueError(\"A express\u00e3o \u00e9 inv\u00e1lida.\")\n    \n    return stack.pop()"
+      },
+      {
+        "nivel": "N3",
+        "nome": "rle_compress",
+        "ok": false,
+        "seg": 5.1,
+        "tokens": 104,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def rle_compress(texto):\n    if not texto:\n        return \"\"\n    \n    compressed = []\n    count = 1\n    char = texto[0]\n    \n    for i in range(1, len(texto)):\n        if texto[i] == char:\n            count += 1\n        else:\n            compressed.append(char + str(count))\n            char = texto[i]\n            count = 1\n    \n    compressed.append(char + str(count))\n    \n    return ''.join(compressed)"
+      },
+      {
+        "nivel": "N3",
+        "nome": "encontra_caminho_matriz",
+        "ok": true,
+        "seg": 8.0,
+        "tokens": 204,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_caminho_matriz(matriz):\n    N = len(matriz)\n    M = len(matriz[0])\n\n    def dfs(linha, coluna):\n        if linha < 0 or linha >= N or coluna < 0 or coluna >= M:\n            return None\n        if matriz[linha][coluna] == 1:\n            return None\n\n        caminho = [(linha, coluna)]\n\n        if linha == N - 1 and coluna == M - 1:\n            return caminho\n\n        direita = dfs(linha, coluna + 1)\n        baixo = dfs(linha + 1, coluna)\n\n        if direita is not None:\n            caminho.extend(direita)\n            return caminho\n        elif baixo is not None:\n            caminho.extend(baixo)\n            return caminho\n\n    resultado = dfs(0, 0)\n    return resultado if resultado else None"
+      },
+      {
+        "nivel": "N3",
+        "nome": "janela_deslizante_max",
+        "ok": true,
+        "seg": 3.6,
+        "tokens": 72,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def janela_deslizante_max(nums, k):\n    if not nums or k > len(nums) or k <= 0:\n        return []\n    \n    max_values = []\n    for i in range(len(nums) - k + 1):\n        max_values.append(max(nums[i:i+k]))\n        \n    return max_values"
+      },
+      {
+        "nivel": "N3",
+        "nome": "resolve_expressao_simples",
+        "ok": false,
+        "seg": 10.3,
+        "tokens": 289,
+        "erro": "travou (loop infinito?)",
+        "resposta_vazia": false,
+        "codigo_extraido": "def resolve_expressao_simples(expr):\n    def precedence(op):\n        if op in ('+', '-'):\n            return 1\n        elif op == '*':\n            return 2\n        else:\n            return 0\n\n    def apply_operator(operators, values):\n        operator = operators.pop()\n        right = values.pop()\n        left = values.pop()\n        if operator == '+':\n            values.append(left + right)\n        elif operator == '-':\n            values.append(left - right)\n        elif operator == '*':\n            values.append(left * right)\n\n    def greater_precedence(op1, op2):\n        return precedence(op1) > precedence(op2)\n\n    operators = []\n    values = []\n    i = 0\n    while i < len(expr):\n        if expr[i] in '0123456789':\n            j = i\n            while j < len(expr) and expr[j] in '0123456789':\n                j += 1\n            values.append(int(expr[i:j]))\n            i = j\n        elif expr[i] in '+-*':\n            while (operators and operators[-1] != '(' and\n                   greater_precedence(operators[-1], expr[i])):\n                apply_operator(operators, values)\n            operators.append(expr[i])\n            i += 1\n\n    while operators:\n        apply_operator(operators, values)\n\n    return values[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "banco_simplificado",
+        "ok": true,
+        "seg": 8.7,
+        "tokens": 270,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def banco_simplificado(operacoes):\n    contas = {}\n\n    for operacao in operacoes:\n        if 'CRIAR' in operacao:\n            conta = operacao.replace('CRIAR', '').strip()\n            contas[conta] = 0\n        elif 'DEPOSITAR' in operacao:\n            conta, valor = operacao.replace('DEPOSITAR', '').split()\n            valor = int(valor)\n            if conta in contas:\n                contas[conta] += valor\n        elif 'SACAR' in operacao:\n            conta, valor = operacao.replace('SACAR', '').split()\n            valor = int(valor)\n            if conta in contas and contas[conta] >= valor:\n                contas[conta] -= valor\n        elif 'TRANSFERIR' in operacao:\n            origem, destino, valor = operacao.replace('TRANSFERIR', '').split()\n            valor = int(valor)\n            if origem in contas and destino in contas and contas[origem] >= valor:\n                contas[origem] -= valor\n                contas[destino] += valor\n\n    return {conta: saldo for conta, saldo in contas.items() if saldo != 0}"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ratear_custo",
+        "ok": false,
+        "seg": 8.8,
+        "tokens": 218,
+        "erro": "AssertionError: deveria ter levantado ValueError para ({}, 10)",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ratear_custo(pesos, total):\n    if not pesos:\n        return {name: 0 for name in pesos}\n    \n    if sum(pesos.values()) == 0 or any(weight < 0 for weight in pesos.values()):\n        raise ValueError()\n    \n    if total < 0:\n        raise ValueError()\n\n    if total == 0:\n        return {name: 0 for name in pesos}\n\n    soma_pesos = sum(pesos.values())\n    partes_inteiras = {name: (total * peso // soma_pesos) for name, peso in pesos.items()}\n    \n    sobra = total - sum(partes_inteiras.values())\n    restos = [(name, total * peso / soma_pesos % 1) for name, peso in pesos.items()]\n    restos.sort(key=lambda x: (-x[1], x[0]))\n\n    for i in range(sobra):\n        partes_inteiras[restos[i][0]] += 1\n\n    return partes_inteiras"
+      },
+      {
+        "nivel": "N4",
+        "nome": "simular_esteira",
+        "ok": false,
+        "seg": 14.0,
+        "tokens": 342,
+        "erro": "ValueError: invalid literal for int() with base 10: 'a'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def simular_esteira(n, comandos):\n    esteira = [None] * n\n    bra\u00e7o = 0\n    item_mao = None\n    sentido = 1\n\n    for comando in comandos:\n        if comando.startswith('POE'):\n            _, X = comando.split()\n            X = int(X)\n            if item_mao is not None or esteira[bra\u00e7o] is not None:\n                raise ValueError(\"Esteira ou bra\u00e7o j\u00e1 est\u00e3o cheios\")\n            else:\n                esteira[bra\u00e7o] = X\n                item_mao = X\n\n        elif comando.startswith('ANDA'):\n            _, k = comando.split()\n            k = int(k)\n            if k < 0:\n                raise ValueError(\"Movimento inv\u00e1lido\")\n            bra\u00e7o += sentido * k\n            bra\u00e7o %= n\n\n        elif comando == 'GIRA':\n            sentido *= -1\n\n        elif comando == 'PEGA':\n            if item_mao is None and esteira[bra\u00e7o] is not None:\n                pass\n            else:\n                item_mao = esteira.pop(bra\u00e7o)\n\n        elif comando == 'SOLTA':\n            if item_mao is None or esteira[bra\u00e7o] is not None:\n                pass\n            else:\n                for i in range(n):\n                    if esteira[i] is None:\n                        esteira[i] = item_mao\n                        break\n                else:\n                    raise ValueError(\"Nenhuma posi\u00e7\u00e3o livre na esteira\")\n\n        else:\n            raise ValueError(\"Comando inv\u00e1lido\")\n\n    return bra\u00e7o, item_mao, list(esteira)"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ler_plano",
+        "ok": false,
+        "seg": 16.0,
+        "tokens": 413,
+        "erro": "ValueError: Linha sem ':' - comprar",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ler_plano(texto):\n    plano = {}\n    blocos = texto.split('tarefa:')\n    for bloco in blocos:\n        if not bloco.strip():\n            continue\n        tarefa = bloco.split('#')[0].strip()\n        if tarefa == '':\n            raise ValueError(\"Tarefa vazia\")\n        if tarefa in plano:\n            raise ValueError(f\"Tarefa '{tarefa}' duplicada\")\n\n        duracao = 0\n        depende = []\n        for linha in bloco.strip().split('\\n'):\n            if linha.endswith('\\\\'):\n                linha = linha[:-1].strip()\n                proxima_linha = blocos[blocos.index(bloco) + 1].split('#')[0].strip()\n                linha += ' ' + proxima_linha\n            else:\n                linha = linha.strip()\n\n            if not linha:\n                continue\n\n            if linha.startswith(' '):\n                raise ValueError(\"Recuo antes de tarefa\")\n\n            if ':' in linha:\n                chave, valor = linha.split(':', 1)\n                chave = chave.strip()\n                valor = valor.strip()\n\n                if chave == 'duracao':\n                    if valor.endswith('h'):\n                        duracao += int(valor[:-1]) * 60\n                    elif valor.endswith('m'):\n                        duracao += int(valor[:-1])\n                    else:\n                        raise ValueError(f\"Formato de duracao inv\u00e1lido: {valor}\")\n                elif chave == 'depende':\n                    dependes = [d.strip() for d in valor.split(',')]\n                    if not all(t in plano for t in dependes):\n                        raise ValueError(f\"Tarefa '{t}' n\u00e3o encontrada\")\n                    depende = dependes\n                else:\n                    raise ValueError(f\"Chave recuada inv\u00e1lida: {chave}\")\n            else:\n                raise ValueError(f\"Linha sem ':' - {linha}\")\n\n        plano[tarefa] = {'duracao_min': duracao, 'depende': depende}\n    return plano"
+      }
+    ]
+  },
+  "granite4:micro-h": {
+    "acertos": 17,
+    "total": 25,
+    "por_nivel": {
+      "N2": {
+        "acertos": 9,
+        "total": 10
+      },
+      "N3": {
+        "acertos": 8,
+        "total": 12
+      },
+      "N4": {
+        "acertos": 0,
+        "total": 3
+      }
+    },
+    "seg": 175.5,
+    "tok_s": 19.3,
+    "resultados": [
+      {
+        "nivel": "N2",
+        "nome": "agrupa_por_chave",
+        "ok": true,
+        "seg": 9.0,
+        "tokens": 58,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def agrupa_por_chave(pares):\n    resultado = {}\n    for chave, valor in pares:\n        if chave not in resultado:\n            resultado[chave] = [valor]\n        else:\n            resultado[chave].append(valor)\n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "valida_parenteses",
+        "ok": true,
+        "seg": 4.7,
+        "tokens": 110,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_parenteses(s):\n    stack = []\n    for char in s:\n        if char in '([{':\n            stack.append(char)\n        elif char in ')]}':\n            if not stack:\n                return False\n            last_open = stack.pop()\n            if (char == ')' and last_open != '(') or \\\n               (char == ']' and last_open != '[') or \\\n               (char == '}' and last_open != '{'):\n                return False\n    return len(stack) == 0"
+      },
+      {
+        "nivel": "N2",
+        "nome": "filtra_e_soma_positivos",
+        "ok": true,
+        "seg": 2.3,
+        "tokens": 30,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def filtra_e_soma_positivos(lista):\n    return sum(x for x in lista if x > 0)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "formata_moeda",
+        "ok": false,
+        "seg": 2.3,
+        "tokens": 28,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def formata_moeda(valor):\n    return f'R$ {valor:,.2f}'.replace('.', ' ')"
+      },
+      {
+        "nivel": "N2",
+        "nome": "busca_anagramas",
+        "ok": true,
+        "seg": 4.0,
+        "tokens": 81,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def busca_anagramas(palavras):\n    anagramas = {}\n    for palavra in palavras:\n        chave = ''.join(sorted(palavra))\n        if chave not in anagramas:\n            anagramas[chave] = [palavra]\n        else:\n            anagramas[chave].append(palavra)\n    return list(anagramas.values())"
+      },
+      {
+        "nivel": "N2",
+        "nome": "inverte_palavras",
+        "ok": true,
+        "seg": 2.1,
+        "tokens": 29,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def inverte_palavras(frase):\n    return ' '.join(word[::-1] for word in frase.split(' '))"
+      },
+      {
+        "nivel": "N2",
+        "nome": "frequencia_caracteres",
+        "ok": true,
+        "seg": 3.3,
+        "tokens": 53,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def frequencia_caracteres(s):\n    freq = {}\n    for char in s.lower():\n        if char in freq:\n            freq[char] += 1\n        else:\n            freq[char] = 1\n    return freq"
+      },
+      {
+        "nivel": "N2",
+        "nome": "encontra_duplicados",
+        "ok": true,
+        "seg": 2.5,
+        "tokens": 32,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_duplicados(lista):\n    return sorted(set([item for item in lista if lista.count(item) > 1]))"
+      },
+      {
+        "nivel": "N2",
+        "nome": "compacta_lista",
+        "ok": true,
+        "seg": 2.3,
+        "tokens": 39,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def compacta_lista(lista):\n    return [lista[i] for i in range(len(lista)) if i == 0 or lista[i] != lista[i-1]]"
+      },
+      {
+        "nivel": "N2",
+        "nome": "parse_csv_linha",
+        "ok": true,
+        "seg": 5.3,
+        "tokens": 112,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_csv_linha(linha):\n    if not linha.strip():\n        return []\n    \n    campos = []\n    campo = ''\n    dentro_de_aspas = False\n    \n    for caractere in linha:\n        if caractere == '\"':\n            dentro_de_aspas = not dentro_de_aspas\n        elif caractere == ',' and not dentro_de_aspas:\n            campos.append(campo.strip('\"'))\n            campo = ''\n        else:\n            campo += caractere\n        \n    campos.append(campo.strip('\"'))\n    \n    return campos"
+      },
+      {
+        "nivel": "N3",
+        "nome": "intervalos_livres",
+        "ok": false,
+        "seg": 5.7,
+        "tokens": 110,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def intervalos_livres(ocupados, inicio, fim):\n    ocupados.sort()\n    ocupados_extensos = [(max(inicio, a), min(fim, b)) for a, b in ocupados]\n    livres = []\n    for a, b in ocupados_extensos:\n        if a < b and a > inicio:\n            livres.append((inicio, a))\n        elif b < fim:\n            livres.append((b, fim))\n    return sorted(livres)"
+      },
+      {
+        "nivel": "N3",
+        "nome": "parse_config",
+        "ok": false,
+        "seg": 7.7,
+        "tokens": 162,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_config(texto):\n    config = {}\n    current_section = ''\n    \n    for linha in texto.split('\\n'):\n        linha = linha.strip()\n        \n        if not linha or linha.startswith('#'):\n            continue\n        \n        if linha.startswith('[') and linha.endswith(']'):\n            secao = linha[1:-1].strip()\n            config[secao] = {}\n            current_section = secao\n            continue\n        \n        if '=' in linha:\n            chave, valor = linha.split('=', 1)\n            chave = chave.strip()\n            valor = valor.strip()\n            \n            if not chave:\n                continue\n            \n            if valor.isdigit():\n                valor = int(valor)\n            \n            if current_section:\n                config[current_section][chave] = valor\n    \n    return config"
+      },
+      {
+        "nivel": "N3",
+        "nome": "soma_subvetor_maximo",
+        "ok": true,
+        "seg": 4.0,
+        "tokens": 81,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def soma_subvetor_maximo(nums):\n    if not nums:\n        return 0\n    \n    max_soma = current_soma = nums[0]\n    \n    for num in nums[1:]:\n        current_soma = max(num, current_soma + num)\n        max_soma = max(max_soma, current_soma)\n        \n    return max_soma"
+      },
+      {
+        "nivel": "N3",
+        "nome": "merge_intervalos",
+        "ok": true,
+        "seg": 5.7,
+        "tokens": 124,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def merge_intervalos(intervalos):\n    if not intervalos:\n        return []\n    \n    intervalos = sorted(intervalos, key=lambda x: x[0])\n    mesclados = [intervalos[0]]\n    \n    for inicio, fim in intervalos[1:]:\n        ultimo_inicio, ultimo_fim = mesclados[-1]\n        \n        if inicio <= ultimo_fim:\n            mesclados[-1] = (ultimo_inicio, max(ultimo_fim, fim))\n        else:\n            mesclados.append((inicio, fim))\n    \n    return mesclados"
+      },
+      {
+        "nivel": "N3",
+        "nome": "maior_retangulo_histograma",
+        "ok": true,
+        "seg": 8.0,
+        "tokens": 189,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def maior_retangulo_histograma(alturas):\n    if not alturas:\n        return 0\n    \n    stack = []\n    max_area = 0\n    i = 0\n    \n    while i < len(alturas):\n        if not stack or alturas[stack[-1]] <= alturas[i]:\n            stack.append(i)\n            i += 1\n        else:\n            top_index = stack.pop()\n            area = (i - stack[-1] - 1) * alturas[top_index] if stack else i * alturas[top_index]\n            max_area = max(max_area, area)\n    \n    while stack:\n        top_index = stack.pop()\n        area = (i - stack[-1] - 1) * alturas[top_index] if stack else i * alturas[top_index]\n        max_area = max(max_area, area)\n    \n    return max_area"
+      },
+      {
+        "nivel": "N3",
+        "nome": "valida_ip",
+        "ok": true,
+        "seg": 5.2,
+        "tokens": 97,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_ip(ip):\n    partes = ip.split('.')\n    if len(partes) != 4:\n        return False\n    for parte in partes:\n        if not parte.isdigit():\n            return False\n        num = int(parte)\n        if num < 0 or num > 255:\n            return False\n        if str(num) != parte:  # Verifica se tem zeros a esquerda\n            return False\n    return True"
+      },
+      {
+        "nivel": "N3",
+        "nome": "calculadora_rpn",
+        "ok": true,
+        "seg": 11.0,
+        "tokens": 244,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def calculadora_rpn(expressao):\n    if not expressao.strip():\n        raise ValueError(\"Expressao invalida ou vazia\")\n    \n    operadores = {'+': lambda x, y: x + y,\n                 '-': lambda x, y: x - y,\n                 '*': lambda x, y: x * y,\n                 '//': lambda x, y: x // y}\n    \n    pilha = []\n    for token in expressao.split():\n        if token.isdigit() or (token.startswith('-') and token[1:].isdigit()):\n            pilha.append(int(token))\n        elif token in operadores:\n            if len(pilha) < 2:\n                raise ValueError(\"Expressao invalida\")\n            y, x = pilha.pop(), pilha.pop()\n            try:\n                resultado = operadores[token](x, y)\n            except ZeroDivisionError:\n                raise ValueError(\"Divisao por zero\")\n            pilha.append(resultado)\n        else:\n            raise ValueError(f\"Operador invalido: {token}\")\n    \n    if len(pilha) != 1:\n        raise ValueError(\"Expressao invalida\")\n    \n    return pilha[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "rle_compress",
+        "ok": true,
+        "seg": 6.4,
+        "tokens": 143,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def rle_compress(texto):\n    if not texto:\n        return \"\"\n    \n    compressao = []\n    contagem = 1\n    caractere_atual = texto[0]\n    \n    for i in range(1, len(texto)):\n        if texto[i] == caractere_atual:\n            contagem += 1\n        else:\n            compressao.append(caractere_atual + (str(contagem) if contagem > 1 else \"\"))\n            caractere_atual = texto[i]\n            contagem = 1\n    \n    compressao.append(caractere_atual + (str(contagem) if contagem > 1 else \"\"))\n    \n    return \"\".join(compressao)"
+      },
+      {
+        "nivel": "N3",
+        "nome": "encontra_caminho_matriz",
+        "ok": true,
+        "seg": 11.5,
+        "tokens": 260,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_caminho_matriz(matriz):\n    N = len(matriz)\n    M = len(matriz[0])\n    \n    def dfs(linha, coluna, caminho):\n        if linha == N-1 and coluna == M-1:\n            return caminho + [(linha, coluna)]\n        \n        if linha >= N or coluna >= M or matriz[linha][coluna] == 1:\n            return None\n        \n        # Marcar a celula atual como visitada\n        matriz[linha][coluna] = 1\n        \n        # Recursao para baixo e para a direita\n        caminho_below = dfs(linha + 1, coluna, caminho + [(linha, coluna)])\n        if caminho_below is not None:\n            return caminho_below\n        \n        caminho_right = dfs(linha, coluna + 1, caminho + [(linha, coluna)])\n        if caminho_right is not None:\n            return caminho_right\n        \n        # Se nenhum dos caminhos funcionar, desmarque a celula atual\n        matriz[linha][coluna] = 0\n        return None\n    \n    return dfs(0, 0, [])"
+      },
+      {
+        "nivel": "N3",
+        "nome": "janela_deslizante_max",
+        "ok": true,
+        "seg": 4.6,
+        "tokens": 72,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def janela_deslizante_max(nums, k):\n    if not nums or k > len(nums) or k <= 0:\n        return []\n    \n    max_values = []\n    for i in range(len(nums) - k + 1):\n        max_values.append(max(nums[i:i+k]))\n    \n    return max_values"
+      },
+      {
+        "nivel": "N3",
+        "nome": "resolve_expressao_simples",
+        "ok": false,
+        "seg": 5.1,
+        "tokens": 104,
+        "erro": "IndexError: pop from empty list",
+        "resposta_vazia": false,
+        "codigo_extraido": "def resolve_expressao_simples(expr):\n    tokens = expr.split()\n    stack = []\n    \n    for token in tokens:\n        if token.isdigit():\n            stack.append(int(token))\n        else:\n            b = stack.pop()\n            a = stack.pop()\n            if token == '+':\n                stack.append(a + b)\n            elif token == '-':\n                stack.append(a - b)\n            elif token == '*':\n                stack.append(a * b)\n    \n    return stack[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "banco_simplificado",
+        "ok": false,
+        "seg": 11.3,
+        "tokens": 236,
+        "erro": "ValueError: invalid literal for int() with base 10: 'c2'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def banco_simplificado(operacoes):\n    contas = {}\n    for operacao in operacoes:\n        parts = operacao.split()\n        comando = parts[0]\n        conta = parts[1] if len(parts) > 1 else None\n        valor = int(parts[2]) if len(parts) > 2 else 0\n        \n        if comando == 'CRIAR':\n            if conta not in contas:\n                contas[conta] = 0\n        elif comando == 'DEPOSITAR':\n            if conta in contas:\n                contas[conta] += valor\n        elif comando == 'SACAR':\n            if conta in contas and contas[conta] >= valor:\n                contas[conta] -= valor\n        elif comando == 'TRANSFERIR':\n            origem = parts[1]\n            destino = parts[2]\n            if origem in contas and destino in contas and contas[origem] >= valor:\n                contas[origem] -= valor\n                contas[destino] += valor\n                \n    return contas"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ratear_custo",
+        "ok": false,
+        "seg": 13.1,
+        "tokens": 234,
+        "erro": "NameError: name 'ratear_custo' is not defined",
+        "resposta_vazia": false,
+        "codigo_extraido": "def rank_cost(pesos, total):\n    if not pesos or sum(pesos.values()) == 0:\n        raise ValueError(\"Invalid input\")\n    \n    for nome, peso in pesos.items():\n        if peso < 0:\n            raise ValueError(\"Pesos n\u00e3o podem ser negativos\")\n    \n    soma_pesos = sum(pesos.values())\n    if total == 0:\n        return {nome: 0 for nome in pesos}\n    \n    distribuicao = {}\n    resto = total\n    \n    for nome, peso in pesos.items():\n        if peso > 0:\n            parte_inteira = (total * peso) // soma_pesos\n            distribuicao[nome] = parte_inteira\n            resto -= parte_inteira * peso\n    \n    restantes = sorted([(resto % peso, nome) for nome, peso in pesos.items() if peso > 0], reverse=True)\n    \n    for resto_frac, nome in restantes:\n        if resto > 0:\n            distribuicao[nome] += 1\n            resto -= 1\n    \n    return distribuicao"
+      },
+      {
+        "nivel": "N4",
+        "nome": "simular_esteira",
+        "ok": false,
+        "seg": 17.8,
+        "tokens": 338,
+        "erro": "ValueError: invalid literal for int() with base 10: 'a'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def simular_esteira(n, commands):\n    positions = [None] * n\n    arm_pos = 0\n    hand_item = None\n    direction = 1\n\n    for cmd in commands:\n        parts = cmd.split()\n        if parts[0] == 'POE':\n            x = int(parts[1])\n            if positions[arm_pos] is not None:\n                raise ValueError(\"Posicao ja possui item\")\n            positions[arm_pos] = x\n        elif parts[0] == 'ANDA':\n            k = int(parts[1])\n            arm_pos = (arm_pos + direction * k) % n\n        elif parts[0] == 'GIRA':\n            direction *= -1\n        elif parts[0] == 'PEGA':\n            if hand_item is not None:\n                raise ValueError(\"Mao ja possui item\")\n            if positions[arm_pos] is None:\n                pass\n            else:\n                hand_item = positions[arm_pos]\n                positions[arm_pos] = None\n        elif parts[0] == 'SOLTA':\n            if hand_item is None:\n                raise ValueError(\"Mao nao possui item\")\n            for i in range(n):\n                pos = (arm_pos + direction * i) % n\n                if positions[pos] is not None:\n                    positions[pos] = hand_item\n                    hand_item = None\n                    break\n            else:\n                raise ValueError(\"Nenhuma posicao livre na esteira\")\n        else:\n            raise ValueError(f\"Comando invalido: {cmd}\")\n\n    return (arm_pos, hand_item, positions)"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ler_plano",
+        "ok": false,
+        "seg": 20.4,
+        "tokens": 417,
+        "erro": "ValueError: invalid literal for int() with base 10: '1h30'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ler_plano(texto):\n    tarefas = {}\n    linhas = texto.split('\\n')\n    i = 0\n    \n    while i < len(linhas):\n        linha = linhas[i].strip()\n        \n        if not linha:\n            i += 1\n            continue\n        \n        if linha.startswith('#'):\n            i += 1\n            continue\n        \n        if linha.startswith('tarefa:'):\n            nome_tarefa = linha.split('tarefa:')[1]\n            \n            if nome_tarefa in tarefas:\n                raise ValueError(f\"Tarefa '{nome_tarefa}' declarada duas vezes.\")\n            \n            tarefas[nome_tarefa] = {'duracao_min': 0, 'depende': []}\n            \n            i += 1\n            continue\n        \n        if linha.startswith('duracao'):\n            duracao = linha.split(': ')[1].strip()\n            min = 0\n            \n            if 'h' in duracao:\n                horas = int(duracao[:-1])\n                min += horas * 60\n            elif 'm' in duracao:\n                minutos = int(duracao[:-1])\n                min += minutos\n                \n            tarefas[nome_tarefa]['duracao_min'] = min\n        \n        elif linha.startswith('depende'):\n            dependencias = linha.split(': ')[1].strip().split(',')\n            \n            for i, dep in enumerate(dependencias):\n                if dep.strip():\n                    dependencias[i] = dep.strip()\n                \n            tarefas[nome_tarefa]['depende'] = dependencias\n        \n        else:\n            raise ValueError(\"Linha inv\u00e1lida antes de 'tarefa:'\")\n        \n        i += 1\n    \n    for nome, dados in tarefas.items():\n        if 'depende' in dados and not all(task in tarefas for task in dados['depende']):\n            raise ValueError(f\"Tarefa '{nome}' depende de uma tarefa n\u00e3o declarada: {dados['depende']}\")\n    \n    return tarefas"
+      }
+    ]
+  },
+  "qwen3:4b-instruct-2507-q4_K_M": {
+    "acertos": 17,
+    "total": 25,
+    "por_nivel": {
+      "N2": {
+        "acertos": 7,
+        "total": 10
+      },
+      "N3": {
+        "acertos": 9,
+        "total": 12
+      },
+      "N4": {
+        "acertos": 1,
+        "total": 3
+      }
+    },
+    "seg": 295.3,
+    "tok_s": 14.6,
+    "resultados": [
+      {
+        "nivel": "N2",
+        "nome": "agrupa_por_chave",
+        "ok": true,
+        "seg": 15.7,
+        "tokens": 53,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def agrupa_por_chave(pares):\n    resultado = {}\n    for chave, valor in pares:\n        if chave not in resultado:\n            resultado[chave] = []\n        resultado[chave].append(valor)\n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "valida_parenteses",
+        "ok": true,
+        "seg": 5.1,
+        "tokens": 83,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_parenteses(s):\n    stack = []\n    mapping = {')': '(', '}': '{', ']': '['}\n    \n    for char in s:\n        if char in '([{':\n            stack.append(char)\n        elif char in ')]}':\n            if not stack or stack.pop() != mapping[char]:\n                return False\n    \n    return len(stack) == 0"
+      },
+      {
+        "nivel": "N2",
+        "nome": "filtra_e_soma_positivos",
+        "ok": true,
+        "seg": 3.6,
+        "tokens": 44,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def filtra_e_soma_positivos(lista):\n    soma = 0\n    for numero in lista:\n        if numero > 0:\n            soma += numero\n    return soma"
+      },
+      {
+        "nivel": "N2",
+        "nome": "formata_moeda",
+        "ok": false,
+        "seg": 2.8,
+        "tokens": 32,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def formata_moeda(valor):\n    return f'R$ {valor:,.2f}'.replace(',', '.').replace('.', ',')"
+      },
+      {
+        "nivel": "N2",
+        "nome": "busca_anagramas",
+        "ok": true,
+        "seg": 7.5,
+        "tokens": 127,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def busca_anagramas(palavras):\n    anagramas = {}\n    for palavra in palavras:\n        # Ordena as letras para formar a chave\n        chave = ''.join(sorted(palavra))\n        if chave not in anagramas:\n            anagramas[chave] = []\n        anagramas[chave].append(palavra)\n    \n    # Retornar apenas as listas de anagramas, mantendo a ordem original\n    resultado = []\n    for chave in anagramas:\n        resultado.append(anagramas[chave])\n    \n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "inverte_palavras",
+        "ok": false,
+        "seg": 3.8,
+        "tokens": 47,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def inverte_palavras(frase):\n    palavras = frase.split()\n    resultado = []\n    for palavra in palavras:\n        resultado.append(palavra[::-1])\n    return ' '.join(resultado)"
+      },
+      {
+        "nivel": "N2",
+        "nome": "frequencia_caracteres",
+        "ok": true,
+        "seg": 3.8,
+        "tokens": 49,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def frequencia_caracteres(s):\n    d = {}\n    s = s.lower()\n    for char in s:\n        d[char] = d.get(char, 0) + 1\n    return d"
+      },
+      {
+        "nivel": "N2",
+        "nome": "encontra_duplicados",
+        "ok": true,
+        "seg": 5.2,
+        "tokens": 80,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_duplicados(lista):\n    contador = {}\n    duplicados = set()\n    \n    for elemento in lista:\n        contador[elemento] = contador.get(elemento, 0) + 1\n    \n    for elemento, cont in contador.items():\n        if cont > 1:\n            duplicados.add(elemento)\n    \n    return sorted(list(duplicados))"
+      },
+      {
+        "nivel": "N2",
+        "nome": "compacta_lista",
+        "ok": true,
+        "seg": 4.3,
+        "tokens": 59,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def compacta_lista(lista):\n    if not lista:\n        return []\n    resultado = [lista[0]]\n    for i in range(1, len(lista)):\n        if lista[i] != lista[i-1]:\n            resultado.append(lista[i])\n    return resultado"
+      },
+      {
+        "nivel": "N2",
+        "nome": "parse_csv_linha",
+        "ok": false,
+        "seg": 10.7,
+        "tokens": 166,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_csv_linha(linha):\n    if not linha.strip():\n        return []\n    \n    campos = []\n    campo = \"\"\n    dentro_aspas = False\n    i = 0\n    \n    while i < len(linha):\n        char = linha[i]\n        \n        if char == '\"' and not dentro_aspas:\n            dentro_aspas = True\n        elif char == '\"' and dentro_aspas:\n            dentro_aspas = False\n            i += 1\n            continue\n        \n        if dentro_aspas:\n            campo += char\n        else:\n            if char == ',':\n                if campo:\n                    campos.append(campo)\n                    campo = \"\"\n            else:\n                campo += char\n        \n        i += 1\n    \n    if campo:\n        campos.append(campo)\n    \n    return campos"
+      },
+      {
+        "nivel": "N3",
+        "nome": "intervalos_livres",
+        "ok": false,
+        "seg": 14.4,
+        "tokens": 253,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def intervalos_livres(ocupados, inicio, fim):\n    if not ocupados:\n        return [(inicio, fim)] if inicio < fim else []\n    \n    # Ordena os intervalos por in\u00edcio\n    ocupados.sort()\n    \n    # Remove sobreposicoes e cria uma lista de intervalos ocupados\n    ocupados_ordenados = []\n    for a, b in ocupados:\n        if not ocupados_ordenados or ocupados_ordenados[-1][1] < a:\n            ocupados_ordenados.append((a, b))\n    \n    # Encontra os intervalos livres entre [inicio, fim]\n    livres = []\n    atual = inicio\n    \n    for a, b in ocupados_ordenados:\n        if atual < a:\n            livres.append((atual, a))\n        atual = b\n    \n    # Verifica se h\u00e1 espa\u00e7o livre ap\u00f3s o \u00faltimo intervalo ocupado\n    if atual < fim:\n        livres.append((atual, fim))\n    \n    # Filtra intervalos vazios\n    result = [intervalo for intervalo in livres if intervalo[0] < intervalo[1]]\n    \n    return result"
+      },
+      {
+        "nivel": "N3",
+        "nome": "parse_config",
+        "ok": false,
+        "seg": 11.4,
+        "tokens": 175,
+        "erro": "KeyError: ''",
+        "resposta_vazia": false,
+        "codigo_extraido": "def parse_config(texto):\n    config = {}\n    current_section = ''\n    \n    lines = texto.strip().split('\\n')\n    \n    for line in lines:\n        line = line.strip()\n        if not line or line.startswith('#'):\n            continue\n            \n        if line.startswith('[') and line.endswith(']'):\n            section_name = line[1:-1].strip()\n            current_section = section_name\n            if current_section not in config:\n                config[current_section] = {}\n                \n        else:\n            if not current_section:\n                current_section = ''\n                \n            if '=' in line:\n                key, value = line.split('=', 1)\n                key = key.strip()\n                value = value.strip()\n                \n                if value.isdigit():\n                    value = int(value)\n                config[current_section][key] = value\n    \n    return config"
+      },
+      {
+        "nivel": "N3",
+        "nome": "soma_subvetor_maximo",
+        "ok": true,
+        "seg": 5.4,
+        "tokens": 76,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def soma_subvetor_maximo(nums):\n    if not nums:\n        return 0\n    max_sum = nums[0]\n    current_sum = nums[0]\n    for num in nums[1:]:\n        current_sum = max(num, current_sum + num)\n        max_sum = max(max_sum, current_sum)\n    return max_sum"
+      },
+      {
+        "nivel": "N3",
+        "nome": "merge_intervalos",
+        "ok": true,
+        "seg": 8.8,
+        "tokens": 142,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def merge_intervalos(intervalos):\n    if not intervalos:\n        return []\n    \n    # Ordena os intervalos pelo in\u00edcio\n    intervalos.sort()\n    \n    merged = [intervalos[0]]\n    \n    for current in intervalos[1:]:\n        last = merged[-1]\n        # Se os intervalos se sobrep\u00f5em ou est\u00e3o adjacentes\n        if current[0] <= last[1]:\n            # Mescla os intervalos\n            merged[-1] = (last[0], max(last[1], current[1]))\n        else:\n            # Adiciona o intervalo novo\n            merged.append(current)\n    \n    return merged"
+      },
+      {
+        "nivel": "N3",
+        "nome": "maior_retangulo_histograma",
+        "ok": true,
+        "seg": 11.2,
+        "tokens": 189,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def maior_retangulo_histograma(alturas):\n    if not alturas:\n        return 0\n    \n    max_area = 0\n    stack = []\n    \n    for i, h in enumerate(alturas):\n        # While stack is not empty and current height is less than stack top\n        while stack and h < alturas[stack[-1]]:\n            height = alturas[stack.pop()]\n            width = i if not stack else i - stack[-1] - 1\n            max_area = max(max_area, height * width)\n        stack.append(i)\n    \n    # Process remaining elements in stack\n    while stack:\n        height = alturas[stack.pop()]\n        width = len(alturas) if not stack else len(alturas) - stack[-1] - 1\n        max_area = max(max_area, height * width)\n    \n    return max_area"
+      },
+      {
+        "nivel": "N3",
+        "nome": "valida_ip",
+        "ok": true,
+        "seg": 8.7,
+        "tokens": 112,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def valida_ip(ip):\n    if not ip or not isinstance(ip, str):\n        return False\n    \n    parts = ip.split('.')\n    if len(parts) != 4:\n        return False\n    \n    for part in parts:\n        if not part or not part.isdigit():\n            return False\n        if len(part) > 1 and part[0] == '0':\n            return False\n        num = int(part)\n        if num < 0 or num > 255:\n            return False\n    \n    return True"
+      },
+      {
+        "nivel": "N3",
+        "nome": "calculadora_rpn",
+        "ok": true,
+        "seg": 12.2,
+        "tokens": 196,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def calculadora_rpn(expressao):\n    if not expressao or not expressao.strip():\n        raise ValueError\n    \n    tokens = expressao.strip().split()\n    pilha = []\n    \n    for token in tokens:\n        if token in ['+', '-', '*', '//']:\n            if len(pilha) < 2:\n                raise ValueError\n            b = pilha.pop()\n            a = pilha.pop()\n            if token == '+':\n                pilha.append(a + b)\n            elif token == '-':\n                pilha.append(a - b)\n            elif token == '*':\n                pilha.append(a * b)\n            elif token == '//':\n                if b == 0:\n                    raise ValueError\n                pilha.append(a // b)\n        else:\n            try:\n                pilha.append(int(token))\n            except ValueError:\n                raise ValueError\n    \n    if len(pilha) != 1:\n        raise ValueError\n    \n    return pilha[0]"
+      },
+      {
+        "nivel": "N3",
+        "nome": "rle_compress",
+        "ok": true,
+        "seg": 9.5,
+        "tokens": 151,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def rle_compress(texto):\n    if not texto:\n        return \"\"\n    \n    resultado = []\n    anterior = texto[0]\n    contagem = 1\n    \n    for i in range(1, len(texto)):\n        if texto[i] == anterior:\n            contagem += 1\n        else:\n            if contagem > 1:\n                resultado.append(anterior + str(contagem))\n            else:\n                resultado.append(anterior)\n            anterior = texto[i]\n            contagem = 1\n    \n    # Trata o \u00faltimo grupo\n    if contagem > 1:\n        resultado.append(anterior + str(contagem))\n    else:\n        resultado.append(anterior)\n    \n    return \"\".join(resultado)"
+      },
+      {
+        "nivel": "N3",
+        "nome": "encontra_caminho_matriz",
+        "ok": false,
+        "seg": 13.8,
+        "tokens": 217,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def encontra_caminho_matriz(matriz):\n    if not matriz or not matriz[0]:\n        return None\n    \n    N = len(matriz)\n    M = len(matriz[0])\n    \n    if matriz[0][0] == 1:\n        return None\n    \n    if matriz[N-1][M-1] == 1:\n        return None\n    \n    caminho = []\n    i, j = 0, 0\n    \n    while i < N - 1 or j < M - 1:\n        if i < N - 1 and (j == M - 1 or matriz[i+1][j] == 0):\n            i += 1\n        elif j < M - 1 and (i == N - 1 or matriz[i][j+1] == 0):\n            j += 1\n        else:\n            return None\n        \n        caminho.append((i, j))\n    \n    caminho.append((N-1, M-1))\n    return caminho"
+      },
+      {
+        "nivel": "N3",
+        "nome": "janela_deslizante_max",
+        "ok": true,
+        "seg": 6.0,
+        "tokens": 74,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def janela_deslizante_max(nums, k):\n    if not nums or k <= 0 or k > len(nums):\n        return []\n    result = []\n    for i in range(len(nums) - k + 1):\n        window_max = max(nums[i:i + k])\n        result.append(window_max)\n    return result"
+      },
+      {
+        "nivel": "N3",
+        "nome": "resolve_expressao_simples",
+        "ok": true,
+        "seg": 11.8,
+        "tokens": 197,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def resolve_expressao_simples(expr):\n    expr = expr.replace(' ', '')\n    if not expr:\n        return 0\n    \n    # Primeiro, processa todos os operadores de multiplicacao\n    i = 0\n    result = 0\n    num = 0\n    op = '+'\n    \n    while i < len(expr):\n        char = expr[i]\n        if char.isdigit():\n            num = num * 10 + int(char)\n        elif char in '+-':\n            if op == '+':\n                result += num\n            elif op == '-':\n                result -= num\n            op = char\n            num = 0\n        elif char == '*':\n            num = num * int(expr[i+1])\n            i += 1\n        i += 1\n    \n    if op == '+':\n        result += num\n    elif op == '-':\n        result -= num\n    \n    return result"
+      },
+      {
+        "nivel": "N3",
+        "nome": "banco_simplificado",
+        "ok": true,
+        "seg": 16.2,
+        "tokens": 250,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def banco_simplificado(operacoes):\n    contas = {}\n    \n    for operacao in operacoes:\n        partes = operacao.split()\n        comando = partes[0]\n        \n        if comando == 'CRIAR':\n            conta = partes[1]\n            if conta not in contas:\n                contas[conta] = 0\n                \n        elif comando == 'DEPOSITAR':\n            conta = partes[1]\n            valor = int(partes[2])\n            if conta in contas:\n                contas[conta] += valor\n                \n        elif comando == 'SACAR':\n            conta = partes[1]\n            valor = int(partes[2])\n            if conta in contas and contas[conta] >= valor:\n                contas[conta] -= valor\n                \n        elif comando == 'TRANSFERIR':\n            origem = partes[1]\n            destino = partes[2]\n            valor = int(partes[3])\n            if origem in contas and destino in contas and contas[origem] >= valor:\n                contas[origem] -= valor\n                contas[destino] += valor\n    \n    return contas"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ratear_custo",
+        "ok": true,
+        "seg": 30.4,
+        "tokens": 461,
+        "erro": "",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ratear_custo(pesos, total):\n    if not pesos or total < 0:\n        raise ValueError\n    \n    if total == 0:\n        result = {}\n        for nome in pesos:\n            result[nome] = 0\n        return result\n    \n    soma_pesos = sum(pesos.values())\n    if soma_pesos == 0:\n        raise ValueError\n    \n    if any(peso < 0 for peso in pesos.values()):\n        raise ValueError\n    \n    # Passo 1: calcular parte inteira de cada nome\n    partes_inteiras = {}\n    for nome in pesos:\n        peso = pesos[nome]\n        if peso == 0:\n            partes_inteiras[nome] = 0\n        else:\n            partes_inteiras[nome] = (total * peso) // soma_pesos\n    \n    # Soma das partes inteiras\n    soma_partes = sum(partes_inteiras.values())\n    \n    # Sobra\n    sobra = total - soma_partes\n    \n    # Passo 2: distribuir sobra\n    restos = {}\n    for nome in pesos:\n        peso = pesos[nome]\n        if peso == 0:\n            restos[nome] = 0\n        else:\n            # Resto fracionario da divisao do passo 1\n            restos[nome] = (total * peso) % soma_pesos\n    \n    # Distribuir sobra\n    result = partes_inteiras.copy()\n    sobra_distribuida = 0\n    \n    # Ordenar nomes por resto (decrescente), e em caso de empate, por nome alfabetico (crescente)\n    # Para empate em resto, queremos o menor nome em ordem alfabetica\n    nomes_ordenados = sorted(pesos.keys(), key=lambda x: (-restos[x], x))\n    \n    for nome in nomes_ordenados:\n        peso = pesos[nome]\n        if peso == 0:\n            continue\n        if sobra > 0:\n            result[nome] += 1\n            sobra -= 1\n        else:\n            break\n    \n    return result"
+      },
+      {
+        "nivel": "N4",
+        "nome": "simular_esteira",
+        "ok": false,
+        "seg": 26.0,
+        "tokens": 380,
+        "erro": "AssertionError",
+        "resposta_vazia": false,
+        "codigo_extraido": "def simular_esteira(n, comandos):\n    posicao = 0\n    mao = None\n    esteira = [None] * n\n    \n    for comando in comandos:\n        partes = comando.split()\n        if partes[0] == 'POE':\n            x = partes[1]\n            if esteira[posicao] is not None:\n                raise ValueError\n            esteira[posicao] = x\n        elif partes[0] == 'ANDA':\n            k = int(partes[1])\n            posicao = (posicao + k) % n\n        elif partes[0] == 'GIRA':\n            if posicao == 0:\n                posicao = 0\n            else:\n                posicao = (posicao + 1) % n\n        elif partes[0] == 'PEGA':\n            if mao is not None:\n                raise ValueError\n            if esteira[posicao] is None:\n                pass\n            else:\n                mao = esteira[posicao]\n                esteira[posicao] = None\n        elif partes[0] == 'SOLTA':\n            if mao is None:\n                raise ValueError\n            if esteira[posicao] is None:\n                pass\n            else:\n                # Procurar pr\u00f3xima posi\u00e7\u00e3o livre no sentido atual\n                posicao_atual = posicao\n                found = False\n                for i in range(n):\n                    posicao_atual = (posicao_atual + 1) % n\n                    if esteira[posicao_atual] is None:\n                        esteira[posicao_atual] = mao\n                        mao = None\n                        found = True\n                        break\n                if not found:\n                    raise ValueError\n        else:\n            raise ValueError\n    \n    return (posicao, mao, esteira)"
+      },
+      {
+        "nivel": "N4",
+        "nome": "ler_plano",
+        "ok": false,
+        "seg": 47.2,
+        "tokens": 684,
+        "erro": "SyntaxError: expected ':'",
+        "resposta_vazia": false,
+        "codigo_extraido": "def ler_plano(texto):\n    blocos = []\n    linhas = texto.strip().split('\\n')\n    tarefas = {}\n    nome_tarefa_atual = None\n    dependencias = {}\n    duracoes = {}\n    \n    i = 0\n    while i < len(linhas):\n        linha = linhas[i].strip()\n        if not linha:\n            i += 1\n            continue\n            \n        if linha.startswith('tarefa:'):\n            nome_tarefa = linha[8:].strip()\n            if nome_tarefa in tarefas:\n                raise ValueError(f\"Tarefa '{nome_tarefa}' aparece duas vezes.\")\n            nome_tarefa_atual = nome_tarefa\n            tarefas[nome_tarefa] = {'duracao_min': 0, 'depende': []}\n            dependencias[nome_tarefa] = []\n            i += 1\n        elif linha.startswith('#'):\n            i += 1\n        elif nome_tarefa_atual is not None:\n            # Verifica se a linha come\u00e7a com recuo\n            if linha[0] == ' ':\n                partes = linha.lstrip().split(':', 1)\n                chave = partes[0].strip()\n                valor = partes[1].strip() if len(partes) > 1 else ''\n                \n                if chave == 'duracao':\n                    duracao_min = 0\n                    if valor:\n                        if valor.endswith('h'):\n                            h = int(valor[:-1])\n                            duracao_min += h * 60\n                            if 'm' in valor:\n                                m = int(valor[valor.find('m') + 1:])\n                                duracao_min += m\n                        elif valor.endswith('m'):\n                            duracao_min += int(valor[:-1]) * 1\n                        elif 'h' in valor and 'm' in valor:\n                            h = int(valor.split('h')[0])\n                            m = int(valor.split('h')[1].split('m')[0])\n                            duracao_min += h * 60 + m\n                    tarefas[nome_tarefa]['duracao_min'] = duracao_min\n                elif chave == 'depende':\n                    dependencias_list = []\n                    if valor:\n                        nomes = [n.strip() for n in valor.split(',')]\n                        for nome in nomes:\n                            if nome not in tarefas:\n                                raise ValueError(f\"Depend\u00eancia '{nome}' n\u00e3o declarada.\")\n                            dependencias_list.append(nome)\n                    tarefas[nome_tarefa]['depende'] = dependencias_list\n                else:\n                    raise ValueError(f\"Chave '{chave}' n\u00e3o permitida.\")\n            else:\n                # Linha recuada antes de 'tarefa:' ou fora de bloco\n                raise ValueError(\"Linha recuada antes de 'tarefa:' ou fora de bloco.\")\n        else:\n            # N\u00e3o \u00e9 uma tarefa, n\u00e3o \u00e9 coment\u00e1rio, n\u00e3o \u00e9 bloco\n            i += 1\n    \n    # Verificar se h\u00e1 depend\u00eancias de tarefas n\u00e3o declaradas\n    for nome, dados in tarefas.items():\n        for dependencia in dados['depende']:\n            if dependencia not in tare\n                raise ValueError(f\"Depend\u00eancia '{dependencia}' n\u00e3o declarada.\")\n    \n    return tarefas"
+      }
+    ]
+  }
+}

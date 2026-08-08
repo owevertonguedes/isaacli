@@ -1,0 +1,118 @@
+{
+  "date": "2026-08-05",
+  "hardware": {
+    "gpu": "NVIDIA GeForce GTX 1650",
+    "vram_mb": 4096,
+    "ram_gb": 15
+  },
+  "ollama_version": "0.30.10",
+  "harness_under_test": {
+    "name": "Hermes Agent",
+    "version": "0.20.0 (2026.8.3)",
+    "vendor": "Nous Research",
+    "install": "official installer, --skip-setup --skip-browser",
+    "toolsets_enabled_by_default": 15,
+    "fixed_prompt_tokens": 16283,
+    "minimum_context_length": 64000,
+    "minimum_context_source": "agent/model_metadata.py:390"
+  },
+  "model_under_test": {
+    "name": "qwen3:4b-instruct-2507-q4_K_M",
+    "size_gb": 2.5,
+    "advertised_context": 262144,
+    "note": "the model is not the constraint; it advertises 262k and Hermes detects it correctly"
+  },
+  "results": [
+    {
+      "configuration": "stock install, documented Ollama setup, no context overrides, ollama serve with no OLLAMA_* env vars",
+      "task": "create file",
+      "success": false,
+      "seconds": 13,
+      "tool_calls": [],
+      "failure_mode": "died before reaching the model; server loaded CONTEXT=4096 while the request needed 16283 tokens",
+      "user_visible_error": "Context length exceeded (34 tokens). Cannot compress further.",
+      "log_error": "request (16283 tokens) exceeds the available context size (4096 tokens)",
+      "evidence": "ootb-task1.log"
+    },
+    {
+      "configuration": "stock install, documented Ollama setup, no context overrides, ollama serve with no OLLAMA_* env vars",
+      "task": "multi-step: list, run command, append",
+      "success": false,
+      "seconds": 3,
+      "tool_calls": [],
+      "failure_mode": "same as task 1",
+      "evidence": "ootb-task2.log"
+    },
+    {
+      "configuration": "OLLAMA_CONTEXT_LENGTH=64000, OLLAMA_KV_CACHE_TYPE=q8_0, model.context_length=64000",
+      "task": "create file",
+      "success": true,
+      "seconds": [
+        368,
+        671
+      ],
+      "tool_calls": [
+        "write_file"
+      ],
+      "tool_call_duration_seconds": 0.7,
+      "prompt_processing_seconds": 202.9,
+      "prompt_processing_tokens": 16252,
+      "prompt_processing_rate_tok_s": 80.1,
+      "footprint_gb": 9.0,
+      "processor_split": "70% CPU / 30% GPU",
+      "honest": true,
+      "note": "correct tool call, correct bytes on disk, truthful summary. Both timings taken under contention; treat as indicative, not measured."
+    },
+    {
+      "configuration": "OLLAMA_CONTEXT_LENGTH=64000, OLLAMA_KV_CACHE_TYPE=q8_0, model.context_length=64000",
+      "task": "multi-step: list, run command, append",
+      "success": null,
+      "verdict": "not established",
+      "note": "one run hit a 900s timeout after two real tool calls, under contention; the clean retry died on APIConnectionError when a competing job killed the Ollama server. No valid run exists."
+    }
+  ],
+  "transport_experiment": {
+    "question": "does Ollama honour options.num_ctx on each endpoint?",
+    "model": "qwen3:4b-instruct-2507-q4_K_M",
+    "num_ctx_requested": 32768,
+    "findings": [
+      {
+        "endpoint": "/v1/chat/completions",
+        "wire": "OpenAI-compatible",
+        "context_loaded": 4096,
+        "honoured": false
+      },
+      {
+        "endpoint": "/api/chat",
+        "wire": "Ollama native",
+        "context_loaded": 32768,
+        "honoured": true
+      }
+    ],
+    "consequence": "model.ollama_num_ctx in Hermes config.yaml is a no-op against Ollama over /v1, even though Hermes correctly maps it to extra_body.options.num_ctx in plugins/model-providers/custom/__init__.py. The only fixes are outside the harness: OLLAMA_CONTEXT_LENGTH, or PARAMETER num_ctx in a Modelfile.",
+    "generality": "independent of model size and of GPU; affects any model served to any harness over the OpenAI-compatible wire",
+    "no_native_transport": "Hermes has no native Ollama /api/chat transport in its chat loop; grepping the source finds only a Slack URL, a web upload route, and a comment in plugins/model-providers/custom/__init__.py:59 noting /api/chat honours a field the OpenAI wire drops (ollama#14820). Every chat request leaves over /v1, so no value of any Hermes setting can raise the served context."
+  },
+  "upstream_bug": {
+    "component": "agent/conversation_loop.py, _ollama_context_limit_error",
+    "summary": "the guard fires only when _ollama_num_ctx < 64000, which is the context Hermes requested, not the context the server loaded",
+    "effect": "with a model advertising 262144, the guard never fires, and its helpful message (naming the model, base URL and the exact fix) is replaced by 'Context length exceeded (34 tokens). Cannot compress further.'",
+    "aggravating_detail": "Ollama returns the real value as n_ctx:4096 in the body of the 400, and the very next log line reads 'provider did not report a max context length; keeping context_length at 262,144 tokens and compressing'. The value was parsed and discarded.",
+    "suggested_fix": "read n_ctx off the exceed_context_size_error body and use it to correct the cached context length before deciding to compress",
+    "classification": "bug in the diagnosis path, not in the agent loop"
+  },
+  "comparison_baseline": {
+    "source": "reports/harness-comparison/data.json",
+    "note": "isaacli numbers were measured with granite4:micro, not with qwen3:4b, so the token and time comparison is across harnesses at their own defaults rather than a matched-model run",
+    "isaacli_task1_seconds": 9.3,
+    "isaacli_task1_prompt_tokens": 2249,
+    "isaacli_task2_seconds": 7.8,
+    "isaacli_tools": 7
+  },
+  "limits": [
+    "one machine, one model, one session",
+    "wall-time numbers for the fixed-server configuration were taken under contention and are indicative only",
+    "task 2 under a fixed server has no valid run and no recorded verdict",
+    "Hermes was not tested with a large local model or with a cloud model, so nothing here speaks to the deployment it is built for"
+  ]
+}

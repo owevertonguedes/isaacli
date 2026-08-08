@@ -1,0 +1,9 @@
+{
+  "recommended": [
+    "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
+    "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
+    "granite4.1:3b",
+    "phi4-mini:latest",
+    "gpt-oss:20b"
+  ]
+}

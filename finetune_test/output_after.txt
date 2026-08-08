@@ -1,0 +1,49 @@
+```csharp
+using UnityEngine;
+
+public class PlayerController2D : MonoBehaviour
+{
+    public float moveSpeed = 5f;
+    public float jumpForce = 10f;
+
+    private Rigidbody2D rb;
+    private bool isTouchingScreenLeft;
+    private bool isTouchingScreenRight;
+    private bool isJumping;
+
+    void Start()
+    {
+        rb = GetComponent<Rigidbody2D>();
+    }
+
+    void Update()
+    {
+        // Movimento lateral com toque na tela
+        isTouchingScreenLeft = Input.touchCount > 0 && Input.GetTouch(0).position.x < Screen.width / 2;
+        isTouchingScreenRight = Input.touchCount > 0 && Input.GetTouch(0).position.x >= Screen.width / 2;
+
+        if (isTouchingScreenLeft)
+        {
+            rb.velocity = new Vector2(-moveSpeed, rb.velocity.y);
+        }
+        else if (isTouchingScreenRight)
+        {
+            rb.velocity = new Vector2(moveSpeed, rb.velocity.y);
+        }
+        else
+        {
+            rb.velocity = new Vector2(0f, rb.velocity.y);
+        }
+
+        // Pulo com física básica
+        isJumping = Input.touchCount > 0 && Input.GetTouch(0).position.x < Screen.width / 2;
+
+        if (isJumping)
+        {
+            rb.AddForce(Vector2.up * jumpForce, ForceMode2D.Impulse);
+        }
+    }
+}
+```
+
+Este script controla o movimento e o pulo de um personagem 2D em um jogo mobile (iOS/Android) usando Rigidbody2D. O personagem pode mover-se lateralmente com toque na tela esquerda ou direita e pular com toque na tela esquerda. A velocidade de movimento é fixada em 5 unidades por segundo e o pulo tem uma força de 10 unidades.

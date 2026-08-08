@@ -1,0 +1,251 @@
+{
+  "active_datasets": [
+    "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+    "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+    "comportamento-agente-workflow-2026-07-20.jsonl"
+  ],
+  "rows": 30,
+  "issues": 0,
+  "items": [
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 1,
+      "id": "task05-gemini-01",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 2,
+      "id": "task05-gemini-02",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 3,
+      "id": "task05-gemini-03",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 4,
+      "id": "task05-gemini-04",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 5,
+      "id": "task05-gemini-05",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 6,
+      "id": "task05-gemini-06",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 7,
+      "id": "task05-gemini-07",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "path": "datasets/task05-andaime-marcadores-gemini-2026-07-20.jsonl",
+      "line": 8,
+      "id": "task05-gemini-08",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 1,
+      "id": "intencao-001",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 2,
+      "id": "intencao-002",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 3,
+      "id": "intencao-003",
+      "tool_calls": 3,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 4,
+      "id": "intencao-004",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 5,
+      "id": "intencao-005",
+      "tool_calls": 1,
+      "issues": []
+    },
+    {
+      "dataset": "intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "path": "datasets/intencao-pergunta-vs-execucao-isaac-2026-07-20.jsonl",
+      "line": 6,
+      "id": "intencao-006",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 1,
+      "id": "commit-workflow-001",
+      "tool_calls": 6,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 2,
+      "id": "commit-workflow-002",
+      "tool_calls": 5,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 3,
+      "id": "commit-workflow-003",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 4,
+      "id": "commit-workflow-004",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 5,
+      "id": "commit-workflow-005",
+      "tool_calls": 5,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 6,
+      "id": "graphify-workflow-001",
+      "tool_calls": 1,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 7,
+      "id": "graphify-workflow-002",
+      "tool_calls": 1,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 8,
+      "id": "intent-workflow-001",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 9,
+      "id": "task05-workflow-001",
+      "tool_calls": 2,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 10,
+      "id": "commit-workflow-006",
+      "tool_calls": 6,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 11,
+      "id": "commit-workflow-007",
+      "tool_calls": 4,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 12,
+      "id": "commit-workflow-008",
+      "tool_calls": 6,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 13,
+      "id": "commit-workflow-009",
+      "tool_calls": 0,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 14,
+      "id": "commit-workflow-010",
+      "tool_calls": 1,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 15,
+      "id": "commit-workflow-011",
+      "tool_calls": 3,
+      "issues": []
+    },
+    {
+      "dataset": "comportamento-agente-workflow-2026-07-20.jsonl",
+      "path": "datasets/comportamento-agente-workflow-2026-07-20.jsonl",
+      "line": 16,
+      "id": "intent-workflow-002",
+      "tool_calls": 0,
+      "issues": []
+    }
+  ]
+}

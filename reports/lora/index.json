@@ -1,0 +1,482 @@
+{
+  "runs": [
+    {
+      "run": "canonico-s120",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 34,
+      "max_steps": 120,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 72.1188,
+        "train_samples_per_second": 1.664,
+        "train_steps_per_second": 1.664,
+        "total_flos": 461048888294400.0,
+        "train_loss": 1.3100796738406644,
+        "epoch": 3.5294117647058822
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 3,
+          "total": 6
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 4,
+          "total": 6
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 4,
+          "total": 7
+        }
+      ],
+      "report": "reports/lora/canonico-s120/report.json",
+      "adapter_archive": "lora_runs/oficina/canonico-s120-lite.tgz"
+    },
+    {
+      "run": "canonico-smoke-s20",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 34,
+      "max_steps": 20,
+      "save_steps": 10,
+      "train": {
+        "train_runtime": 13.9212,
+        "train_samples_per_second": 1.437,
+        "train_steps_per_second": 1.437,
+        "total_flos": 79712204759040.0,
+        "train_loss": 2.6676741778850555,
+        "epoch": 0.5882352941176471
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 3,
+          "total": 6
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 3,
+          "total": 6
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "report": "reports/lora/canonico-smoke-s20/report.json",
+      "adapter_archive": "lora_runs/oficina/canonico-smoke-s20-lite.tgz"
+    },
+    {
+      "run": "claude-graphify-s160",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 42,
+      "max_steps": 160,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 93.1224,
+        "train_samples_per_second": 1.718,
+        "train_steps_per_second": 1.718,
+        "total_flos": 559403463521280.0,
+        "train_loss": 1.537095055449754,
+        "epoch": 3.8095238095238093
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 2,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "report": "reports/lora/claude-graphify-s160/report.json",
+      "adapter_archive": "lora_runs/oficina/claude-graphify-s160-lite.tgz"
+    },
+    {
+      "run": "oficina-20260720-212157-s120",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 18,
+      "max_steps": 120,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 75.1195,
+        "train_samples_per_second": 1.597,
+        "train_steps_per_second": 1.597,
+        "total_flos": 514064311004160.0,
+        "train_loss": 0.907573452067542,
+        "epoch": 6.666666666666667
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        }
+      ],
+      "report": "reports/lora/oficina-20260720-212157-s120/report.json",
+      "adapter_archive": "lora_runs/oficina/oficina-20260720-212157-s120-lite.tgz"
+    },
+    {
+      "run": "task15-r120",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 18,
+      "max_steps": 120,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 76.0845,
+        "train_samples_per_second": 1.577,
+        "train_steps_per_second": 1.577,
+        "total_flos": 514064311004160.0,
+        "train_loss": 0.9067655639106912,
+        "epoch": 6.666666666666667
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        }
+      ],
+      "report": "reports/lora/task15-r120/report.json",
+      "adapter_archive": "lora_runs/oficina/task15-r120-lite.tgz"
+    },
+    {
+      "run": "task15-smoke",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 18,
+      "max_steps": 3,
+      "save_steps": 1,
+      "train": {
+        "train_runtime": 3.4069,
+        "train_samples_per_second": 0.881,
+        "train_steps_per_second": 0.881,
+        "total_flos": 10587958886400.0,
+        "train_loss": 3.188447872797648,
+        "epoch": 0.16666666666666666
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_signature",
+          "score": 2,
+          "total": 4
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        }
+      ],
+      "report": "reports/lora/task15-smoke/report.json",
+      "adapter_archive": "lora_runs/oficina/task15-smoke-lite.tgz"
+    },
+    {
+      "run": "workflow-s120",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 30,
+      "max_steps": 120,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 71.9171,
+        "train_samples_per_second": 1.669,
+        "train_steps_per_second": 1.669,
+        "total_flos": 442803566284800.0,
+        "train_loss": 1.2259182986822756,
+        "epoch": 4.0
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_workflow",
+          "score": 5,
+          "total": 9
+        },
+        {
+          "id": "commit_literal_signature",
+          "score": 4,
+          "total": 7
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_workflow",
+          "score": 6,
+          "total": 9
+        },
+        {
+          "id": "commit_literal_signature",
+          "score": 7,
+          "total": 7
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "report": "reports/lora/workflow-s120/report.json",
+      "adapter_archive": "lora_runs/oficina/workflow-s120-lite.tgz"
+    },
+    {
+      "run": "workflow-s80",
+      "model": "ibm-granite/granite-4.0-micro",
+      "examples": 23,
+      "max_steps": 80,
+      "save_steps": 20,
+      "train": {
+        "train_runtime": 47.5405,
+        "train_samples_per_second": 1.683,
+        "train_steps_per_second": 1.683,
+        "total_flos": 299544701137920.0,
+        "train_loss": 1.584113922715187,
+        "epoch": 3.4782608695652173
+      },
+      "eval_before": [
+        {
+          "id": "task05_save",
+          "score": 1,
+          "total": 5
+        },
+        {
+          "id": "commit_workflow",
+          "score": 7,
+          "total": 9
+        },
+        {
+          "id": "commit_literal_signature",
+          "score": 5,
+          "total": 7
+        },
+        {
+          "id": "intent_question",
+          "score": 3,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "eval_after": [
+        {
+          "id": "task05_save",
+          "score": 5,
+          "total": 5
+        },
+        {
+          "id": "commit_workflow",
+          "score": 4,
+          "total": 9
+        },
+        {
+          "id": "commit_literal_signature",
+          "score": 4,
+          "total": 7
+        },
+        {
+          "id": "intent_question",
+          "score": 4,
+          "total": 5
+        },
+        {
+          "id": "graphify_navigation",
+          "score": 3,
+          "total": 7
+        }
+      ],
+      "report": "reports/lora/workflow-s80/report.json",
+      "adapter_archive": "lora_runs/oficina/workflow-s80-lite.tgz"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+# Template for the tuned Granite build that isaacli ships with.
+#
+# Do not run `ollama create` against this file directly: the placeholders below
+# are substituted by scripts/build-model.sh, which is what you should call.
+#
+#   ./scripts/build-model.sh
+#   BASE_MODEL=granite4:micro ./scripts/build-model.sh    # override
+#
+# WHY GRANITE 4 HYBRID (measured, not a matter of taste):
+#   - native tool calling (capabilities: ['completion', 'tools']).
+#     qwen2.5-coder:3b needed a LoRA on a T4 just to emit <tool_call>, and still
+#     wrote garbage. Granite got it right with no training at all.
+#   - hybrid Mamba-2/Transformer architecture (`granitehybrid`), designed for low
+#     memory, which is exactly the constraint on a 4GB card.
+#   - small: 1.9GB for micro-h, and it won the code bench against a same-sized
+#     qwen2.5-coder:3b, 3/4 against 2/4, solving an interval-merge problem that
+#     qwen got wrong.
+#
+# This does not duplicate the model on disk: it points at a base model already
+# pulled and stacks configuration on top. `ollama rm isaac-granite` detaches it
+# and leaves the base intact.
+#
+# num_ctx is set explicitly on purpose. Ollama defaults the context window far
+# below what an agent needs, and the truncation is silent: the tool schema gets
+# cut, the model stops seeing the tools it is supposed to call, and it invents
+# plausible names instead. Setting it here means the value travels with the model
+# instead of depending on how the server was started.
+
+FROM __BASE_MODEL__
+
+PARAMETER temperature __TEMPERATURE__
+PARAMETER num_ctx __NUM_CTX__
+
+SYSTEM """You are an assistant that operates on files through tools.
+
+RULES:
+- To read, write or list files you MUST call the matching tool.
+- NEVER invent the contents of a file: read it with read_file before stating
+  what is inside.
+- write_file ERASES all previous content. To only add something at the end, use
+  append_file.
+- Before using write_file on a file that already exists, read it first with
+  read_file.
+- Call ONE tool at a time and wait for the result before the next one.
+- When the task is done, reply in short text saying what you did.
+- All paths are relative to the working directory. Do not use absolute paths.
+"""

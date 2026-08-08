@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Jogo da Memoria</title>
+<style>
+body{font-family:sans-serif;background:#1e2430;color:#eee;text-align:center;padding-top:30px}
+#tabuleiro{display:grid;grid-template-columns:repeat(4,70px);gap:8px;justify-content:center;margin-top:20px}
+.carta{width:70px;height:70px;background:#4a90d9;border-radius:8px;font-size:34px;line-height:70px;cursor:pointer;user-select:none}
+.virada{background:#2c3e50}
+</style>
+</head>
+<body>
+<h1>Jogo da Memoria</h1>
+<p>Jogadas: <span id="jogadas">0</span></p>
+<div id="tabuleiro"></div>
+<script>
+const SIMBOLOS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+const baralho = [...SIMBOLOS, ...SIMBOLOS];
+for (let i = baralho.length - 1; i > 0; i--) {
+  const j = Math.floor(Math.random() * (i + 1));
+  [baralho[i], baralho[j]] = [baralho[j], baralho[i]];
+}
+
+let viradas = [];       // cartas viradas nesta jogada (max 2)
+let travado = false;
+let jogadas = 0;
+const tab = document.getElementById('tabuleiro');
+
+baralho.forEach((simbolo, i) => {
+  const c = document.createElement('div');
+  c.className = 'carta';
+  c.dataset.simbolo = simbolo;
+  c.dataset.par = 'nao';
+  c.onclick = () => virar(c);
+  tab.appendChild(c);
+});
+
+function virar(c) {
+  if (travado || c.dataset.par === 'sim' || viradas.includes(c)) return;
+  c.textContent = c.dataset.simbolo;
+  c.classList.add('virada');
+  viradas.push(c);
+  if (viradas.length === 2) {
+    jogadas++;
+    document.getElementById('jogadas').textContent = jogadas;
+    const [a, b] = viradas;
+    if (a.dataset.simbolo === b.dataset.simbolo) {
+      a.dataset.par = 'sim';
+      b.dataset.par = 'sim';
+      viradas = [];
+    } else {
+      travado = true;
+      setTimeout(() => {
+        a.textContent = '';
+        b.textContent = '';
+        a.classList.remove('virada');
+        b.classList.remove('virada');
+        viradas = [];
+        travado = false;
+      }, 1000);
+    }
+  }
+}
+</script>
+</body>
+</html>
