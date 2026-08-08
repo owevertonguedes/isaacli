@@ -11,7 +11,7 @@ hardware reproductions are welcome.
 - **Reproductions on other hardware.** Different GPU, a different quantized
   model, AMD/ROCm, Apple Silicon, or CPU-only. Open an issue with your setup
   and what did or didn't work.
-- **Bug reports against the sandbox.** `tool_harness/execucao.py` is the
+- **Bug reports against the sandbox.** `tool_harness/execution.py` is the
   security-relevant part of this project: no-shell execution, the command
   allowlist, and the `bwrap` layer. A file or command that escapes its
   intended boundary is a priority-one report.
@@ -26,7 +26,7 @@ hardware reproductions are welcome.
    execution, the `bwrap` sandbox, and the permission/approval flow.
 2. Check `git status` / `git log` rather than assuming state from an
    earlier issue or PR discussion.
-3. Look for an existing test in `tool_harness/testar_*.py` that already
+3. Look for an existing check in `tool_harness/check_*.py` that already
    covers the area you're touching.
 
 ## Development setup
@@ -40,30 +40,39 @@ cd isaacli
 ./isaacli setup
 ```
 
+The checks are standalone scripts, not pytest modules: they run their
+assertions at import time, which is why they are `check_*` and not
+`test_*` (pytest collection alone would execute them).
+
 ## Running the tests
 
 ```bash
-python3 tool_harness/testar_cli.py
-python3 tool_harness/testar_agent_config.py
-python3 tool_harness/testar_setup.py
-python3 tool_harness/testar_execucao.py
-python3 tool_harness/testar_tools.py
+python3 tool_harness/check_cli.py
+python3 tool_harness/check_agent_config.py
+python3 tool_harness/check_setup.py
+python3 tool_harness/check_tools.py
+python3 tool_harness/check_sandbox.py
+python3 tool_harness/check_execution.py
 ```
 
-Run `testar_execucao.py` outside a nested sandbox: `bwrap` needs to create
+Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create
 its own loopback interface, which fails inside another sandboxed
 environment (for example, inside a container without that capability).
 
 ## Ground rules
 
-- **Do not weaken the sandbox.** No-shell execution (`execucao.py`),
+- **Do not weaken the sandbox.** No-shell execution (`execution.py`),
   `bwrap` isolation, or the approval flow are not on the table for
   simplification, even for a UI improvement.
 - **Prefer measurement over claims.** If a change is about performance,
   reliability, or model behavior, include the numbers and how they were
   produced.
-- **English for interface strings and identifiers.** This is the
-  project's ongoing direction; new code should already follow it.
+- **English for identifiers, comments and docstrings**, and every
+  user-facing string through `i18n.py` with a key in both
+  `locales/en.json` and `locales/pt-BR.json`. Text the *model* reads
+  (system prompts, tool descriptions, tool results, sandbox refusals)
+  stays English regardless of the interface language: it is a contract
+  with the model, not a user preference.
 - **Small, coherent commits.** One commit per unit of work is easier to
   review and to revert if needed.
 

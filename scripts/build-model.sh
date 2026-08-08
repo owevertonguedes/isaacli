@@ -9,7 +9,7 @@
 #   MODEL_NAME=isaac-test NUM_CTX=16384 ./scripts/build-model.sh
 #
 # BASE_MODEL   base to stack configuration on (must expose `tools`)
-# MODEL_NAME   name to create; this is what AGENTE_MODELO should point at
+# MODEL_NAME   name to create; this is what ISAACLI_MODEL should point at
 # NUM_CTX      context window; below ~8k the tool schema starts getting cut
 # TEMPERATURE  0 keeps tool calls deterministic
 set -eu
@@ -47,4 +47,4 @@ ollama create "$MODEL_NAME" -f "$RENDERED"
 
 echo
 echo "done. run it with:"
-echo "  AGENTE_MODELO=$MODEL_NAME ./isaacli \"list the files here\""
+echo "  ISAACLI_MODEL=$MODEL_NAME ./isaacli \"list the files here\""

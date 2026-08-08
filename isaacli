@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
-# resolve a raiz a partir da localização deste script — funciona em qualquer pasta
-RAIZ=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec python3 "$RAIZ/tool_harness/isaac_cli.py" "$@"
+# resolve the root from this script's location, so it works from any folder
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$ROOT/tool_harness/cli.py" "$@"

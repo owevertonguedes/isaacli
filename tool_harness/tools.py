@@ -1,23 +1,22 @@
-"""Ferramentas locais e de leitura web que o modelo pode chamar.
+"""Local and web-reading tools the model can call.
 
-Arquivos são confinados a SANDBOX_ROOT. A leitura web aceita somente HTTP(S)
-público, sem cookies, credenciais, proxies ou acesso à rede local.
+Files are confined to SANDBOX_ROOT. Web reading accepts only public HTTP(S),
+with no cookies, credentials, proxies or access to the local network.
 """
 import ipaddress
 import json
 import os
 import re
 import socket
-import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-# Pasta de trabalho do agente. Trocavel por env pra ele operar num projeto real
-# em vez da sandbox de teste — continua confinado, so muda a raiz.
-SANDBOX_ROOT = Path(os.environ.get("AGENTE_RAIZ", Path(__file__).parent / "sandbox"))
+# The agent's working directory. Overridable by env so it can operate on a real
+# project instead of the test sandbox. It stays confined, only the root changes.
+SANDBOX_ROOT = Path(os.environ.get("ISAACLI_ROOT", Path(__file__).parent / "sandbox"))
 MAX_WEB_BYTES = 80_000
 
 
@@ -25,316 +24,251 @@ def _safe(path: str) -> Path:
     p = (SANDBOX_ROOT / path.lstrip("/")).resolve()
     root = SANDBOX_ROOT.resolve()
     if not (p == root or root in p.parents):
-        raise ValueError(f"caminho fora da sandbox: {path}")
+        raise ValueError(f"path outside the sandbox: {path}")
     return p
 
 
 def read_file(path: str) -> str:
     p = _safe(path)
     if not p.is_file():
-        return f"ERRO: arquivo nao existe: {path}"
+        return f"ERROR: file does not exist: {path}"
     return p.read_text()
 
 
 def write_file(path: str, content: str) -> str:
     p = _safe(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    texto = _desescapar(content)
-    p.write_text(texto)
-    return f"OK: escrevi {len(texto)} bytes em {path}"
+    text = _unescape(content)
+    p.write_text(text)
+    return f"OK: wrote {len(text)} bytes to {path}"
 
 
 def list_dir(path: str = ".") -> str:
     p = _safe(path)
     if not p.is_dir():
-        return f"ERRO: nao e diretorio: {path}"
-    itens = sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir())
-    return "\n".join(itens) if itens else "(vazio)"
+        return f"ERROR: not a directory: {path}"
+    items = sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir())
+    return "\n".join(items) if items else "(empty)"
 
 
 def append_file(path: str, content: str) -> str:
-    """Acrescenta no fim sem o modelo precisar reproduzir o que ja existe.
+    """Append at the end without the model having to reproduce what is already there.
 
-    Modelo pequeno erra ao reescrever arquivo inteiro (chuta conteudo, escapa \\n
-    errado). Dar uma ferramenta que nao exige reproduzir o conteudo elimina a
-    classe de erro inteira, em vez de tentar consertar o modelo.
+    A small model gets it wrong when rewriting a whole file (it guesses content,
+    escapes \\n badly). Giving it a tool that does not require reproducing the
+    content eliminates the entire class of error, instead of trying to fix the
+    model.
     """
     p = _safe(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    texto = _desescapar(content)
-    if not texto.endswith("\n"):
-        texto += "\n"
+    text = _unescape(content)
+    if not text.endswith("\n"):
+        text += "\n"
     with p.open("a") as f:
-        f.write(texto)
-    return f"OK: acrescentei {len(texto)} bytes no fim de {path}"
+        f.write(text)
+    return f"OK: appended {len(text)} bytes to the end of {path}"
 
 
 def replace_between(path: str, start_marker: str, end_marker: str, content: str) -> str:
-    """Substitui um trecho pequeno entre dois marcadores existentes.
+    """Replace the section between two markers that already exist in the file.
 
-    Isto e andaime para modelo pequeno: em vez de pedir um HTML inteiro de novo
-    a cada requisito, o agente troca so a parte que esta trabalhando agora.
+    This is scaffolding for a small model: instead of asking for a whole file
+    again on every requirement, the agent swaps only the part it is working on.
     """
-    start_marker = _normalizar_marcador(start_marker)
-    end_marker = _normalizar_marcador(end_marker)
+    start_marker = _normalize_marker(start_marker)
+    end_marker = _normalize_marker(end_marker)
     p = _safe(path)
     if not p.is_file():
-        return f"ERRO: arquivo nao existe: {path}"
-    inicio_familia = re.fullmatch(r"(.+)_START", start_marker)
-    fim_familia = re.fullmatch(r"(.+)_END", end_marker)
-    familia = inicio_familia.group(1) if inicio_familia else ""
-    if inicio_familia and fim_familia and familia != fim_familia.group(1):
+        return f"ERROR: file does not exist: {path}"
+    start_family = re.fullmatch(r"(.+)_START", start_marker)
+    end_family = re.fullmatch(r"(.+)_END", end_marker)
+    if start_family and end_family and start_family.group(1) != end_family.group(1):
         return (
-            "ERRO: marcadores incompatíveis. "
-            f"{start_marker} deve fechar com {inicio_familia.group(1)}_END, "
-            f"nao com {end_marker}. Faca uma troca por vez.")
-    texto = p.read_text()
-    inicio = texto.find(start_marker)
-    fim = texto.find(end_marker)
-    if inicio < 0:
-        return f"ERRO: marcador inicial nao encontrado: {start_marker}"
-    if fim < 0:
-        return f"ERRO: marcador final nao encontrado: {end_marker}"
-    if fim <= inicio:
-        return "ERRO: marcador final aparece antes do marcador inicial"
+            "ERROR: mismatched markers. "
+            f"{start_marker} must close with {start_family.group(1)}_END, "
+            f"not with {end_marker}. Do one swap at a time.")
+    text = p.read_text()
+    start = text.find(start_marker)
+    end = text.find(end_marker)
+    if start < 0:
+        return f"ERROR: start marker not found: {start_marker}"
+    if end < 0:
+        return f"ERROR: end marker not found: {end_marker}"
+    if end <= start:
+        return "ERROR: the end marker appears before the start marker"
 
-    trecho = _desescapar(content)
-    baixo_trecho = trecho.lower()
-    for placeholder in ("javascript aqui", "css aqui", "seu codigo aqui", "codigo aqui"):
-        if placeholder in baixo_trecho:
-            return (
-                f'ERRO: o trecho ainda contem placeholder "{placeholder}". '
-                "Substitua por codigo real antes de chamar replace_between.")
-    if any(perigoso in trecho.lower() for perigoso in (
-        "<script", "</script", "<body", "</body", "<html", "</html",
-    )):
-        return (
-            "ERRO: o trecho tentou alterar a estrutura principal do HTML. "
-            "Use apenas o miolo entre os marcadores, sem <script>, <body> ou <html>.")
-    if familia in {"ISAAC_ADD", "ISAAC_DELETE", "ISAAC_SAVE", "ISAAC_LOAD"} and _contem_tag_html(trecho):
-        return (
-            "ERRO: este marcador fica dentro de <script>; nao escreva HTML aqui. "
-            "Para botao, tabela ou formulario use os marcadores HTML correspondentes.")
-    wrappers_js = {
-        "ISAAC_ADD": "addTransaction",
-        "ISAAC_DELETE": "deleteTransaction",
-        "ISAAC_SAVE": "saveTransactions",
-        "ISAAC_LOAD": "loadTransactions",
-    }
-    funcao_wrapper = wrappers_js.get(familia)
-    if funcao_wrapper and re.search(rf"\bfunction\s+{re.escape(funcao_wrapper)}\s*\(", trecho):
-        return (
-            "ERRO: escreva apenas o miolo dentro dos marcadores, sem declarar "
-            f"function {funcao_wrapper} de novo.")
-    if (familia == "ISAAC_RENDER" or familia.startswith("ISAAC_RENDER_")) and re.search(r"\bfunction\s+\w+\s*\(", trecho):
-        return (
-            "ERRO: este marcador fica dentro de render(); escreva apenas comandos "
-            "do miolo, sem declarar funcoes.")
-    # Os marcadores ficam em linhas de comentario, por exemplo:
-    #   <!-- ISAAC_FORM_START -->
-    #   /* ISAAC_RENDER_START */
-    # Substituir a partir do texto "ISAAC_*" colocava o codigo DENTRO do
-    # comentario e quebrava o HTML/JS. A troca correta preserva as linhas dos
-    # marcadores e altera apenas o miolo entre elas.
-    inicio_conteudo = texto.find("\n", inicio)
-    if inicio_conteudo < 0:
-        inicio_conteudo = inicio + len(start_marker)
+    section = _unescape(content)
+    # The markers sit on comment lines, for example:
+    #   <!-- SECTION_START -->
+    #   /* SECTION_START */
+    # Replacing from the marker text itself put the code INSIDE the comment and
+    # broke the file. The correct swap preserves the marker lines and changes
+    # only the body between them.
+    content_start = text.find("\n", start)
+    if content_start < 0:
+        content_start = start + len(start_marker)
     else:
-        inicio_conteudo += 1
-    fim_conteudo = texto.rfind("\n", 0, fim)
-    if fim_conteudo >= 0:
-        fim_conteudo += 1
-    if fim_conteudo < inicio_conteudo:
-        fim_conteudo = fim
-    linhas_trecho = [
-        linha for linha in trecho.splitlines()
-        if not re.search(r"ISAAC_[A-Z0-9_]+_(START|END)", linha)
+        content_start += 1
+    content_end = text.rfind("\n", 0, end)
+    if content_end >= 0:
+        content_end += 1
+    if content_end < content_start:
+        content_end = end
+    # A model often echoes the marker lines back inside the content it sends.
+    # Keeping them would duplicate the markers and break the next replacement.
+    body_lines = [
+        line for line in section.splitlines()
+        if not (_normalize_marker(line.strip()) in (start_marker, end_marker))
     ]
-    miolo = "\n".join(linhas_trecho).strip()
-    if miolo:
-        miolo = miolo + "\n"
-    novo = texto[:inicio_conteudo] + miolo + texto[fim_conteudo:]
-    p.write_text(novo)
+    body = "\n".join(body_lines).strip()
+    if body:
+        body = body + "\n"
+    updated = text[:content_start] + body + text[content_end:]
+    p.write_text(updated)
     return (
-        f"OK: substitui {len(trecho)} bytes entre {start_marker} e "
-        f"{end_marker} em {path}")
+        f"OK: replaced {len(section)} bytes between {start_marker} and "
+        f"{end_marker} in {path}")
 
 
-def _normalizar_marcador(marker: str) -> str:
-    """Aceita marcador puro ou embrulhado no comentario onde ele aparece."""
+def _normalize_marker(marker: str) -> str:
+    """Accept a bare marker or one wrapped in the comment where it appears."""
     m = str(marker or "").strip()
-    for prefixo, sufixo in (("<!--", "-->"), ("/*", "*/")):
-        if m.startswith(prefixo) and m.endswith(sufixo):
-            return m[len(prefixo):-len(sufixo)].strip()
+    for prefix, suffix in (("<!--", "-->"), ("/*", "*/")):
+        if m.startswith(prefix) and m.endswith(suffix):
+            return m[len(prefix):-len(suffix)].strip()
     return m
 
 
-def _contem_tag_html(texto: str) -> bool:
-    """Diferencia tag HTML de comparacao JS como `index < 0`."""
-    return bool(re.search(r"<\s*/?\s*[a-zA-Z][a-zA-Z0-9-]*(?:\s|>|/)", texto))
+def _unescape(s: str) -> str:
+    r"""A small model emits a literal '\n' (2 chars) thinking it is a line break.
 
-
-def _desescapar(s: str) -> str:
-    r"""Modelo pequeno emite '\n' literal (2 chars) achando que e quebra de linha.
-
-    So converte quando NAO ha nenhuma quebra real no texto — assim nao estraga
-    conteudo que legitimamente contenha uma barra invertida.
+    It only converts when there is NO real line break in the text, so it
+    does not damage content that legitimately contains a backslash.
     """
     if "\n" not in s and "\\n" in s:
         return s.replace("\\n", "\n").replace("\\t", "\t")
     return s
 
 
-def check_file(path: str) -> str:
-    """Checagem mecanica e barata de uma pagina HTML (~1s), SEM opiniao de modelo.
-
-    Ordem do mais barato pro mais caro; para no primeiro degrau que falhar:
-      1. existe / tamanho / estrutura / placeholder / sintaxe JS (verificar_jogo)
-      2. abre headless por ~1s e captura erro de runtime (checagem_rapida.js)
-
-    E filtro de sanidade, NAO criterio de sucesso — quem diz "pronto" e o juiz
-    comportamental. Isto so evita acordar o juiz pra codigo obviamente quebrado.
-    """
-    p = _safe(path)
-    import verificar_jogo
-    ok, probs = verificar_jogo.verificar(p)
-    if not ok:
-        return "PROBLEMAS ENCONTRADOS:\n" + "\n".join(f"- {x}" for x in probs)
-
-    script = Path(__file__).parent / "checagem_rapida.js"
-    try:
-        r = subprocess.run(
-            ["node", str(script), str(p)],
-            capture_output=True, text=True, timeout=30,
-            cwd=str(Path(__file__).parent),
-        )
-        saida = json.loads(r.stdout)
-    except Exception as e:
-        return f"ERRO: a checagem de runtime nao rodou ({e})"
-    if not saida.get("ok"):
-        return "PROBLEMAS ENCONTRADOS:\n" + "\n".join(f"- {x}" for x in saida.get("problemas", []))
-    return "OK: o arquivo abre sem erro de JavaScript e mostra conteudo."
-
-
-def _normalizar_url_web(url: str) -> str:
+def _normalize_web_url(url: str) -> str:
     url = str(url or "").strip()
     if len(url) > 2048:
-        raise ValueError("URL longa demais")
-    partes = urllib.parse.urlsplit(url)
-    if partes.scheme not in ("http", "https") or not partes.hostname:
-        raise ValueError("use uma URL completa começando com http:// ou https://")
-    if partes.username or partes.password:
-        raise ValueError("URL com usuário ou senha não é permitida")
+        raise ValueError("URL is too long")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("use a full URL starting with http:// or https://")
+    if parts.username or parts.password:
+        raise ValueError("a URL with a username or password is not allowed")
     try:
-        _ = partes.port
+        _ = parts.port
     except ValueError as e:
-        raise ValueError("porta inválida na URL") from e
+        raise ValueError("invalid port in the URL") from e
 
-    issue = re.fullmatch(r"/([^/]+)/([^/]+)/issues/(\d+)/?", partes.path)
-    if partes.hostname.casefold() == "github.com" and issue:
-        dono, repo, numero = issue.groups()
-        return f"https://api.github.com/repos/{dono}/{repo}/issues/{numero}"
-    return urllib.parse.urlunsplit(partes)
+    issue = re.fullmatch(r"/([^/]+)/([^/]+)/issues/(\d+)/?", parts.path)
+    if parts.hostname.casefold() == "github.com" and issue:
+        owner, repo, number = issue.groups()
+        return f"https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+    return urllib.parse.urlunsplit(parts)
 
 
-def _validar_destino_web(url: str) -> None:
-    partes = urllib.parse.urlsplit(url)
-    if partes.scheme not in ("http", "https") or not partes.hostname:
-        raise ValueError("redirecionamento para protocolo não permitido")
-    porta = partes.port or (443 if partes.scheme == "https" else 80)
+def _validate_web_target(url: str) -> None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("redirect to a protocol that is not allowed")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
-        destinos = socket.getaddrinfo(partes.hostname, porta, type=socket.SOCK_STREAM)
+        targets = socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
-        raise ValueError(f"não foi possível resolver {partes.hostname}: {e}") from e
-    ips = {ipaddress.ip_address(item[4][0]) for item in destinos}
+        raise ValueError(f"could not resolve {parts.hostname}: {e}") from e
+    ips = {ipaddress.ip_address(item[4][0]) for item in targets}
     if not ips or any(not ip.is_global for ip in ips):
-        raise ValueError("a ferramenta web não acessa localhost nem redes privadas/reservadas")
+        raise ValueError("the web tool does not reach localhost or private/reserved networks")
 
 
-class _RedirecionamentoWebSeguro(urllib.request.HTTPRedirectHandler):
+class _SafeWebRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        destino = urllib.parse.urljoin(req.full_url, newurl)
-        _validar_destino_web(destino)
-        return super().redirect_request(req, fp, code, msg, headers, destino)
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_web_target(target)
+        return super().redirect_request(req, fp, code, msg, headers, target)
 
 
-class _ExtratorHTML(HTMLParser):
+class _HTMLExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.partes = []
-        self.oculto = 0
+        self.parts = []
+        self.hidden = 0
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style", "svg", "noscript"):
-            self.oculto += 1
-        elif not self.oculto and tag in ("p", "div", "br", "li", "h1", "h2", "h3", "tr"):
-            self.partes.append("\n")
+            self.hidden += 1
+        elif not self.hidden and tag in ("p", "div", "br", "li", "h1", "h2", "h3", "tr"):
+            self.parts.append("\n")
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style", "svg", "noscript") and self.oculto:
-            self.oculto -= 1
-        elif not self.oculto and tag in ("p", "div", "li", "h1", "h2", "h3", "tr"):
-            self.partes.append("\n")
+        if tag in ("script", "style", "svg", "noscript") and self.hidden:
+            self.hidden -= 1
+        elif not self.hidden and tag in ("p", "div", "li", "h1", "h2", "h3", "tr"):
+            self.parts.append("\n")
 
     def handle_data(self, data):
-        if not self.oculto:
-            self.partes.append(data)
+        if not self.hidden:
+            self.parts.append(data)
 
-    def texto(self):
-        linhas = (re.sub(r"[ \t]+", " ", linha).strip()
-                  for linha in "".join(self.partes).splitlines())
-        return "\n".join(linha for linha in linhas if linha)
+    def text(self):
+        lines = (re.sub(r"[ \t]+", " ", line).strip()
+                 for line in "".join(self.parts).splitlines())
+        return "\n".join(line for line in lines if line)
 
 
 def fetch_url(url: str) -> str:
-    """Lê conteúdo público sem conceder rede ao terminal confinado."""
-    destino = _normalizar_url_web(url)
-    _validar_destino_web(destino)
+    """Read public content without granting network access to the confined terminal."""
+    target = _normalize_web_url(url)
+    _validate_web_target(target)
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
-        _RedirecionamentoWebSeguro(),
+        _SafeWebRedirect(),
     )
-    pedido = urllib.request.Request(
-        destino,
+    request = urllib.request.Request(
+        target,
         headers={
             "User-Agent": "IsaacCLI/0.1 (+read-only fetch_url)",
             "Accept": "text/html, application/json, text/plain, application/xml;q=0.9",
         },
     )
     try:
-        with opener.open(pedido, timeout=20) as resposta:
-            dados = resposta.read(MAX_WEB_BYTES + 1)
-            final = resposta.geturl()
-            tipo = resposta.headers.get_content_type()
-            charset = resposta.headers.get_content_charset() or "utf-8"
+        with opener.open(request, timeout=20) as response:
+            data = response.read(MAX_WEB_BYTES + 1)
+            final = response.geturl()
+            kind = response.headers.get_content_type()
+            charset = response.headers.get_content_charset() or "utf-8"
     except urllib.error.HTTPError as e:
-        return f"ERRO HTTP {e.code} ao acessar {destino}: {e.reason}"
+        return f"HTTP ERROR {e.code} while reading {target}: {e.reason}"
     except urllib.error.URLError as e:
-        return f"ERRO DE REDE ao acessar {destino}: {e.reason}"
+        return f"NETWORK ERROR while reading {target}: {e.reason}"
 
-    if not (tipo.startswith("text/") or tipo in (
+    if not (kind.startswith("text/") or kind in (
             "application/json", "application/xml", "application/xhtml+xml")):
-        return f"ERRO: conteúdo não textual recusado ({tipo})"
-    cortado = len(dados) > MAX_WEB_BYTES
-    texto = dados[:MAX_WEB_BYTES].decode(charset, errors="replace")
-    if tipo in ("text/html", "application/xhtml+xml"):
-        parser = _ExtratorHTML()
-        parser.feed(texto)
-        texto = parser.texto()
-    cabecalho = f"URL final: {final}\nTipo: {tipo}\n"
-    sufixo = "\n… conteúdo cortado pelo limite da ferramenta" if cortado else ""
-    return cabecalho + texto + sufixo
+        return f"ERROR: non-textual content refused ({kind})"
+    truncated = len(data) > MAX_WEB_BYTES
+    text = data[:MAX_WEB_BYTES].decode(charset, errors="replace")
+    if kind in ("text/html", "application/xhtml+xml"):
+        parser = _HTMLExtractor()
+        parser.feed(text)
+        text = parser.text()
+    header = f"Final URL: {final}\nType: {kind}\n"
+    suffix = "\n… content truncated by the tool limit" if truncated else ""
+    return header + text + suffix
 
 
 def run_command(cmd: str) -> str:
-    """Roda comando confinado. A contencao inteira mora em execucao.py.
+    """Run a confined command. The whole containment lives in execution.py.
 
-    Import tardio de proposito: `tools` e importado por todo mundo aqui
-    (bancada, testes, scripts de lote), e `execucao` so faz sentido quando
-    alguem de fato vai rodar comando.
+    Late import on purpose: `tools` is imported by everyone here (tests, batch
+    scripts), and `execution` only makes sense when someone is actually going to
+    run a command.
     """
-    import execucao
-    return execucao.run_command(cmd)
+    import execution
+    return execution.run_command(cmd)
 
 
 IMPLS = {
@@ -343,22 +277,21 @@ IMPLS = {
     "list_dir": list_dir,
     "append_file": append_file,
     "replace_between": replace_between,
-    "check_file": check_file,
     "fetch_url": fetch_url,
     "run_command": run_command,
 }
 
-# Schema no formato OpenAI — é isso que vai no campo `tools` da chamada da API.
+# OpenAI-shaped schema: this is what goes in the `tools` field of the API call.
 SCHEMA = [
     {
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Le o conteudo de um arquivo de texto e devolve como string.",
+            "description": "Read a text file and return its content as a string.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do arquivo"}
+                    "path": {"type": "string", "description": "relative path of the file"}
                 },
                 "required": ["path"],
             },
@@ -368,12 +301,12 @@ SCHEMA = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Escreve (ou sobrescreve) um arquivo de texto com o conteudo dado.",
+            "description": "Write (or overwrite) a text file with the given content.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do arquivo"},
-                    "content": {"type": "string", "description": "conteudo completo a escrever"},
+                    "path": {"type": "string", "description": "relative path of the file"},
+                    "content": {"type": "string", "description": "full content to write"},
                 },
                 "required": ["path", "content"],
             },
@@ -384,14 +317,14 @@ SCHEMA = [
         "function": {
             "name": "append_file",
             "description": (
-                "Acrescenta texto no FIM de um arquivo, preservando o que ja existe. "
-                "Use esta em vez de write_file quando for so adicionar algo."
+                "Append text to the END of a file, preserving what is already there. "
+                "Use this instead of write_file when you are only adding something."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do arquivo"},
-                    "content": {"type": "string", "description": "texto a acrescentar no fim"},
+                    "path": {"type": "string", "description": "relative path of the file"},
+                    "content": {"type": "string", "description": "text to append at the end"},
                 },
                 "required": ["path", "content"],
             },
@@ -402,17 +335,17 @@ SCHEMA = [
         "function": {
             "name": "replace_between",
             "description": (
-                "Substitui apenas o conteudo entre dois marcadores textuais ja "
-                "existentes no arquivo. Use para alterar uma secao pequena sem "
-                "reescrever o arquivo inteiro."
+                "Replace only the content between two textual markers that already "
+                "exist in the file. Use it to change a small section without "
+                "rewriting the whole file."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do arquivo"},
-                    "start_marker": {"type": "string", "description": "marcador inicial literal"},
-                    "end_marker": {"type": "string", "description": "marcador final literal"},
-                    "content": {"type": "string", "description": "novo conteudo do trecho"},
+                    "path": {"type": "string", "description": "relative path of the file"},
+                    "start_marker": {"type": "string", "description": "literal start marker"},
+                    "end_marker": {"type": "string", "description": "literal end marker"},
+                    "content": {"type": "string", "description": "new content for the section"},
                 },
                 "required": ["path", "start_marker", "end_marker", "content"],
             },
@@ -421,34 +354,17 @@ SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "check_file",
-            "description": (
-                "Testa mecanicamente uma pagina HTML: sintaxe do JavaScript, erro ao abrir "
-                "no navegador, placeholder esquecido. Use SEMPRE depois de escrever um jogo, "
-                "antes de dizer que terminou. Devolve OK ou a lista de problemas."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do arquivo HTML"}
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "fetch_url",
             "description": (
-                "Ferramenta geral para ler conteúdo textual de uma URL HTTP(S) pública: "
-                "páginas, documentação, links compartilhados e APIs. Use sempre que precisar "
-                "consultar a web pública; não tente curl pelo terminal. Não acessa redes privadas."
+                "General tool for reading textual content from a public HTTP(S) URL: "
+                "pages, documentation, shared links and APIs. Use it whenever you need "
+                "to consult the public web; do not try curl in the terminal. It does "
+                "not reach private networks."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "URL pública completa"}
+                    "url": {"type": "string", "description": "full public URL"}
                 },
                 "required": ["url"],
             },
@@ -458,11 +374,11 @@ SCHEMA = [
         "type": "function",
         "function": {
             "name": "list_dir",
-            "description": "Lista os arquivos e pastas de um diretorio.",
+            "description": "List the files and folders of a directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "caminho relativo do diretorio"}
+                    "path": {"type": "string", "description": "relative path of the directory"}
                 },
                 "required": [],
             },
@@ -471,41 +387,41 @@ SCHEMA = [
 ]
 
 
-def _juntar_esquema_de_comando():
-    """Anexa o schema de run_command sem duplicar a descricao dele aqui.
+def _attach_command_schema():
+    """Attach the run_command schema without duplicating its description here.
 
-    A descricao mora junto das regras que ela descreve (execucao.py). Copiar pra
-    ca criaria duas versoes da verdade, e a que o modelo LE seria a copia — o
-    jeito classico de a lista de permitidos mudar e o modelo continuar
-    acreditando na antiga.
+    The description lives next to the rules it describes (execution.py). Copying
+    it here would create two versions of the truth, and the one the model READS
+    would be the copy, the classic way for the allowlist to change while the
+    model keeps believing the old one.
     """
     try:
-        import execucao
+        import execution
     except ImportError:
-        return  # sem o modulo, a ferramenta simplesmente nao existe pro modelo
-    SCHEMA.append(execucao.ESQUEMA)
+        return  # without the module, the tool simply does not exist for the model
+    SCHEMA.append(execution.SCHEMA)
 
 
-_juntar_esquema_de_comando()
+_attach_command_schema()
 
 
-def schema_filtrado(nomes):
-    """Devolve so as ferramentas necessarias para a tarefa atual."""
-    permitidos = set(nomes)
-    return [s for s in SCHEMA if s["function"]["name"] in permitidos]
+def filtered_schema(names):
+    """Return only the tools needed for the current task."""
+    allowed = set(names)
+    return [s for s in SCHEMA if s["function"]["name"] in allowed]
 
 
-def executar(nome: str, args_json: str) -> str:
-    """Executa a ferramenta pedida pelo modelo e devolve o resultado como texto."""
-    if nome not in IMPLS:
-        return f"ERRO: ferramenta desconhecida '{nome}'. Disponiveis: {list(IMPLS)}"
+def execute(name: str, args_json: str) -> str:
+    """Run the tool the model asked for and return the result as text."""
+    if name not in IMPLS:
+        return f"ERROR: unknown tool '{name}'. Available: {list(IMPLS)}"
     try:
         args = json.loads(args_json) if isinstance(args_json, str) else (args_json or {})
     except json.JSONDecodeError as e:
-        return f"ERRO: argumentos nao sao JSON valido ({e}): {args_json}"
+        return f"ERROR: arguments are not valid JSON ({e}): {args_json}"
     try:
-        return IMPLS[nome](**args)
+        return IMPLS[name](**args)
     except TypeError as e:
-        return f"ERRO: argumentos errados para {nome}: {e}"
+        return f"ERROR: wrong arguments for {name}: {e}"
     except Exception as e:
-        return f"ERRO ao executar {nome}: {e}"
+        return f"ERROR while running {name}: {e}"

@@ -1,4 +1,4 @@
-"""UI terminal sem dependencias: setas em TTY, numeros como fallback."""
+"""Dependency-free terminal UI: arrow keys on a TTY, numbers as a fallback."""
 from contextlib import contextmanager
 import os
 import re
@@ -9,247 +9,250 @@ import sys
 _ALT_DEPTH = 0
 
 
-def interativo(input_fn=input):
+def interactive(input_fn=input):
     return input_fn is input and sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def limpar(input_fn=input):
-    if interativo(input_fn):
+def clear(input_fn=input):
+    if interactive(input_fn):
         sys.stdout.write("\033[H\033[2J")
         sys.stdout.flush()
 
 
-def sutil(texto, input_fn=input):
-    return f"\033[2m{texto}\033[0m" if interativo(input_fn) else texto
+def dim(text, input_fn=input):
+    return f"\033[2m{text}\033[0m" if interactive(input_fn) else text
 
 
 @contextmanager
-def entrada_ocupada(input_fn=input, fd=None):
-    """Evita que rolagem/teclas sejam ecoadas enquanto o agente trabalha.
+def busy_input(input_fn=input, fd=None):
+    """Keep scrolling/keystrokes from being echoed while the agent works.
 
-    ISIG fica ativo, portanto Ctrl+C continua interrompendo normalmente. Ao
-    terminar, descartamos sequências que chegaram sem haver um prompt ativo.
-    ``fd`` existe para permitir o teste em um pseudo-terminal.
+    ISIG stays on, so Ctrl+C still interrupts normally. On the way out we discard
+    sequences that arrived while no prompt was active. ``fd`` exists so the
+    behaviour can be tested in a pseudo-terminal.
     """
-    ativo = fd is not None or interativo(input_fn)
-    if not ativo:
+    active = fd is not None or interactive(input_fn)
+    if not active:
         yield
         return
 
     import termios
 
-    entrada_fd = sys.stdin.fileno() if fd is None else fd
-    anterior = termios.tcgetattr(entrada_fd)
-    ocupado = termios.tcgetattr(entrada_fd)
-    ocupado[3] &= ~(termios.ECHO | termios.ICANON)
+    input_fd = sys.stdin.fileno() if fd is None else fd
+    previous = termios.tcgetattr(input_fd)
+    busy = termios.tcgetattr(input_fd)
+    busy[3] &= ~(termios.ECHO | termios.ICANON)
     if hasattr(termios, "ECHOCTL"):
-        ocupado[3] &= ~termios.ECHOCTL
-    ocupado[3] |= termios.ISIG
-    ocupado[6][termios.VMIN] = 0
-    ocupado[6][termios.VTIME] = 0
+        busy[3] &= ~termios.ECHOCTL
+    busy[3] |= termios.ISIG
+    busy[6][termios.VMIN] = 0
+    busy[6][termios.VTIME] = 0
     try:
-        termios.tcsetattr(entrada_fd, termios.TCSADRAIN, ocupado)
+        termios.tcsetattr(input_fd, termios.TCSADRAIN, busy)
         yield
     finally:
-        # Não entregue ao próximo prompt setas/rolagem digitadas durante a geração.
-        termios.tcflush(entrada_fd, termios.TCIFLUSH)
-        termios.tcsetattr(entrada_fd, termios.TCSADRAIN, anterior)
+        # Do not hand the next prompt arrow keys/scrolling typed during generation.
+        termios.tcflush(input_fd, termios.TCIFLUSH)
+        termios.tcsetattr(input_fd, termios.TCSADRAIN, previous)
 
 
 @contextmanager
-def tela_alternativa(input_fn=input):
-    """Isola o wizard do histórico visível do terminal."""
+def alternate_screen(input_fn=input):
+    """Isolate the wizard from the terminal's visible history."""
     global _ALT_DEPTH
-    ativo = interativo(input_fn)
-    primeira = ativo and _ALT_DEPTH == 0
-    if ativo:
+    active = interactive(input_fn)
+    first = active and _ALT_DEPTH == 0
+    if active:
         _ALT_DEPTH += 1
-    if primeira:
+    if first:
         sys.stdout.write("\033[?1049h\033[H\033[2J")
         sys.stdout.flush()
     try:
         yield
     finally:
-        if ativo:
+        if active:
             _ALT_DEPTH -= 1
-        if primeira:
+        if first:
             sys.stdout.write("\033[?25h\033[0m\033[?1049l")
             sys.stdout.flush()
 
 
-def selecionar(titulo, opcoes, input_fn=input, prompt="Selecione: ", invalido=None,
-               inicial=0, desabilitados=None):
-    if not opcoes:
+def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
+           initial=0, disabled=None, more_above=None, more_below=None):
+    if not options:
         raise ValueError("select requires at least one option")
-    desabilitados = set(desabilitados or ())
-    selecionaveis = [i for i in range(len(opcoes)) if i not in desabilitados]
-    if not selecionaveis:
+    disabled = set(disabled or ())
+    selectable = [i for i in range(len(options)) if i not in disabled]
+    if not selectable:
         raise ValueError("select requires at least one enabled option")
-    if not interativo(input_fn):
-        print(titulo)
-        numero_para_indice = []
-        for i, opcao in enumerate(opcoes):
-            if i in desabilitados:
-                print(f"  {opcao}")
+    if not interactive(input_fn):
+        print(title)
+        number_to_index = []
+        for i, option in enumerate(options):
+            if i in disabled:
+                print(f"  {option}")
             else:
-                numero_para_indice.append(i)
-                print(f"  {len(numero_para_indice)}) {opcao}")
+                number_to_index.append(i)
+                print(f"  {len(number_to_index)}) {option}")
         while True:
-            valor = input_fn(prompt).strip()
+            value = input_fn(prompt).strip()
             try:
-                numero = int(valor) - 1
+                number = int(value) - 1
             except ValueError:
-                numero = -1
-            if 0 <= numero < len(numero_para_indice):
-                return numero_para_indice[numero]
-            print(invalido or f"Escolha um número de 1 a {len(numero_para_indice)}.")
+                number = -1
+            if 0 <= number < len(number_to_index):
+                return number_to_index[number]
+            print(invalid or f"Choose a number from 1 to {len(number_to_index)}.")
 
     import termios
     import tty
 
     fd = sys.stdin.fileno()
-    anterior = termios.tcgetattr(fd)
-    indice = min(selecionaveis, key=lambda i: abs(i - inicial))
-    def mover(direcao):
-        posicao = selecionaveis.index(indice)
-        return selecionaveis[(posicao + direcao) % len(selecionaveis)]
+    previous = termios.tcgetattr(fd)
+    index = min(selectable, key=lambda i: abs(i - initial))
 
-    def renderizar():
-        # Redesenhar a tela inteira também funciona quando uma opção longa quebra
-        # automaticamente em mais de uma linha física.
-        tamanho = shutil.get_terminal_size((80, 24))
-        largura = max(tamanho.columns, 20)
+    def move(direction):
+        position = selectable.index(index)
+        return selectable[(position + direction) % len(selectable)]
+
+    def render():
+        # Redrawing the whole screen also works when a long option wraps onto
+        # more than one physical line.
+        size = shutil.get_terminal_size((80, 24))
+        width = max(size.columns, 20)
         ansi = re.compile(r"\x1b\[[0-9;]*m")
-        linhas_titulo = sum(
-            max(1, (len(ansi.sub("", linha)) + largura - 1) // largura)
-            for linha in titulo.splitlines()
+        title_lines = sum(
+            max(1, (len(ansi.sub("", line)) + width - 1) // width)
+            for line in title.splitlines()
         )
-        capacidade = max(5, tamanho.lines - linhas_titulo - 4)
-        inicio = max(0, indice - capacidade // 2)
-        fim = min(len(opcoes), inicio + capacidade)
-        inicio = max(0, fim - capacidade)
+        capacity = max(5, size.lines - title_lines - 4)
+        start = max(0, index - capacity // 2)
+        end = min(len(options), start + capacity)
+        start = max(0, end - capacity)
         sys.stdout.write("\033[H\033[2J")
-        sys.stdout.write(titulo.replace("\n", "\r\n") + "\r\n")
-        if inicio:
-            sys.stdout.write(f"   \033[2m↑ {inicio} opção(ões) acima\033[0m\r\n")
-        for posicao in range(inicio, fim):
-            opcao = opcoes[posicao]
-            if posicao in desabilitados:
-                sys.stdout.write(f"   \033[2m{opcao}\033[0m\r\n")
+        sys.stdout.write(title.replace("\n", "\r\n") + "\r\n")
+        if start:
+            label = (more_above or "↑ {count} more above").format(count=start)
+            sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")
+        for position in range(start, end):
+            option = options[position]
+            if position in disabled:
+                sys.stdout.write(f"   \033[2m{option}\033[0m\r\n")
                 continue
-            cursor = "❯" if posicao == indice else " "
-            destaque = "\033[1;36m" if posicao == indice else ""
-            reset = "\033[0m" if destaque else ""
-            sys.stdout.write(f" {cursor} {destaque}{opcao}{reset}\r\n")
-        if fim < len(opcoes):
-            sys.stdout.write(
-                f"   \033[2m↓ {len(opcoes) - fim} opção(ões) abaixo\033[0m\r\n"
-            )
+            cursor = "❯" if position == index else " "
+            highlight = "\033[1;36m" if position == index else ""
+            reset = "\033[0m" if highlight else ""
+            sys.stdout.write(f" {cursor} {highlight}{option}{reset}\r\n")
+        if end < len(options):
+            label = (more_below or "↓ {count} more below").format(
+                count=len(options) - end)
+            sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")
         sys.stdout.flush()
 
-    with tela_alternativa(input_fn):
+    with alternate_screen(input_fn):
         try:
             tty.setraw(fd)
             sys.stdout.write("\033[?25l")
-            renderizar()
+            render()
             while True:
-                tecla = os.read(fd, 1)
-                if tecla in (b"\r", b"\n"):
-                    return indice
-                if tecla in (b"k", b"K"):
-                    indice = mover(-1)
-                    renderizar()
-                elif tecla in (b"j", b"J"):
-                    indice = mover(1)
-                    renderizar()
-                elif tecla == b"\x1b":
-                    sequencia = os.read(fd, 2)
-                    if sequencia == b"[A":
-                        indice = mover(-1)
-                        renderizar()
-                    elif sequencia == b"[B":
-                        indice = mover(1)
-                        renderizar()
-                elif tecla == b"\x03":
+                key = os.read(fd, 1)
+                if key in (b"\r", b"\n"):
+                    return index
+                if key in (b"k", b"K"):
+                    index = move(-1)
+                    render()
+                elif key in (b"j", b"J"):
+                    index = move(1)
+                    render()
+                elif key == b"\x1b":
+                    sequence = os.read(fd, 2)
+                    if sequence == b"[A":
+                        index = move(-1)
+                        render()
+                    elif sequence == b"[B":
+                        index = move(1)
+                        render()
+                elif key == b"\x03":
                     raise KeyboardInterrupt
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, anterior)
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous)
             sys.stdout.write("\033[?25h\033[0m")
             sys.stdout.flush()
 
 
-def selecionar_inline(opcoes, atalhos=None, input_fn=input, inicial=0):
-    """Menu por setas sem limpar a conversa que já está na tela."""
-    if not opcoes:
+def select_inline(options, shortcuts=None, input_fn=input, initial=0,
+                  prompt="Choose [Enter/w/g/n]: ", chosen_label="Permission: {option}"):
+    """Arrow-key menu that does not clear the conversation already on screen."""
+    if not options:
         raise ValueError("inline select requires at least one option")
-    atalhos = atalhos or {}
-    if not interativo(input_fn):
-        for i, opcao in enumerate(opcoes, 1):
-            print(f"  {i}) {opcao}")
-        valor = input_fn("Escolha [Enter/w/g/n]: ").strip().lower()
-        if valor == "":
-            return inicial
-        if valor in atalhos:
-            return atalhos[valor]
+    shortcuts = shortcuts or {}
+    if not interactive(input_fn):
+        for i, option in enumerate(options, 1):
+            print(f"  {i}) {option}")
+        value = input_fn(prompt).strip().lower()
+        if value == "":
+            return initial
+        if value in shortcuts:
+            return shortcuts[value]
         try:
-            indice = int(valor) - 1
+            index = int(value) - 1
         except ValueError:
-            return len(opcoes) - 1
-        return indice if 0 <= indice < len(opcoes) else len(opcoes) - 1
+            return len(options) - 1
+        return index if 0 <= index < len(options) else len(options) - 1
 
     import termios
     import tty
 
     fd = sys.stdin.fileno()
-    anterior = termios.tcgetattr(fd)
-    indice = min(max(inicial, 0), len(opcoes) - 1)
+    previous = termios.tcgetattr(fd)
+    index = min(max(initial, 0), len(options) - 1)
 
-    def desenhar(subir=False):
-        if subir:
-            sys.stdout.write(f"\033[{len(opcoes)}A")
-        for posicao, opcao in enumerate(opcoes):
-            cursor = "❯" if posicao == indice else " "
-            destaque = "\033[1;36m" if posicao == indice else ""
-            reset = "\033[0m" if destaque else ""
-            sys.stdout.write(f"\r\033[2K {cursor} {destaque}{opcao}{reset}\r\n")
+    def draw(move_up=False):
+        if move_up:
+            sys.stdout.write(f"\033[{len(options)}A")
+        for position, option in enumerate(options):
+            cursor = "❯" if position == index else " "
+            highlight = "\033[1;36m" if position == index else ""
+            reset = "\033[0m" if highlight else ""
+            sys.stdout.write(f"\r\033[2K {cursor} {highlight}{option}{reset}\r\n")
         sys.stdout.flush()
 
     try:
         tty.setraw(fd)
         sys.stdout.write("\033[?25l")
-        desenhar()
+        draw()
         while True:
-            tecla = os.read(fd, 1)
-            if tecla in (b"\r", b"\n"):
+            key = os.read(fd, 1)
+            if key in (b"\r", b"\n"):
                 break
-            if tecla.decode(errors="ignore").lower() in atalhos:
-                indice = atalhos[tecla.decode(errors="ignore").lower()]
+            if key.decode(errors="ignore").lower() in shortcuts:
+                index = shortcuts[key.decode(errors="ignore").lower()]
                 break
-            if tecla in (b"k", b"K"):
-                indice = (indice - 1) % len(opcoes)
-                desenhar(subir=True)
-            elif tecla in (b"j", b"J"):
-                indice = (indice + 1) % len(opcoes)
-                desenhar(subir=True)
-            elif tecla == b"\x1b":
-                sequencia = os.read(fd, 2)
-                if sequencia == b"[A":
-                    indice = (indice - 1) % len(opcoes)
-                    desenhar(subir=True)
-                elif sequencia == b"[B":
-                    indice = (indice + 1) % len(opcoes)
-                    desenhar(subir=True)
-            elif tecla == b"\x03":
+            if key in (b"k", b"K"):
+                index = (index - 1) % len(options)
+                draw(move_up=True)
+            elif key in (b"j", b"J"):
+                index = (index + 1) % len(options)
+                draw(move_up=True)
+            elif key == b"\x1b":
+                sequence = os.read(fd, 2)
+                if sequence == b"[A":
+                    index = (index - 1) % len(options)
+                    draw(move_up=True)
+                elif sequence == b"[B":
+                    index = (index + 1) % len(options)
+                    draw(move_up=True)
+            elif key == b"\x03":
                 raise KeyboardInterrupt
-        sys.stdout.write(f"\033[{len(opcoes)}A")
-        for _ in opcoes:
+        sys.stdout.write(f"\033[{len(options)}A")
+        for _ in options:
             sys.stdout.write("\r\033[2K\033[1B")
-        sys.stdout.write(f"\033[{len(opcoes)}A\r\033[2K")
-        # O terminal ainda está em raw: \n sozinho não retorna à coluna zero.
-        sys.stdout.write(f"Permissão: {opcoes[indice]}\r\n")
+        sys.stdout.write(f"\033[{len(options)}A\r\033[2K")
+        # The terminal is still raw: a bare \n does not return to column zero.
+        sys.stdout.write(chosen_label.format(option=options[index]) + "\r\n")
         sys.stdout.flush()
-        return indice
+        return index
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, anterior)
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
         sys.stdout.write("\033[?25h\033[0m")
         sys.stdout.flush()

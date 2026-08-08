@@ -1,37 +1,42 @@
-"""Loop de agente minimo contra o Ollama local.
+"""Minimal agent loop against the local Ollama.
 
-Uso:
-    python3 agent.py "escreva um arquivo hello.txt com 'oi'" [--modelo qwen2.5-coder:3b]
+Usage:
+    python3 agent.py "write a file hello.txt containing 'hi'" [--model qwen2.5-coder:3b]
 
-O que ele faz, em ciclo:
-  1. manda historico + schema das ferramentas pro modelo
-  2. se o modelo pediu ferramenta, executa de verdade no disco (dentro da sandbox)
-  3. devolve o resultado pro modelo e repete, ate ele responder em texto ou estourar o limite
+What it does, in a cycle:
+  1. sends history + tool schema to the model
+  2. if the model asked for a tool, actually runs it on disk (inside the sandbox)
+  3. returns the result to the model and repeats, until it answers in text or
+     hits the step limit
 """
 import argparse
 import json
 import os
 import re
-import sys
 import urllib.request
 import urllib.error
 
 import tools
 
+# APIs behind Cloudflare (e.g. Groq) block urllib's default User-Agent
+# ("Python-urllib/x.y") with HTTP 403 (error code 1010), treating it as a bot.
+USER_AGENT = "isaacli/0.1"
+
+
 # Honours OLLAMA_HOST, the same variable the ollama CLI reads, so pointing the
 # harness at another host does not require editing code. Accepts it with or
 # without a scheme, because the CLI accepts both.
-def _url_do_ollama():
+def _ollama_url():
     host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434").strip()
     if not host.startswith(("http://", "https://")):
         host = "http://" + host
     return host.rstrip("/") + "/api/chat"
 
 
-URL = _url_do_ollama()
+URL = _ollama_url()
 
-# --- A "pecinha de montar": o conhecimento injetado no boot, sem tocar nos pesos.
-CONHECIMENTO_FERRAMENTAS = """You are an assistant that operates on files through tools.
+# --- The "snap-on piece": knowledge injected at boot, without touching weights.
+TOOLS_KNOWLEDGE = """You are an assistant that operates on files through tools.
 
 RULES:
 - To read, write or list files you MUST call the matching tool.
@@ -44,8 +49,8 @@ RULES:
 """
 
 
-def _normalizar_msg(msg):
-    """Converte a resposta nativa do Ollama para o formato que o loop ja usa."""
+def _normalize_msg(msg):
+    """Convert Ollama's native response into the shape the loop already uses."""
     for tc in msg.get("tool_calls") or []:
         f = tc.get("function") or {}
         if not tc.get("id"):
@@ -55,27 +60,27 @@ def _normalizar_msg(msg):
     return msg
 
 
-def _uso(dado):
+def _usage(data):
     return {
-        "prompt_eval_count": int(dado.get("prompt_eval_count") or 0),
-        "eval_count": int(dado.get("eval_count") or 0),
-        "total_duration": int(dado.get("total_duration") or 0),
-        "eval_duration": int(dado.get("eval_duration") or 0),
+        "prompt_eval_count": int(data.get("prompt_eval_count") or 0),
+        "eval_count": int(data.get("eval_count") or 0),
+        "total_duration": int(data.get("total_duration") or 0),
+        "eval_duration": int(data.get("eval_duration") or 0),
     }
 
 
-def _somar_uso(total, item):
-    for chave in ("prompt_eval_count", "eval_count", "total_duration", "eval_duration"):
-        total[chave] = total.get(chave, 0) + int((item or {}).get(chave) or 0)
+def _add_usage(total, item):
+    for key in ("prompt_eval_count", "eval_count", "total_duration", "eval_duration"):
+        total[key] = total.get(key, 0) + int((item or {}).get(key) or 0)
 
 
-def _mensagens_para_ollama(mensagens):
-    """Ollama nativo espera tool_calls.function.arguments como objeto, nao string."""
-    saida = json.loads(json.dumps(mensagens))
-    for msg in saida:
-        for chave in list(msg):
-            if chave.startswith("_"):
-                del msg[chave]
+def _messages_for_ollama(messages):
+    """Native Ollama expects tool_calls.function.arguments as an object, not a string."""
+    out = json.loads(json.dumps(messages))
+    for msg in out:
+        for key in list(msg):
+            if key.startswith("_"):
+                del msg[key]
         for tc in msg.get("tool_calls") or []:
             f = tc.get("function") or {}
             args = f.get("arguments")
@@ -84,113 +89,146 @@ def _mensagens_para_ollama(mensagens):
                     f["arguments"] = json.loads(args)
                 except json.JSONDecodeError:
                     f["arguments"] = {}
-    return saida
+    return out
 
 
-def _mensagens_para_openai(mensagens):
-    saida = json.loads(json.dumps(mensagens))
-    for msg in saida:
-        for chave in list(msg):
-            if chave.startswith("_"):
-                del msg[chave]
-    return saida
+def _messages_for_openai(messages):
+    out = json.loads(json.dumps(messages))
+    for msg in out:
+        for key in list(msg):
+            if key.startswith("_"):
+                del msg[key]
+    return out
 
 
 def _api_request(payload, api_key, base_url):
     return urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}",
+                 "User-Agent": USER_AGENT},
     )
 
 
-def _api_erro(e):
+def _api_error(e):
     try:
-        detalhe = e.read().decode("utf-8", errors="replace")
-        dado = json.loads(detalhe)
-        mensagem = (dado.get("error") or {}).get("message") or detalhe[:500]
-        return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[oculta]", mensagem)
+        detail = e.read().decode("utf-8", errors="replace")
+        data = json.loads(detail)
+        message = (data.get("error") or {}).get("message") or detail[:500]
+        return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[hidden]", message)
     except Exception:
         return str(e)
 
 
-def chamar_api(modelo, mensagens, usar_tools=True, temperatura=0.0,
-               tools_schema=None, thinking=None, api_key=None, base_url=None):
+def _reasoning_effort_rejected(error_text):
+    # Each OpenAI-compatible provider accepts a different set of values for
+    # reasoning_effort (e.g. Groq accepts low/medium/high for some models and
+    # only none/default for others), and /models does not declare that in a way
+    # that is standard across providers. Instead of maintaining a per-model
+    # table, we treat the provider's own HTTP 400 rejection as the source of
+    # truth and retry without the parameter.
+    return "reasoning_effort" in error_text.lower()
+
+
+def call_api(model, messages, use_tools=True, temperature=0.0,
+             tools_schema=None, thinking=None, api_key=None, base_url=None):
     if not api_key:
-        raise RuntimeError("chave da API ausente; use /setup")
+        raise RuntimeError("API key missing; use /setup")
     if not base_url:
-        raise RuntimeError("endpoint da API ausente; use /setup")
-    payload = {"model": modelo, "messages": _mensagens_para_openai(mensagens),
-               "temperature": temperatura, "stream": False}
-    if usar_tools:
+        raise RuntimeError("API endpoint missing; use /setup")
+    payload = {"model": model, "messages": _messages_for_openai(messages),
+               "temperature": temperature, "stream": False}
+    if use_tools:
         payload.update({"tools": tools_schema or tools.SCHEMA,
                         "tool_choice": "auto", "parallel_tool_calls": False})
     if thinking in ("low", "medium", "high"):
         payload["reasoning_effort"] = thinking
+    thinking_rejected = False
     try:
         with urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600) as r:
-            dado = json.load(r)
+            data = json.load(r)
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"API: {_api_erro(e)}") from e
+        detail = _api_error(e)
+        if payload.get("reasoning_effort") and _reasoning_effort_rejected(detail):
+            payload.pop("reasoning_effort")
+            thinking_rejected = True
+            try:
+                with urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600) as r:
+                    data = json.load(r)
+            except urllib.error.HTTPError as e2:
+                raise RuntimeError(f"API: {_api_error(e2)}") from e2
+        else:
+            raise RuntimeError(f"API: {detail}") from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"API: não foi possível conectar ao endpoint — {e.reason}") from e
-    msg = _normalizar_msg(dado["choices"][0]["message"])
-    uso = dado.get("usage") or {}
-    msg["_usage"] = {"prompt_eval_count": int(uso.get("prompt_tokens") or 0),
-                     "eval_count": int(uso.get("completion_tokens") or 0),
+        raise RuntimeError(f"API: could not connect to the endpoint: {e.reason}") from e
+    msg = _normalize_msg(data["choices"][0]["message"])
+    usage = data.get("usage") or {}
+    msg["_usage"] = {"prompt_eval_count": int(usage.get("prompt_tokens") or 0),
+                     "eval_count": int(usage.get("completion_tokens") or 0),
                      "total_duration": 0}
+    msg["_thinking_rejected"] = thinking_rejected
     return msg
 
 
-def chamar_stream_api(modelo, mensagens, usar_tools=True, temperatura=0.0,
-                      on_token=None, tools_schema=None, thinking=None,
-                      api_key=None, base_url=None):
+def call_stream_api(model, messages, use_tools=True, temperature=0.0,
+                    on_token=None, tools_schema=None, thinking=None,
+                    api_key=None, base_url=None):
     if not api_key:
-        raise RuntimeError("chave da API ausente; use /setup")
+        raise RuntimeError("API key missing; use /setup")
     if not base_url:
-        raise RuntimeError("endpoint da API ausente; use /setup")
-    payload = {"model": modelo, "messages": _mensagens_para_openai(mensagens),
-               "temperature": temperatura, "stream": True,
+        raise RuntimeError("API endpoint missing; use /setup")
+    payload = {"model": model, "messages": _messages_for_openai(messages),
+               "temperature": temperature, "stream": True,
                "stream_options": {"include_usage": True}}
-    if usar_tools:
+    if use_tools:
         payload.update({"tools": tools_schema or tools.SCHEMA,
                         "tool_choice": "auto", "parallel_tool_calls": False})
     if thinking in ("low", "medium", "high"):
         payload["reasoning_effort"] = thinking
-    conteudo, tc_acc = [], {}
+    content, tc_acc = [], {}
     usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
+    thinking_rejected = False
     try:
-        resposta = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
+        response = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"API: {_api_erro(e)}") from e
+        detail = _api_error(e)
+        if payload.get("reasoning_effort") and _reasoning_effort_rejected(detail):
+            payload.pop("reasoning_effort")
+            thinking_rejected = True
+            try:
+                response = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
+            except urllib.error.HTTPError as e2:
+                raise RuntimeError(f"API: {_api_error(e2)}") from e2
+        else:
+            raise RuntimeError(f"API: {detail}") from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"API: não foi possível conectar ao endpoint — {e.reason}") from e
-    with resposta as r:
-        for linha in r:
-            texto = linha.decode("utf-8", errors="replace").strip()
-            if not texto.startswith("data:"):
+        raise RuntimeError(f"API: could not connect to the endpoint: {e.reason}") from e
+    with response as r:
+        for line in r:
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text.startswith("data:"):
                 continue
-            texto = texto[5:].strip()
-            if texto == "[DONE]":
+            text = text[5:].strip()
+            if text == "[DONE]":
                 break
             try:
-                dado = json.loads(texto)
+                data = json.loads(text)
             except json.JSONDecodeError:
                 continue
-            uso = dado.get("usage") or {}
-            if uso:
-                usage = {"prompt_eval_count": int(uso.get("prompt_tokens") or 0),
-                         "eval_count": int(uso.get("completion_tokens") or 0),
+            reported = data.get("usage") or {}
+            if reported:
+                usage = {"prompt_eval_count": int(reported.get("prompt_tokens") or 0),
+                         "eval_count": int(reported.get("completion_tokens") or 0),
                          "total_duration": 0}
-            choices = dado.get("choices") or []
+            choices = data.get("choices") or []
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
-            pedaco = delta.get("content")
-            if pedaco:
-                conteudo.append(pedaco)
+            chunk = delta.get("content")
+            if chunk:
+                content.append(chunk)
                 if on_token:
-                    on_token(pedaco)
+                    on_token(chunk)
             for tc in delta.get("tool_calls") or []:
                 i = tc.get("index", 0)
                 acc = tc_acc.setdefault(i, {"id": tc.get("id") or f"tc{i}", "type": "function",
@@ -200,22 +238,23 @@ def chamar_stream_api(modelo, mensagens, usar_tools=True, temperatura=0.0,
                 f = tc.get("function") or {}
                 acc["function"]["name"] += f.get("name") or ""
                 acc["function"]["arguments"] += f.get("arguments") or ""
-    msg = {"role": "assistant", "content": "".join(conteudo)}
+    msg = {"role": "assistant", "content": "".join(content)}
     if tc_acc:
         msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
     msg["_usage"] = usage
-    return _normalizar_msg(msg)
+    msg["_thinking_rejected"] = thinking_rejected
+    return _normalize_msg(msg)
 
 
-def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=None,
-           thinking=None, num_ctx=None):
+def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
+         thinking=None, num_ctx=None):
     payload = {
-        "model": modelo,
-        "messages": _mensagens_para_ollama(mensagens),
-        "temperature": temperatura,
+        "model": model,
+        "messages": _messages_for_ollama(messages),
+        "temperature": temperature,
         "stream": False,
     }
-    if usar_tools:
+    if use_tools:
         payload["tools"] = tools_schema or tools.SCHEMA
     if thinking is not None:
         payload["think"] = thinking
@@ -225,22 +264,22 @@ def chamar(modelo, mensagens, usar_tools=True, temperatura=0.0, tools_schema=Non
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
     with urllib.request.urlopen(req, timeout=600) as r:
-        dado = json.load(r)
-        msg = _normalizar_msg(dado["message"])
-        msg["_usage"] = _uso(dado)
+        data = json.load(r)
+        msg = _normalize_msg(data["message"])
+        msg["_usage"] = _usage(data)
         return msg
 
 
-def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=None,
-                  tools_schema=None, thinking=None, on_thinking=None, num_ctx=None):
-    """Como chamar(), mas em streaming: on_token(pedaco) e chamado a cada token.
+def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
+                tools_schema=None, thinking=None, on_thinking=None, num_ctx=None):
+    """Like call(), but streaming: on_token(chunk) is called for every token.
 
-    Devolve a mesma mensagem montada que chamar() devolveria — quem chama nao
-    precisa saber se veio em streaming ou nao.
+    Returns the same assembled message call() would return, so the caller does
+    not need to know whether it arrived as a stream or not.
     """
-    payload = {"model": modelo, "messages": _mensagens_para_ollama(mensagens), "temperature": temperatura,
-               "stream": True}
-    if usar_tools:
+    payload = {"model": model, "messages": _messages_for_ollama(messages),
+               "temperature": temperature, "stream": True}
+    if use_tools:
         payload["tools"] = tools_schema or tools.SCHEMA
     if thinking is not None:
         payload["think"] = thinking
@@ -249,34 +288,34 @@ def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
-    conteudo = []
-    pensamentos = []
-    tc_acc = {}  # index -> tool_call acumulado (name inteiro, arguments em pedacos)
+    content = []
+    thoughts = []
+    tc_acc = {}  # index -> accumulated tool_call (whole name, arguments in chunks)
     usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
     with urllib.request.urlopen(req, timeout=600) as r:
-        for linha in r:
-            linha = linha.decode("utf-8", errors="replace").strip()
-            if not linha:
+        for line in r:
+            line = line.decode("utf-8", errors="replace").strip()
+            if not line:
                 continue
             try:
-                dado = json.loads(linha)
-                delta = dado.get("message", {})
+                data = json.loads(line)
+                delta = data.get("message", {})
             except json.JSONDecodeError:
                 continue
-            if dado.get("done"):
-                usage = _uso(dado)
-            pensamento = delta.get("thinking")
-            if pensamento:
-                pensamentos.append(pensamento)
+            if data.get("done"):
+                usage = _usage(data)
+            thought = delta.get("thinking")
+            if thought:
+                thoughts.append(thought)
                 if on_thinking:
-                    # Normalmente o raciocínio permanece oculto e serve apenas
-                    # para atualizar o indicador enquanto não há texto visível.
-                    on_thinking(pensamento)
-            pedaco = delta.get("content")
-            if pedaco:
-                conteudo.append(pedaco)
+                    # Normally the reasoning stays hidden and only serves to
+                    # update the indicator while there is no visible text yet.
+                    on_thinking(thought)
+            chunk = delta.get("content")
+            if chunk:
+                content.append(chunk)
                 if on_token:
-                    on_token(pedaco)
+                    on_token(chunk)
             for tc in delta.get("tool_calls") or []:
                 i = tc.get("index", 0)
                 acc = tc_acc.setdefault(i, {"id": tc.get("id") or f"tc{i}", "type": "function",
@@ -290,123 +329,127 @@ def chamar_stream(modelo, mensagens, usar_tools=True, temperatura=0.0, on_token=
                     args = f["arguments"]
                     acc["function"]["arguments"] += (
                         args if isinstance(args, str) else json.dumps(args))
-    texto = "".join(conteudo)
-    # Alguns modelos Qwen via Ollama ocasionalmente colocam a resposta completa
-    # em message.thinking e terminam com message.content vazio. Sem este fallback
-    # o turno parece ter gerado tokens, mas o usuário não vê resposta alguma.
-    # Não misture raciocínio e resposta quando content existe, nem o transforme
-    # em texto se o modelo pediu uma ferramenta.
-    if not texto and not tc_acc:
-        texto = "".join(pensamentos).strip()
-        if texto and on_token:
-            on_token(texto)
-    msg = {"role": "assistant", "content": texto}
+    text = "".join(content)
+    # Some Qwen models via Ollama occasionally put the whole answer in
+    # message.thinking and finish with message.content empty. Without this
+    # fallback the turn looks like it generated tokens, but the user sees no
+    # answer at all. Do not mix reasoning and answer when content exists, and do
+    # not turn it into text if the model asked for a tool.
+    if not text and not tc_acc:
+        text = "".join(thoughts).strip()
+        if text and on_token:
+            on_token(text)
+    msg = {"role": "assistant", "content": text}
     if tc_acc:
         msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
     msg["_usage"] = usage
-    return _normalizar_msg(msg)
+    return _normalize_msg(msg)
 
 
-# REMOVIDO em 2026-07-19: o "resgate por regex", que pescava a chamada de
-# ferramenta do texto solto quando o modelo nao emitia tool_call de verdade.
+# REMOVED: the "regex rescue", which fished the tool call out of loose text when
+# the model did not emit a real tool_call.
 #
-# Existia porque o qwen2.5-coder:3b nao sabe chamar ferramenta. O modelo atual
-# (isaac, sobre granite4:micro) chama NATIVO — medido, acertou de primeira.
-# Com isso o resgate virou codigo morto que MASCARAVA falha: se um dia o modelo
-# parar de emitir tool_call, agora a gente fica sabendo em vez de o remendo
-# esconder. Se voltar a precisar disso, o problema e o modelo, nao o parser.
-#
-# Historico completo em PROGRESS.md, secao de 2026-07-19.
+# It existed because qwen2.5-coder:3b cannot call tools. The current model calls
+# NATIVELY, measured, correct on the first try. That turned the rescue into
+# dead code that MASKED failure: if one day the model stops emitting tool_call,
+# now we find out instead of the patch hiding it. If this is ever needed again,
+# the problem is the model, not the parser.
 
 
-def rodar(pedido, modelo, max_passos=8, usar_tools=True, verbose=True,
-          on_token=None, on_tool=None, on_tool_antes=None, historico=None,
-          tools_schema=None, thinking=None, on_working=None, provider=None,
-          on_thinking=None, num_ctx=None):
-    """on_token(pedaco): streaming do texto.
-    on_tool_antes(nome, args): ANTES de executar. Se devolver uma string, ela
-      substitui a execucao da ferramenta (usado pela CLI para aprovar/recusar
-      comandos antes que cheguem ao executor).
-    on_tool(nome, args, resultado, via): depois, com o resultado.
-    Todos opcionais."""
-    if historico is not None:
-        msgs = historico
+def run(request, model, max_steps=8, use_tools=True, verbose=True,
+        on_token=None, on_tool=None, on_tool_before=None, history=None,
+        tools_schema=None, thinking=None, on_working=None, provider=None,
+        on_thinking=None, num_ctx=None):
+    """on_token(chunk): text streaming.
+    on_tool_before(name, args): BEFORE running. If it returns a string, that
+      string replaces the tool execution (used by the CLI to approve/deny
+      commands before they reach the executor).
+    on_tool(name, args, result, via): afterwards, with the result.
+    All optional."""
+    if history is not None:
+        msgs = history
         if not msgs:
-            msgs.append({"role": "system", "content": CONHECIMENTO_FERRAMENTAS})
-        msgs.append({"role": "user", "content": pedido})
+            msgs.append({"role": "system", "content": TOOLS_KNOWLEDGE})
+        msgs.append({"role": "user", "content": request})
     else:
         msgs = [
-            {"role": "system", "content": CONHECIMENTO_FERRAMENTAS},
-            {"role": "user", "content": pedido},
+            {"role": "system", "content": TOOLS_KNOWLEDGE},
+            {"role": "user", "content": request},
         ]
-    chamadas = []
-    uso_total = {"prompt_eval_count": 0, "eval_count": 0,
-                 "total_duration": 0, "eval_duration": 0}
-    for passo in range(max_passos):
+    calls = []
+    total_usage = {"prompt_eval_count": 0, "eval_count": 0,
+                   "total_duration": 0, "eval_duration": 0}
+    thinking_adjusted = False
+    for step in range(max_steps):
         if on_working:
             on_working()
-        provedor = (provider or {}).get("provider", "ollama")
-        schema_ativo = tools_schema or tools.SCHEMA
+        provider_kind = (provider or {}).get("provider", "ollama")
+        active_schema = tools_schema or tools.SCHEMA
 
-        def consultar(schema):
-            if provedor == "openai_compatible" and on_token:
-                return chamar_stream_api(
-                    modelo, msgs, usar_tools=usar_tools, on_token=on_token,
+        def query(schema):
+            if provider_kind == "openai_compatible" and on_token:
+                return call_stream_api(
+                    model, msgs, use_tools=use_tools, on_token=on_token,
                     tools_schema=schema, thinking=thinking,
                     api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"))
-            if provedor == "openai_compatible":
-                return chamar_api(
-                    modelo, msgs, usar_tools=usar_tools, tools_schema=schema,
+            if provider_kind == "openai_compatible":
+                return call_api(
+                    model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"))
             if on_token:
-                return chamar_stream(
-                    modelo, msgs, usar_tools=usar_tools, on_token=on_token,
+                return call_stream(
+                    model, msgs, use_tools=use_tools, on_token=on_token,
                     tools_schema=schema, thinking=thinking,
                     on_thinking=on_thinking, num_ctx=num_ctx)
-            return chamar(modelo, msgs, usar_tools=usar_tools,
-                          tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
+            return call(model, msgs, use_tools=use_tools,
+                        tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
 
-        msg = consultar(schema_ativo)
+        msg = query(active_schema)
         tc = msg.get("tool_calls")
-        _somar_uso(uso_total, msg.get("_usage"))
+        _add_usage(total_usage, msg.get("_usage"))
+        if msg.pop("_thinking_rejected", False):
+            thinking = None
+            thinking_adjusted = True
 
         msgs.append(msg)
 
         if not tc:
             if verbose:
-                print(f"[passo {passo}] RESPOSTA FINAL:\n{msg.get('content')}")
-            return {"final": msg.get("content"), "chamadas": chamadas, "passos": passo,
-                    "uso": uso_total}
+                print(f"[step {step}] FINAL ANSWER:\n{msg.get('content')}")
+            return {"final": msg.get("content"), "calls": calls, "steps": step,
+                    "usage": total_usage, "thinking_adjusted": thinking_adjusted}
 
         for c in tc:
-            nome = c["function"]["name"]
+            name = c["function"]["name"]
             args = c["function"]["arguments"]
             if verbose:
-                print(f"[passo {passo}] TOOL_CALL NATIVO -> {nome}({args})")
-            resultado_antecipado = on_tool_antes(nome, args) if on_tool_antes else None
-            resultado = (resultado_antecipado if isinstance(resultado_antecipado, str)
-                         else tools.executar(nome, args))
+                print(f"[step {step}] NATIVE TOOL_CALL -> {name}({args})")
+            early_result = on_tool_before(name, args) if on_tool_before else None
+            result = (early_result if isinstance(early_result, str)
+                      else tools.execute(name, args))
             if verbose:
-                print(f"           <- {resultado[:200]}")
-            chamadas.append((nome, args, resultado, "nativo"))
+                print(f"           <- {result[:200]}")
+            calls.append((name, args, result, "native"))
             if on_tool:
-                on_tool(nome, args, resultado, "nativo")
-            msgs.append({"role": "tool", "tool_call_id": c.get("id", nome), "content": resultado})
+                on_tool(name, args, result, "native")
+            msgs.append({"role": "tool", "tool_call_id": c.get("id", name), "content": result})
 
-    return {"final": "(limite de passos atingido)", "chamadas": chamadas,
-            "passos": max_passos, "uso": uso_total}
+    return {"final": "(step limit reached)", "calls": calls,
+            "steps": max_steps, "usage": total_usage,
+            "thinking_adjusted": thinking_adjusted}
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("pedido")
-    ap.add_argument("--modelo", default="qwen2.5-coder:3b")
-    ap.add_argument("--sem-tools", action="store_true", help="nao manda o schema (testa so o prompt)")
+    ap.add_argument("request")
+    ap.add_argument("--model", default="qwen2.5-coder:3b")
+    ap.add_argument("--no-tools", action="store_true",
+                    help="do not send the schema (tests the prompt alone)")
     a = ap.parse_args()
-    r = rodar(a.pedido, a.modelo, usar_tools=not a.sem_tools)
-    print("\n=== RESUMO ===")
-    print(f"passos: {r['passos']}  chamadas: {len(r['chamadas'])}")
-    for n, ar, res, via in r["chamadas"]:
+    r = run(a.request, a.model, use_tools=not a.no_tools)
+    print("\n=== SUMMARY ===")
+    print(f"steps: {r['steps']}  calls: {len(r['calls'])}")
+    for n, ar, res, via in r["calls"]:
         print(f"  [{via}] {n} {ar} -> {res[:80]}")

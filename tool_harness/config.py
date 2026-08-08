@@ -1,4 +1,4 @@
-"""Configuracao local do isaacli, fora da workspace e sem segredos."""
+"""isaacli's local configuration, outside the workspace and free of secrets."""
 import json
 import os
 import tempfile
@@ -10,37 +10,37 @@ CONFIG_VERSION = 1
 
 def config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
-    raiz = Path(base).expanduser() if base else Path.home() / ".config"
-    return raiz / "isaacli" / "config.json"
+    root = Path(base).expanduser() if base else Path.home() / ".config"
+    return root / "isaacli" / "config.json"
 
 
 def secrets_path() -> Path:
     return config_path().with_name("secrets.json")
 
 
-def salvar_segredo(nome, valor, path=None):
-    alvo = Path(path) if path else secrets_path()
-    dados = {}
-    if alvo.exists():
+def save_secret(name, value, path=None):
+    target = Path(path) if path else secrets_path()
+    data = {}
+    if target.exists():
         try:
-            dados = json.loads(alvo.read_text(encoding="utf-8"))
+            data = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            dados = {}
-    dados[nome] = valor
-    salvar(dados, alvo)
+            data = {}
+    data[name] = value
+    save(data, target)
 
 
-def carregar_segredo(nome, path=None):
-    alvo = Path(path) if path else secrets_path()
-    if not alvo.exists():
+def load_secret(name, path=None):
+    target = Path(path) if path else secrets_path()
+    if not target.exists():
         return None
     try:
-        return json.loads(alvo.read_text(encoding="utf-8")).get(nome)
+        return json.loads(target.read_text(encoding="utf-8")).get(name)
     except (OSError, json.JSONDecodeError, AttributeError):
         return None
 
 
-def config_vazia():
+def empty_config():
     return {
         "version": CONFIG_VERSION,
         "language": None,
@@ -50,89 +50,90 @@ def config_vazia():
     }
 
 
-def carregar(path=None):
-    alvo = Path(path) if path else config_path()
-    if not alvo.exists():
-        return config_vazia()
+def load(path=None):
+    target = Path(path) if path else config_path()
+    if not target.exists():
+        return empty_config()
     try:
-        dado = json.loads(alvo.read_text())
+        data = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"configuracao invalida em {alvo}: {e}") from e
-    if not isinstance(dado, dict) or not isinstance(dado.get("profiles", {}), dict):
-        raise ValueError(f"configuracao invalida em {alvo}: formato inesperado")
-    dado.setdefault("version", CONFIG_VERSION)
-    dado.setdefault("language", None)
-    dado.setdefault("default_profile", None)
-    dado.setdefault("profiles", {})
-    permissoes = dado.setdefault("permissions", {})
-    if not isinstance(permissoes, dict):
-        permissoes = dado["permissions"] = {}
-    permissoes.setdefault("global", [])
-    permissoes.setdefault("workspaces", {})
-    return dado
+        raise ValueError(f"invalid configuration in {target}: {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("profiles", {}), dict):
+        raise ValueError(f"invalid configuration in {target}: unexpected format")
+    data.setdefault("version", CONFIG_VERSION)
+    data.setdefault("language", None)
+    data.setdefault("default_profile", None)
+    data.setdefault("profiles", {})
+    permissions = data.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        permissions = data["permissions"] = {}
+    permissions.setdefault("global", [])
+    permissions.setdefault("workspaces", {})
+    return data
 
 
-def regras_permissao(dado, workspace):
-    permissoes = dado.get("permissions") or {}
-    globais = set(permissoes.get("global") or [])
-    locais = set((permissoes.get("workspaces") or {}).get(str(Path(workspace).resolve()), []))
-    return globais | locais
+def permission_rules(data, workspace):
+    permissions = data.get("permissions") or {}
+    global_rules = set(permissions.get("global") or [])
+    local_rules = set(
+        (permissions.get("workspaces") or {}).get(str(Path(workspace).resolve()), []))
+    return global_rules | local_rules
 
 
-def adicionar_permissao(dado, regra, workspace=None):
-    permissoes = dado.setdefault("permissions", {"global": [], "workspaces": {}})
+def add_permission(data, rule, workspace=None):
+    permissions = data.setdefault("permissions", {"global": [], "workspaces": {}})
     if workspace is None:
-        destino = permissoes.setdefault("global", [])
+        target = permissions.setdefault("global", [])
     else:
-        chave = str(Path(workspace).resolve())
-        destino = permissoes.setdefault("workspaces", {}).setdefault(chave, [])
-    if regra not in destino:
-        destino.append(regra)
+        key = str(Path(workspace).resolve())
+        target = permissions.setdefault("workspaces", {}).setdefault(key, [])
+    if rule not in target:
+        target.append(rule)
 
 
-def salvar(dado, path=None):
-    alvo = Path(path) if path else config_path()
-    alvo.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(dado, ensure_ascii=False, indent=2) + "\n"
-    fd, temporario = tempfile.mkstemp(prefix="config-", suffix=".tmp", dir=alvo.parent)
+def save(data, path=None):
+    target = Path(path) if path else config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    fd, temporary = tempfile.mkstemp(prefix="config-", suffix=".tmp", dir=target.parent)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as arquivo:
-            arquivo.write(payload)
-        os.replace(temporario, alvo)
+        with os.fdopen(fd, "w") as file:
+            file.write(payload)
+        os.replace(temporary, target)
     except Exception:
         try:
-            os.unlink(temporario)
+            os.unlink(temporary)
         except OSError:
             pass
         raise
-    return alvo
+    return target
 
 
-def perfil(dado, nome=None):
-    escolhido = nome or dado.get("default_profile")
-    item = (dado.get("profiles") or {}).get(escolhido)
-    return escolhido, item
+def profile(data, name=None):
+    chosen = name or data.get("default_profile")
+    item = (data.get("profiles") or {}).get(chosen)
+    return chosen, item
 
 
-def modelo_padrao(fallback=None, path=None):
+def default_model(fallback=None, path=None):
     try:
-        dado = carregar(path)
+        data = load(path)
     except ValueError:
         return fallback
-    _nome, item = perfil(dado)
+    _name, item = profile(data)
     return item.get("model", fallback) if item else fallback
 
 
-def pensar_do_modelo(dado, modelo):
-    for item in (dado.get("profiles") or {}).values():
-        if item.get("model") == modelo:
+def model_thinking(data, model):
+    for item in (data.get("profiles") or {}).values():
+        if item.get("model") == model:
             return item.get("thinking")
     return None
 
 
-def perfil_do_modelo(dado, modelo):
-    for nome, item in (dado.get("profiles") or {}).items():
-        if item.get("model") == modelo:
-            return nome, item
+def profile_for_model(data, model):
+    for name, item in (data.get("profiles") or {}).items():
+        if item.get("model") == model:
+            return name, item
     return None, None

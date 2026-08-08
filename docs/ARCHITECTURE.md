@@ -1,151 +1,183 @@
-# Isaac CLI: arquitetura atual
+# isaacli: current architecture
 
-Este documento é o ponto de entrada técnico para pessoas e agentes de IA. Ele
-descreve o código existente; não é uma promessa de que a organização atual seja
-a organização desejada.
+This document is the technical entry point for people and for AI agents. It
+describes the code that exists; it is not a promise that the current
+organisation is the desired one.
 
-## Leitura rápida
+## Read this first
 
-Leia nesta ordem antes de alterar o projeto:
+Read in this order before changing the project:
 
-1. `AGENTS.md`, quando disponível no ambiente de desenvolvimento;
-2. este documento;
-3. o diff atual (`git diff`) e o estado do Git;
-4. somente os módulos relacionados à tarefa;
-5. os testes correspondentes em `tool_harness/testar_*.py`.
+1. `AGENTS.md`, when present in the development environment;
+2. this document;
+3. the current diff (`git diff`) and the Git state;
+4. only the modules related to the task;
+5. the matching tests in `tool_harness/check_*.py`.
 
-Logs e sessões antigas são evidência histórica, não estado atual. Revalide
-processos, configuração, modelos instalados e resultados de testes ao vivo.
+Old logs and sessions are historical evidence, not current state. Re-verify
+processes, configuration, installed models and test results live.
 
-## Fluxo principal
+## Main flow
 
 ```text
 isaacli (launcher)
-  -> tool_harness/isaac_cli.py (argumentos, REPL e sessão)
-     -> setup_ollama.py (modelos, contexto, esforço e API keys)
-     -> agent.py (loop mensagens -> modelo -> tool calls -> modelo)
-        -> tools.py (schemas e ferramentas)
-           -> execucao.py (comando sem shell, allowlist, aprovação e bwrap)
-     -> terminal_ui.py (tela alternativa, seletores e histórico interno)
+  -> tool_harness/cli.py (arguments, REPL and session)
+     -> setup_ollama.py (models, context, effort and API keys)
+     -> agent.py (loop: messages -> model -> tool calls -> model)
+        -> tools.py (schemas and tools)
+           -> execution.py (no-shell command, allowlist, approval and bwrap)
+     -> terminal_ui.py (alternate screen and selectors)
+     -> i18n.py + locales/ (every string the user reads)
 ```
 
-O launcher de raiz apenas encontra o Python e entrega a execução ao harness. O
-workspace escolhido pelo usuário vira o limite das ferramentas de arquivo e do
-executor. Configuração, segredos e sessões ficam fora do workspace trabalhado.
+The root launcher only finds Python and hands execution to the harness. The
+workspace chosen by the user becomes the boundary for the file tools and the
+executor. Configuration, secrets and sessions live outside the workspace being
+worked on.
 
-## Mapa dos módulos ativos
+## Module map
 
-| Arquivo | Responsabilidade atual | Observação |
+| File | Responsibility | Note |
 | --- | --- | --- |
-| `tool_harness/isaac_cli.py` | argumentos, REPL, comandos `/`, sessões, apresentação, permissões e ciclo do Ollama | É o maior ponto de acoplamento atual e deve ser o primeiro alvo do inventário de responsabilidades. |
-| `tool_harness/terminal_ui.py` | tela alternativa, menus, prompt ocupado e visualizador do histórico | Não deve habilitar mouse reporting globalmente, pois isso bloqueia seleção/cópia nativa do terminal. |
-| `tool_harness/setup_ollama.py` | setup local, catálogo recomendado, modelos locais, contexto, reasoning e API OpenAI-compatible | Contexto é configuração por requisição; não deve criar cópias Ollama `16k/32k`. |
-| `tool_harness/agent.py` | chamadas Ollama/API, streaming, normalização e loop de ferramentas | Ollama usa `/api/chat`; APIs remotas usam `/chat/completions`. |
-| `tool_harness/tools.py` | schemas e implementação das ferramentas do agente | `fetch_url` é a leitura web geral; comandos continuam sem rede no sandbox. |
-| `tool_harness/execucao.py` | classificação, aprovação e execução confinada de programas | Nunca adicionar shell, pipes ou redirecionamento como atalho de UI. |
-| `tool_harness/config.py` | config pública e segredos locais | API keys ficam em `secrets.json` com modo `0600`, fora do Git. |
-| `tool_harness/i18n.py`, `locales/` | textos do setup em português e inglês | Novas chaves precisam existir nos dois idiomas. |
-| `tool_harness/model_catalog.json` | pequena curadoria de recomendações | Não representa os modelos instalados; esses vêm ao vivo do Ollama local. |
+| `tool_harness/cli.py` | arguments, REPL, `/` commands, sessions, presentation, permissions and the Ollama lifecycle | The largest coupling point, and the first target for a responsibility inventory. |
+| `tool_harness/terminal_ui.py` | alternate screen, menus, busy prompt | Must not enable mouse reporting: that breaks the terminal's native selection and copy. |
+| `tool_harness/setup_ollama.py` | local setup, curated catalog, local models, context, reasoning and OpenAI-compatible API | Context is per-request configuration; it must not create `16k`/`32k` Ollama copies. |
+| `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
+| `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; terminal commands stay offline in the sandbox. |
+| `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. |
+| `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
+| `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
+| `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
 
-Há código de experimentação, treino e interfaces anteriores no repositório. Não
-presuma que ele participa do CLI atual apenas por existir; confirme imports e o
-fluxo de execução antes de movê-lo ou removê-lo.
+## Language boundary
 
-## Estado e dados locais
+There are two audiences and they get different treatment:
 
-- Configuração: `~/.config/isaacli/config.json` (ou `XDG_CONFIG_HOME`).
-- Segredos: `~/.config/isaacli/secrets.json`.
-- Sessões: `tool_harness/cli_sessoes/*.jsonl` no estado atual.
-- Feedback: `tool_harness/feedback/*.jsonl` no estado atual.
-- Coordenação do Ollama gerenciado: diretório de runtime do usuário ou `/tmp`.
+- **Text the user reads** goes through `i18n.py` and lives in
+  `locales/{en,pt-BR}.json`. Nothing user-facing is hardcoded in a module.
+- **Text the model reads** (system prompts, tool names, tool descriptions,
+  tool results and sandbox refusals) is always English, regardless of the
+  interface language. It is a contract with the model, not a preference of the
+  person at the keyboard. The system prompt separately instructs the model to
+  answer in the user's language.
 
-Novas sessões usam UUIDv4. IDs antigos baseados em data continuam aceitos para
-retomada. O comando de retomada usa `isaacli` quando esta instalação está no
-`PATH`; caso contrário mostra o launcher absoluto realmente executável.
+Identifiers, comments and docstrings are English throughout.
 
-## Terminal e encerramento
+`cli.py` keeps one translator per process (`set_language`/`t`), because the CLI
+is a single session and threading a `Translator` through every helper would be
+ceremony without a second reader.
 
-O REPL usa o buffer alternativo para não misturar a conversa com o histórico do
-shell. Quando a conversa excede a tela, a roda abre o transcript como viewport
-integrado e o percorre nas duas direções; `/history` também o abre. ↑/↓ no prompt
-pertencem ao histórico de mensagens digitadas. Mouse reporting só fica ativo
-quando há conteúdo rolável; nesse estado, Shift+arrastar preserva a seleção nativa.
-Menus de tela inteira devem
-sempre redesenhar a conversa recente ao retornar ao REPL.
+## Local state and data
 
-No Ptyxis/VTE, o buffer alternativo não possui scrollback nativo. O viewport usa
-o protocolo SGR do mouse para distinguir a roda das setas. Não reative DEC 1007:
-ele transforma roda e ↑ na mesma sequência e recria o bug de navegação.
+- Configuration: `~/.config/isaacli/config.json` (or `XDG_CONFIG_HOME`).
+- Secrets: `~/.config/isaacli/secrets.json`.
+- Sessions: `tool_harness/cli_sessions/*.jsonl`.
+- Feedback: `tool_harness/feedback/*.jsonl`.
+- Managed-Ollama coordination: the user's runtime directory, or `/tmp`.
 
-Teclas recebidas durante a inicialização são descartadas antes do primeiro
-prompt. Durante geração, a entrada fica sem eco e é descartada ao terminar.
-`Ctrl+C` no prompt encerra o REPL; sinais repetidos durante o cleanup são
-ignorados até a coordenação do servidor Ollama ser concluída.
+New sessions use UUIDv4. Older date-based IDs are still accepted for resuming,
+and `_load_session` also reads logs written before the JSONL field names were
+translated, so sessions recorded by earlier versions do not silently rebuild as
+empty.
 
-Ollama iniciado pelo Isaac é compartilhado entre sessões do Isaac. A última
-sessão registrada encerra somente o servidor que o próprio Isaac iniciou. Um
-servidor preexistente pertence ao usuário e não deve ser finalizado pelo app.
+The resume command uses `isaacli` when this installation is on `PATH`;
+otherwise it prints the absolute launcher that is actually executable.
 
-## Contratos de modelos
+## Terminal and shutdown
 
-- Ollama: API nativa de chat, tools obrigatórias e `options.num_ctx` por chamada.
-- API remota: contrato OpenAI-compatible Chat Completions com streaming e
-  function calling. `reasoning_effort` é opcional e pode ser desativado.
-- APIs nativas incompatíveis (por exemplo, formatos próprios de outros
-  provedores) exigirão adapters explícitos; não espalhe condicionais por nome de
-  provedor dentro do REPL.
+The REPL uses the alternate buffer so the conversation does not mix with the
+shell history. `/history` prints normally, which keeps the transcript in the
+terminal's native scrollback and leaves it selectable and copyable. ↑/↓ at the
+prompt belong to the typed-message history.
 
-O menu `/model` separa origem, modelo, contexto e esforço. Recomendação não é
-sinônimo de instalação: recomendações vêm do JSON curado; modelos locais vêm da
-consulta ao servidor Ollama.
+Mouse reporting is never enabled. An earlier version drove a scrollable viewport
+with the wheel; it was removed because DEC 1007 turns the wheel and ↑ into the
+same sequence, and enabling reporting at all costs the terminal's native
+selection. Do not reintroduce it.
 
-Se um provedor avaliar tokens, mas devolver conteúdo e tool calls vazios ao
-receber vários schemas, o agente tenta novamente com uma única ferramenta
-selecionada pela intenção do pedido. Esse fallback é baseado na capacidade
-observada, não no nome do modelo.
+Full-screen menus must always redraw the recent conversation when returning to
+the REPL.
 
-Métricas de geração só são comparáveis quando contexto, prompt e ferramentas
-também são equivalentes. Um benchmark curto com `num_ctx=4096` não representa o
-custo de uma sessão de agente com `num_ctx=32768`, histórico e schemas de
-ferramentas: além da geração, o modelo precisa processar todo esse prefixo e um
-KV cache maior pode deixar de caber integralmente na GPU.
+Keys received during startup are discarded before the first prompt. During
+generation, input is not echoed and is flushed at the end. `Ctrl+C` at the
+prompt ends the REPL; repeated signals during cleanup are ignored until the
+Ollama coordination finishes.
 
-## Limites de segurança que a reorganização deve preservar
+An Ollama started by isaacli is shared between isaacli sessions. The last
+registered session stops only the server isaacli itself started. A pre-existing
+server belongs to the user and must not be terminated by the app.
 
-- execução de um único programa, sem shell;
-- workspace como limite de arquivos e comandos;
-- aprovação antes de mutações não autorizadas;
-- nenhuma exposição de API keys em config, logs ou saída;
-- URLs públicas validadas contra destinos locais/privados;
-- processos filhos presos ao ciclo correto e cleanup idempotente;
-- texto do modelo sanitizado antes de chegar ao terminal.
+## Model contracts
 
-## Verificação
+- Ollama: native chat API, tools required, `options.num_ctx` per call.
+- Remote API: OpenAI-compatible Chat Completions with streaming and function
+  calling. `reasoning_effort` is optional and can be turned off.
+- Providers with their own incompatible native formats will need explicit
+  adapters; do not scatter provider-name conditionals through the REPL.
+
+The `/model` menu separates source, model, context and effort. Recommended is
+not a synonym for installed: recommendations come from the curated JSON,
+installed models come from querying the Ollama server.
+
+When a provider rejects `reasoning_effort`, that rejection is the source of
+truth: the agent retries without the parameter, stops sending it for the rest of
+the turn, and signals the caller so `cli._persist_adjusted_thinking` can write
+the correction to the profile. There is no per-model table.
+
+Generation metrics are only comparable when context, prompt and tools are
+equivalent too. A short benchmark at `num_ctx=4096` does not represent the cost
+of an agent session at `num_ctx=32768` with history and tool schemas: beyond
+generation, the model has to process that whole prefix, and a larger KV cache
+may stop fitting entirely in the GPU.
+
+## Safety invariants any reorganisation must preserve
+
+- one program per execution, with no shell;
+- the workspace as the boundary for files and commands;
+- approval before unauthorised mutations, and an explicit warning when the
+  command is destructive, so approval does not become a reflex;
+- no exposure of API keys in config, logs or output;
+- public URLs validated against local and private destinations;
+- child processes tied to the right lifecycle, and idempotent cleanup;
+- model text sanitised before it reaches the terminal.
+
+## Verification
 
 ```bash
-rtk python3 tool_harness/testar_cli.py
-rtk python3 tool_harness/testar_agent_config.py
-rtk python3 tool_harness/testar_setup.py
-rtk git diff --check
+python3 tool_harness/check_cli.py
+python3 tool_harness/check_agent_config.py
+python3 tool_harness/check_setup.py
+python3 tool_harness/check_tools.py
+python3 tool_harness/check_sandbox.py
+python3 tool_harness/check_execution.py
+git diff --check
 ```
 
-Se `execucao.py` mudar, execute também `testar_execucao.py` fora de um sandbox
-aninhado, porque `bwrap` precisa criar sua interface loopback.
+The checks are standalone scripts, not pytest modules: they run their assertions
+at import time. That is why they are named `check_*` and not `test_*`: pytest
+collection alone would execute them.
 
-## Próxima etapa: organização
+Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create its
+own loopback interface.
 
-A próxima sessão deve começar por um inventário, não por mover arquivos às
-cegas. A dívida visível é que `isaac_cli.py` concentra apresentação, aplicação,
-sessões, comandos e lifecycle. A reorganização deve definir limites testáveis
-para, no mínimo:
+`check_cli.py` points `XDG_CONFIG_HOME` at a temporary directory before
+importing the CLI, so the suite neither reads nor writes the real
+`~/.config/isaacli/config.json`.
 
-- comandos internos;
-- sessões e persistência;
-- providers/modelos;
-- apresentação e entrada do terminal;
-- ciclo de processos;
-- política de permissões.
+## Next step: organisation
 
-Antes de cada movimento, registre imports e consumidores, mantenha uma camada de
-compatibilidade quando necessário e rode a suíte. Não misture reorganização
-mecânica com mudança de comportamento no mesmo passo.
+The next session should start with an inventory, not by moving files blindly.
+The visible debt is that `cli.py` concentrates presentation, application,
+sessions, commands and lifecycle. A reorganisation should define testable
+boundaries for at least:
+
+- internal commands;
+- sessions and persistence;
+- providers/models;
+- terminal presentation and input;
+- process lifecycle;
+- permission policy.
+
+Before each move, record imports and consumers, keep a compatibility layer when
+needed, and run the suite. Do not mix a mechanical reorganisation with a
+behaviour change in the same step.

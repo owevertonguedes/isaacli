@@ -1,4 +1,4 @@
-"""Carregamento pequeno e padrao de catalogos de traducao JSON."""
+"""Small, standard loading of JSON translation catalogs."""
 import json
 from pathlib import Path
 
@@ -18,14 +18,14 @@ class Translator:
         self._messages = self._load(self.language)
 
     def _load(self, language):
-        caminho = LOCALES_DIR / f"{language}.json"
+        path = LOCALES_DIR / f"{language}.json"
         try:
-            dado = json.loads(caminho.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
-            raise RuntimeError(f"invalid translation catalog {caminho}: {e}") from e
-        if not isinstance(dado, dict):
-            raise RuntimeError(f"invalid translation catalog {caminho}: expected object")
-        return dado
+            raise RuntimeError(f"invalid translation catalog {path}: {e}") from e
+        if not isinstance(data, dict):
+            raise RuntimeError(f"invalid translation catalog {path}: expected object")
+        return data
 
     def t(self, key, **values):
         template = self._messages.get(key, self._fallback.get(key, key))

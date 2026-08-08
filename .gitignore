@@ -1,4 +1,4 @@
-# venv, caches, modelos baixados — reproduzíveis
+# venv, caches, modelos baixados: reproduzíveis
 finetune_test/venv/
 finetune_test/hf_cache/
 finetune_test/lora_out/
@@ -16,7 +16,7 @@ tool_harness/Modelfile.gerado
 tool_harness/colab_config.json
 tool_harness/conversas/
 
-# cópia de projeto real — NUNCA versionar aqui
+# cópia de projeto real. NUNCA versionar aqui
 agent_test_sandbox/
 
 # segredos
@@ -27,15 +27,15 @@ gcp*.json
 # logs brutos, exceto os registros que são o próprio dado do projeto
 *.jsonl
 !datasets/*.jsonl
-!tool_harness/cli_sessoes/*.jsonl
+!tool_harness/cli_sessions/*.jsonl
 !tool_harness/feedback/*.jsonl
-!tool_harness/curadoria/*.jsonl
+!tool_harness/curation/*.jsonl
 
 # config local de ferramentas (Claude Code, tokensave)
 .claude/
 .tokensave/
 
-tool_harness/cli_sessoes/
+tool_harness/cli_sessions/
 tool_harness/feedback/
-tool_harness/curadoria/
+tool_harness/curation/
 artefatos/
