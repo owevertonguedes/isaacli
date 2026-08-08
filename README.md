@@ -3,12 +3,16 @@
 Para entender rapidamente a implementação atual, seus limites de segurança e o
 mapa dos módulos, consulte [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-**A local-first CLI coding agent that actually executes, on 4 GB of VRAM.**
+**A local-first CLI coding agent, built and measured for models that fit in 4 GB
+of VRAM.**
 
 Most agent harnesses assume a frontier cloud model. Point them at a small local
 model and they tend to do one of two things: invent tool names that do not exist,
 or describe the work instead of doing it. `isaacli` is a small harness built the
-other way around, for the model you can actually run.
+other way around: the starting question was which models run well on that kind
+of budget hardware, and the harness was designed around what they need to work
+reliably. It is not restricted to 4 GB; any Ollama-served model with native tool
+calling, or any OpenAI-compatible endpoint, works the same way.
 
 It reads and writes files, runs shell commands inside a three-layer sandbox, and
 finishes the task or tells you it failed. Nothing leaves the machine.
@@ -17,74 +21,6 @@ finishes the task or tells you it failed. Nothing leaves the machine.
 > network service requires a commercial license: see [LICENSING.md](LICENSING.md).
 
 ---
-
-## The measurement
-
-Same model, same machine, same context window. `granite4:micro` (2.1 GB) served by
-Ollama at `num_ctx=16384`, on a GTX 1650 with 4 GB of VRAM. Two trivial tasks,
-verified on disk rather than in the transcript.
-
-These runs used `granite4:micro`. The default base has since moved to
-`granite4:micro-h`, which is smaller and hybrid-architecture, and the comparison
-has not been re-run on it yet. The numbers below are left as measured rather than
-restated against a model that did not produce them.
-
-| Harness | create a file | list + run command + append | tokens |
-|---|---|---|---|
-| **isaacli** | pass | pass | **2.3k / 4.9k** |
-| codex-cli 0.146.0 | fail | fail | 34.7k / 52.2k |
-| ollama run `--experimental` | fail | not run | n/a |
-| aider 0.86.2 | pass, after a config fix | out of scope by design | n/a |
-
-Codex did not merely fail. On the first task it reported *"The file test_ctx.txt
-has been created"* and the directory was empty. On the second it claimed a file
-was empty while it held data, and executed nothing.
-
-The usual explanation for this is a context window left at Ollama's low default.
-That fix was applied here before the runs, at the recommended 16K, with MCP
-servers removed so nothing bloated the schema. It failed anyway.
-
-Full write-up, raw logs and the reproduction steps:
-[`reports/harness-comparison/`](reports/harness-comparison/report.md).
-
-### A fifth harness, measured separately
-
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) 0.20.0 is a much
-larger and much more actively developed project than the three above, and it
-supports any OpenAI-compatible endpoint including Ollama. It was measured on the
-same two tasks and the same machine, but with `qwen3:4b-instruct-2507` rather
-than `granite4:micro`, so it sits in its own table rather than in the one above.
-
-| Configuration | create a file | list + run command + append |
-|---|---|---|
-| **Hermes, stock install** | **fail, 13 s, 0 tool calls** | **fail, 3 s, 0 tool calls** |
-| Hermes, after reconfiguring the Ollama **server** | pass | not established |
-
-Out of the box it never reached the model. Its tool schema measures **16,283
-tokens** before your sentence is added, and Ollama's OpenAI-compatible endpoint
-serves 4,096 by default. That endpoint **silently discards `options.num_ctx`**,
-while the native one honours it, same server and same model:
-
-| Endpoint | asked for | actually loaded |
-|---|---|---|
-| `/v1/chat/completions` (OpenAI-compat) | 32768 | **4096** |
-| `/api/chat` (native, what isaacli uses) | 32768 | **32768** |
-
-So the context has to be raised on the Ollama server itself. No Hermes setting
-can do it, because Hermes speaks only the wire that drops the field. That is
-decision 1 below, which was a design guess when it was written and is now a
-measurement.
-
-Worth saying plainly: **once the server is fixed, Hermes executes honestly.** It
-called the right tool, wrote the right bytes, and told the truth about it. It is
-not in the same category as the codex-cli run above. What it costs is time: the
-`write_file` call itself took under a second, while more than three minutes went
-to processing that fixed 16 K prompt, which is reprocessed on every turn. Those
-timings were taken on a machine that turned out to be under load, so the report
-records them as indicative rather than measured.
-
-Full write-up, raw logs and an upstream bug found along the way:
-[`reports/hermes-agent/`](reports/hermes-agent/report.md).
 
 ## Quickstart
 
@@ -207,11 +143,10 @@ no-shell parser, or the hard block on force-push.
 
 Nothing exotic. Four decisions, each of which is a failure mode avoided:
 
-1. **Native `/api/chat`**, not an OpenAI-compat translation layer. Codex requires
-   `wire_api = "responses"`, and `wire_api = "chat"` is refused outright by
-   0.146.0. The compat layer also costs you the context window: Ollama drops
-   `options.num_ctx` on `/v1` and honours it on `/api/chat`, measured both ways
-   in [`reports/hermes-agent/`](reports/hermes-agent/report.md).
+1. **Native `/api/chat`**, not an OpenAI-compat translation layer. Ollama drops
+   `options.num_ctx` on its OpenAI-compatible `/v1` endpoint and honours it on
+   the native one, so the compat layer costs you the context window before a
+   single token is generated.
 2. **A short tool schema.** Seven file and shell tools, so the list stays inside
    what a 2 GB model can hold and match against.
 3. **A model with native tool calling**, picked by measurement rather than by
@@ -239,54 +174,21 @@ File tools refuse to escape their root, including through absolute paths and
 This part is reusable on its own, in any project that executes model-generated
 code, local or cloud.
 
-## What else is in here
-
-This started as an experiment on whether a small local model could be made into a
-reliable agent, and the measurements from that are kept, including the ones that
-failed.
-
-| directory | what it holds |
-|---|---|
-| [`tool_harness/`](tool_harness/) | the agent: CLI, tools, sandbox, dataset validator, and a test per piece |
-| [`bancada/`](bancada/) | a code bench whose validator also checks that the naive solution *fails*, because a ruler that passes the naive solution is not measuring anything |
-| [`qwen_tools_lora/`](qwen_tools_lora/) | teaching tool calling to a model that could not do it: 0/8 to 6/8, and the `lm_head` fix that made it work |
-| [`datasets/`](datasets/) | 30 curated examples, each with the criterion that admitted it |
-| [`reports/`](reports/) | raw measurements from every run, including the rejected ones |
-
-Two findings from that phase are worth pulling out, because they generalise past
-this repo:
-
-**The ruler lies before the model does.** Six measurement bugs appeared in a
-single day. Five made results look worse than they were, one made them look
-better. `skip_special_tokens=True` was deleting `<tool_call>` from the string
-being graded. A reasoning budget was consuming the entire output allowance,
-producing an empty response with HTTP 200 and no error. A bench answer key was
-simply wrong. When a result looks bad, suspect the ruler first.
-
-**Scaffolding beats a bigger model when the hardware is the ceiling.** `pass@1`
-was 40% against `pass@8` at 75%. That gap is capability already sitting in the
-weights that a single attempt does not reach. The ceiling per attempt is fixed;
-the ceiling of the *system* is not.
-
 ## Honest limits
 
-- Two tasks, one model, one machine. This shows that a small purpose-built harness
-  executes reliably where general-purpose harnesses did not, on this hardware, on
-  file and shell work. It does not show it is better at what Aider or Codex are
-  built for: diff-based editing across a large repository, deep git integration,
-  or driving frontier cloud models.
 - A 2 GB model is a 2 GB model. Raw capability comes from pretraining and you
   download it finished. What this repo adds is reliability and specialisation,
   not intelligence.
-- No LoRA adapter trained here was ever approved for use. The best one moved a
-  workflow from 1/5 to 5/5 and left another at 4/6, still emitting tool names that
-  did not exist. Nothing was merged into the base weights. The rejected runs are
-  in [`reports/lora/`](reports/lora/), which is where the honest information is.
+- This targets file and shell work through a small, fixed tool schema. It does
+  not aim to replace what Aider or Codex are built for: diff-based editing
+  across a large repository, deep git integration, or driving frontier cloud
+  models.
 
 ## Contributing
 
 Issues and pull requests are welcome, particularly reproductions on other
 hardware, and particularly another measurement bug that slipped through.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, tests and ground rules.
 
 By submitting a pull request you agree to license your contribution under AGPLv3
 and grant the maintainer the right to include it in commercial licenses of this
