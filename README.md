@@ -86,14 +86,29 @@ runaway command dies of its own weight instead of eating the host. If
 `systemd-run` is missing, the command still runs and the output says so with a
 `NOTE:` rather than silently going unlimited.
 
+Every command also carries a **seccomp filter** that denies the syscalls no
+build or test step needs: mounts, `unshare`/`setns`, module loading, `kexec`,
+the kernel keyring, `bpf`, `userfaultfd`, `ptrace`. The namespace group is why
+it exists, since without it a command in the jail can still call
+`unshare(CLONE_NEWUSER)` and get a full capability set inside the new
+namespace. It is not airtight and does not claim to be: `clone3` can still
+reach a user namespace, because seccomp cannot read the flags behind its struct
+pointer and denying it would break threads in `python3` and `pytest`. The
+filter is x86_64-only and says so with a `NOTE:` elsewhere.
+
 File tools refuse to escape their root, including through absolute paths and
 `..`. Both are tested by trying to actually escape, with bait planted outside
 the directory, in [`check_sandbox.py`](tests/check_sandbox.py) and
 [`check_execution.py`](tests/check_execution.py), rather than by checking
-that a refusal message appeared. The same file proves the cgroup ceiling by
-effect: a memory hog is OOM-killed, a fork loop is blocked.
+that a refusal message appeared. The same file proves the cgroup ceiling and
+the seccomp filter by effect: a memory hog is OOM-killed, a fork loop is
+blocked, and the denied syscalls are attempted from inside the sandbox and have
+to come back `EPERM`. A control run of the same probe with the filter removed
+separates the calls the filter denies from the ones that were already failing
+for lack of capabilities, and prints both lists, so the section cannot take
+credit for a refusal it did not cause.
 
-`bwrap` and the cgroup ceiling are the two things approval never bypasses, and
+`bwrap`, the cgroup ceiling and the seccomp filter are what approval never bypasses, and
 they do not need to bypass anything else: what you approve runs, including
 `push --force`, programs off the list and a line with pipes, which goes to
 `sh -c` inside the same jail. The first two layers decide what happens *without

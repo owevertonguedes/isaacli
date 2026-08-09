@@ -87,15 +87,31 @@ comando descontrolado morre do próprio peso em vez de consumir a máquina. Se o
 `systemd-run` não estiver instalado, o comando ainda roda e a saída avisa com
 um `NOTE:`, em vez de ficar sem limite em silêncio.
 
+Todo comando também carrega um **filtro seccomp** que nega as chamadas de
+sistema que nenhum build ou teste precisa: namespaces e montagens aninhados,
+carga de módulo, `kexec`, o chaveiro do kernel, `bpf`, `userfaultfd`, `ptrace`.
+O primeiro grupo é a razão de o filtro existir: sem ele, um comando dentro da
+jaula ainda consegue chamar `unshare(CLONE_NEWUSER)` e ganhar um conjunto
+completo de capabilities dentro do namespace novo. Ele não é hermético e não
+afirma ser: o `clone3` ainda alcança um user namespace, porque o seccomp não
+consegue ler as flags atrás do ponteiro de struct dele e negar a chamada
+quebraria threads no `python3` e no `pytest`. O filtro é só de x86_64 e avisa
+com um `NOTE:` nas outras arquiteturas.
+
 As ferramentas de arquivo se recusam a escapar da própria raiz, inclusive por
 caminho absoluto e `..`. As duas coisas são testadas tentando escapar de
 verdade, com iscas plantadas fora do diretório, em
 [`check_sandbox.py`](tests/check_sandbox.py) e
 [`check_execution.py`](tests/check_execution.py), em vez de conferir se a
-mensagem de recusa apareceu. O mesmo arquivo prova o teto de cgroup pelo
-efeito: um consumidor de memória morre por OOM, um loop de fork é bloqueado.
+mensagem de recusa apareceu. O mesmo arquivo prova o teto de cgroup e o filtro
+seccomp pelo efeito: um consumidor de memória morre por OOM, um loop de fork é
+bloqueado, e as chamadas negadas são tentadas de dentro do sandbox e precisam
+voltar `EPERM`. Um controle roda a mesma sonda sem o filtro e separa as
+chamadas que o filtro nega das que já falhavam por falta de capabilities,
+imprimindo as duas listas, para a seção não levar crédito por uma recusa que
+não causou.
 
-O `bwrap` e o teto de cgroup são as únicas duas coisas que a aprovação nunca
+O `bwrap`, o teto de cgroup e o filtro seccomp são o que a aprovação nunca
 contorna, e não precisam contornar mais nada: o que você aprova roda, inclusive
 `push --force`, programas fora da lista e uma linha com pipe, que vai para
 `sh -c` dentro da mesma jaula. As duas primeiras camadas decidem o que acontece

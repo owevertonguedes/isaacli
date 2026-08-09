@@ -26,6 +26,7 @@ isaacli (launcher)
      -> agent.py (loop: messages -> model -> tool calls -> model)
         -> tools.py (schemas and tools)
            -> execution.py (no-shell command, allowlist, approval and bwrap)
+              -> seccomp_filter.py (the BPF filter bwrap loads)
      -> terminal_ui.py (alternate screen and selectors)
      -> i18n.py + locales/ (every string the user reads)
 ```
@@ -45,6 +46,7 @@ worked on.
 | `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
 | `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
 | `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. |
+| `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
 | `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
@@ -158,8 +160,25 @@ may stop fitting entirely in the GPU.
   kernel's cgroup controller, not policy. When `systemd-run` is missing the
   command still runs, unlimited, with a `NOTE:` appended to the output saying
   so; the docs and the tests must never claim the ceiling exists on a machine
-  where it silently does not (see `tasks/pending/007-seccomp-and-cgroup-limits.md`
+  where it silently does not (see `tasks/done/007-seccomp-and-cgroup-limits.md`
   for the measurements behind the exact values);
+- a seccomp-BPF filter on every command, passed to `bwrap` through
+  `--add-seccomp-fd` and assembled in `tool_harness/seccomp_filter.py`. It denies
+  nested namespaces and mounts, module and `kexec` control, the kernel keyring,
+  NUMA and page migration, `bpf`, `userfaultfd`, `ptrace` and
+  `perf_event_open`. The namespace group is the one that earned the work:
+  measured here, a process inside the jail could call `unshare(CLONE_NEWUSER)`
+  successfully, and a new user namespace carries a full capability set inside
+  itself. Like the cgroup ceiling, it does not step aside on approval. It is
+  x86_64-only, because the syscall numbers are, and degrades to a `NOTE:` on
+  any other architecture rather than applying the wrong number table. Checking
+  the arch is not sufficient by itself and the filter does not pretend it is:
+  x32 reports the same arch and sets a bit in the syscall number, so any number
+  carrying that bit is killed before the deny-list is consulted. Without that
+  guard the entire list is one bit away from being skipped. It knowingly leaves
+  `clone3` alone: seccomp cannot read the flags behind its struct pointer, and
+  denying it would break threads in `python3` and `pytest`, so "no nested user
+  namespaces" is not a claim this project makes;
 - no exposure of API keys in config, logs or output;
 - public URLs validated against local and private destinations;
 - child processes tied to the right lifecycle, and idempotent cleanup;

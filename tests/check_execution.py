@@ -7,6 +7,9 @@ EFFECT. A bait file is created outside the working directory and we verify it
 survived. A test that only looks at the refusal string passes identically on a
 sandbox that refuses and on one that refuses and then runs it anyway.
 """
+import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -359,6 +362,162 @@ except OSError as e:
     check("TIMED OUT" not in out, f"the fork loop did not survive to the timeout: {out[:200]!r}")
     check("forked" in out and "Resource temporarily unavailable" in out,
           f"the fork loop hit the TasksMax ceiling instead of running forever: {out[:300]!r}")
+
+print("\n=== 10c. seccomp: denied syscalls fail FROM INSIDE, by effect ===")
+# Same doctrine as 10b. The probe calls the syscalls raw through ctypes and
+# reports the errno the KERNEL returned, so it cannot pass on a sandbox that
+# merely claims to have installed a filter.
+SYSCALL_PROBE = r"""
+import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+def attempt(name, number, *args):
+    ctypes.set_errno(0)
+    rc = libc.syscall(number, *args)
+    print(name, rc, errno.errorcode.get(ctypes.get_errno(), ctypes.get_errno()))
+attempt('unshare', 272, 0x10000000)   # CLONE_NEWUSER
+attempt('ptrace', 101, 0, 0, 0, 0)
+attempt('keyctl', 250, 0, 0, 0, 0, 0)
+attempt('bpf', 321, 0, 0, 0)
+attempt('mount', 165, 0, 0, 0, 0, 0)
+attempt('perf_event_open', 298, 0, 0, 0, 0, 0)
+attempt('init_module', 175, 0, 0, 0)
+attempt('move_pages', 279, 0, 0, 0, 0, 0, 0)
+# clone last: it is the only argument-filtered branch, and if that branch were
+# inverted this call would SUCCEED and fork a second copy of the probe, so
+# anything printed after it would be duplicated.
+attempt('clone_newuser', 56, 0x10000000, 0, 0, 0, 0)
+"""
+
+PROBED_SYSCALLS = ("unshare", "ptrace", "keyctl", "bpf", "mount",
+                   "perf_event_open", "init_module", "move_pages",
+                   "clone_newuser")
+
+
+def probe_results(text):
+    """{name: errno-or-'0'} from the probe's output lines."""
+    results = {}
+    for raw in text.splitlines():
+        fields = raw.split()
+        if len(fields) == 3 and fields[0] in PROBED_SYSCALLS:
+            results[fields[0]] = fields[2]
+    return results
+
+
+if execution.seccomp_filter.build_filter() is None:
+    print(f"[skip  ] no seccomp filter for {platform.machine()} (x86_64 only): "
+          f"syscall tests skipped")
+else:
+    out = execution.run_command(f'python3 -c "{SYSCALL_PROBE}"', authorized=True)
+    filtered = probe_results(out)
+    check(len(filtered) == len(PROBED_SYSCALLS),
+          f"the probe ran and reported every syscall ({filtered})")
+    for name in PROBED_SYSCALLS:
+        check(filtered.get(name) == "EPERM",
+              f"{name} was refused by the kernel inside the sandbox "
+              f"(got {filtered.get(name)!r})")
+
+    # The control, and the honest reading of it. Running the SAME probe in the
+    # SAME jail with the filter removed separates two things the block above
+    # cannot separate on its own: syscalls the filter denies, and syscalls that
+    # were already failing because the jail has no capabilities. Only the
+    # former are evidence about the filter.
+    unfiltered = probe_results(subprocess.run(
+        execution.build_bwrap(["python3", "-c", SYSCALL_PROBE], root, seccomp_fd=None),
+        capture_output=True, text=True, timeout=30,
+    ).stdout)
+    discriminating = sorted(n for n in PROBED_SYSCALLS
+                            if unfiltered.get(n) != "EPERM")
+    already_denied = sorted(n for n in PROBED_SYSCALLS
+                            if unfiltered.get(n) == "EPERM")
+    print(f"         control: filter-attributable {discriminating}; "
+          f"already denied without it {already_denied}")
+    # unshare(CLONE_NEWUSER) is the one that must be in the first list. It
+    # SUCCEEDS in this jail without the filter, and a fresh user namespace
+    # carries a full capability set inside itself: that is the whole reason
+    # this filter exists. If it ever moves to the second list, this section
+    # stopped proving anything about the filter and the reason must be found.
+    check(unfiltered.get("unshare") == "0",
+          "control: without the filter this jail lets unshare(CLONE_NEWUSER) "
+          f"succeed, so the filter is what denies it (got {unfiltered.get('unshare')!r})")
+    check(len(discriminating) >= 3,
+          f"control: the filter is what denies {discriminating}, not the "
+          f"absence of capabilities")
+
+    # The x32 escape hatch, which is one bit away from skipping the whole
+    # deny-list above: x32 reports the same arch as x86_64 and marks its calls
+    # by setting 0x40000000 in the syscall number, so a filter that only
+    # compares native numbers lets `unshare` straight through.
+    #
+    # This kernel has CONFIG_X86_X32_ABI unset, so a real x32 call cannot be
+    # made here. The guard is still exercised by effect: with the bit set the
+    # number is not a valid syscall, so WITHOUT the filter it merely returns
+    # -1/ENOSYS and the process survives, while WITH the filter the program is
+    # killed outright (SIGSYS). Comparing the two is what makes this a test of
+    # the guard rather than of the kernel.
+    x32_probe = ("import ctypes; libc = ctypes.CDLL(None, use_errno=True); "
+                 "libc.syscall(0x40000000 | 272, 0x10000000); print('survived')")
+    plain = subprocess.run(
+        execution.build_bwrap(["python3", "-c", x32_probe], root, seccomp_fd=None),
+        capture_output=True, text=True, timeout=30)
+    guard_fd = execution._seccomp_fd()
+    try:
+        guarded = subprocess.run(
+            execution.build_bwrap(["python3", "-c", x32_probe], root,
+                                  seccomp_fd=guard_fd),
+            capture_output=True, text=True, timeout=30, pass_fds=(guard_fd,))
+    finally:
+        os.close(guard_fd)
+    check("survived" in plain.stdout,
+          f"control: without the filter an x32-numbered syscall is survivable "
+          f"({plain.stdout.strip()!r})")
+    check("survived" not in guarded.stdout and guarded.returncode != 0,
+          f"a syscall carrying the x32 bit is killed, not passed to the "
+          f"deny-list comparisons (exit {guarded.returncode}, "
+          f"{guarded.stdout.strip()!r})")
+
+    # A filter that also breaks the tools is not a win. These four are what the
+    # agent actually runs, so they get checked explicitly, not assumed.
+    out = execution.run_command(
+        """python3 -c "
+import subprocess, threading
+seen = []
+t = threading.Thread(target=lambda: seen.append('thread'))
+t.start(); t.join()
+seen.append('proc:%d' % subprocess.run(['python3', '-c', 'pass']).returncode)
+print('python3 fine', seen)
+" """)
+    check("python3 fine ['thread', 'proc:0']" in out,
+          f"python3 still starts threads and subprocesses under the filter: {out[:300]!r}")
+
+    # The marker is COMPUTED by the shell, not written in the command line:
+    # `run_command` echoes the command it ran, so a literal marker would be
+    # found in the echo whether or not the command ever executed.
+    out = execution.run_command(
+        "git init -q repo && git -C repo status --short && expr 6 \\* 7",
+        authorized=True)
+    check("42" in out and "(exit code: 0)" in out,
+          f"git and `sh -c` still work under the filter: {out[:300]!r}")
+
+    # pytest is the heaviest importer the agent runs regularly, which is why it
+    # is on the list. It has no `pytest` binary on this machine, only the
+    # module, so the test uses whichever exists and skips rather than failing
+    # over an absence that has nothing to do with the filter.
+    if shutil.which("pytest"):
+        pytest_cmd = "pytest --version"
+    elif subprocess.run([sys.executable, "-c", "import pytest"],
+                        capture_output=True).returncode == 0:
+        pytest_cmd = "python3 -m pytest --version"
+    else:
+        pytest_cmd = None
+    if pytest_cmd is None:
+        print("[skip  ] pytest is not installed on this machine: not exercised")
+    else:
+        out = execution.run_command(pytest_cmd)
+        # Not `"pytest" in out`: the echoed command line contains that word
+        # already. A version number does not appear unless pytest really ran.
+        check(re.search(r"pytest\s+\d+\.\d+", out) is not None
+              and "(exit code: 0)" in out,
+              f"pytest still runs under the filter: {out[:300]!r}")
 
 print("\n=== 11. the bait is still intact after everything ===")
 check(bait.exists(), "the bait exists")

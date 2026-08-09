@@ -109,9 +109,36 @@ being a decision.
 
 `/permissions` lists the saved rules and can clear the workspace or global set.
 
-Approval widens what is *useful*, never what is *structural*. Even after
-approval there is no shell, no pipe, no chaining, no force-push, and nothing
-writable outside the working directory.
+Approval is the decision, not a suggestion. The allowlist decides what runs
+*without asking*; it is not a list of things you are forbidden to do. Say yes and
+the command runs: `git clone`, `push --force`, `gh pr create`, `find -delete`, a
+program that is not on the list at all. It is your machine and your repository.
+
+A line with `|`, `&&`, `;` or `>` runs too once you approve it: it goes to
+`sh -c` inside the same jail, with exactly the string you read on screen. It just
+never runs on its own, since a shell is how a model would smuggle `curl | sh`
+past a review that never happened.
+
+One thing approval cannot change, because it is not a rule of ours: **writing
+outside the working directory**. That is `bwrap`, the kernel. No answer at the
+prompt widens it, with or without a shell.
+
+Same for the resources a command may consume: every command runs under a
+memory, process-count and CPU ceiling (`systemd-run --user --scope`), and
+approval does not raise it either. A runaway command dies of its own weight
+instead of eating the machine; if `systemd-run` is not installed, the output
+says so with a `NOTE:` rather than pretending the ceiling is there.
+
+Same for the syscalls a command may make: every command runs under a seccomp
+filter that denies mounts, `unshare`/`setns`, module loading, `kexec`, the
+kernel keyring, `bpf`, `userfaultfd` and `ptrace`. Approval does not lift it
+either. It stops short of being airtight, and says so: `clone3` can still reach
+a user namespace, because seccomp cannot inspect the arguments it passes behind
+a pointer. The filter is x86_64-only; on another architecture the output says
+so with a `NOTE:` instead of quietly leaving the layer out.
+
+The approval prompt says when a command is destructive, which is the whole point
+of it existing: the lever is yours, and you should see what you are pulling.
 
 ## Web access
 
@@ -120,9 +147,12 @@ pages, documentation, shared links and HTTP APIs. It accepts only HTTP(S),
 rejects local, private and reserved destinations, ignores proxy configuration
 and caps the download size.
 
-The terminal sandbox itself stays offline, so `curl` is not the way to reach the
-web. Read-only `gh` views and searches are the separate option for structured or
-authenticated GitHub access; `gh` mutations stay blocked even after approval.
+Commands that run on their own are offline: nothing you were not shown reaches
+the network. `curl` is off the default allowlist, so `fetch_url` remains the
+normal way to read the web. Read-only `gh` views and searches are the separate
+option for structured or authenticated GitHub access. `gh` mutations do not run
+unasked, since they change a server the sandbox cannot roll back, but you can
+approve them like anything else.
 
 ## Sessions
 
@@ -141,13 +171,18 @@ log and starts a fresh one with a new ID, recording the link between them.
 
 ## Terminal behaviour
 
-The REPL uses an alternate screen, keeping the shell's scrollback out of the
-isaacli interface. `/history` prints the transcript normally, so it lands in the
-terminal's native scrollback and stays selectable and copyable. Arrow keys at
-the prompt navigate previously submitted messages.
+The REPL runs on the main screen and clears it on start, so the shell that
+launched isaacli is not left one wheel turn above the first message. From there
+the conversation is plain output in the terminal's own scrollback: the wheel
+scrolls it from the first message to the last, and the text stays selectable and
+copyable. `/history` reprints the whole transcript the same way.
+
+Arrow keys at the prompt navigate previously submitted messages, and only that.
 
 Mouse reporting is never enabled: turning it on would break the terminal's own
-text selection.
+text selection. The alternate screen is used by full-screen menus only, never by
+the REPL: it has no scrollback, and terminals translate the wheel into arrow keys
+while it is active.
 
 While a response streams, one transient line reports approximate live
 tokens/second, including hidden thinking emitted by Ollama. The reasoning text
