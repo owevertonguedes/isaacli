@@ -11,17 +11,14 @@ commands run by Isaac are born in their own process group and with
 bwrap --die-with-parent.
 """
 import argparse
-import datetime as dt
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import time
 import urllib.error
-import shlex
 from pathlib import Path
 
 try:

@@ -10,6 +10,11 @@ import json
 import os
 
 try:
+    import readline
+except ImportError:  # pragma: no cover - Windows/minimal environment
+    readline = None
+
+try:
     from prompt_toolkit.completion import Completer, Completion
 except ImportError:  # pragma: no cover - optional dependency
     Completer = object
@@ -106,10 +111,6 @@ class _CommandCompleter(Completer):
 
 
 def _install_autocomplete():
-    try:
-        import readline
-    except ImportError:  # pragma: no cover - Windows/minimal environment
-        return
     if readline is None:
         return
 
