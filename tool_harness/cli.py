@@ -67,6 +67,7 @@ from cli_ollama import (
     OllamaMixin, _close_without_interruption, _install_signals, _ollama_ok,
     _pid_identity, _same_process, _shared_ollama_state,
 )
+from cli_providers import ProvidersMixin
 
 MAX_PREVIEW_CHARS = 1800
 MAX_PREVIEW_LINES = 28
@@ -143,7 +144,7 @@ def _read_input():
     return input(_colored_prompt("❯ "))
 
 
-class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin):
+class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
                  thinking=None, num_ctx=None, config_file=None, provider=None):
         self.model = model
@@ -190,39 +191,6 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin):
         self._log("meta", event="start", pid=os.getpid(), model=self.model,
                   workspace=str(self.workspace))
 
-    def _provider_from_profile(self, item):
-        if not item or item.get("provider", "ollama") == "ollama":
-            return {"provider": "ollama"}
-        secret_path = (Path(self.config_file).with_name("secrets.json")
-                       if self.config_file else None)
-        return {
-            "provider": "openai_compatible",
-            "provider_name": item.get("provider_name") or "API",
-            "base_url": item.get("base_url"),
-            "api_key": config.load_secret(item.get("credential"), secret_path),
-        }
-
-    def _persist_adjusted_thinking(self):
-        """Write thinking=None to the active profile after the provider rejected
-        the configured reasoning effort, so the error (and the extra round trip
-        it costs) does not repeat in every future conversation. Returns False
-        when there is nowhere to persist it. The caller has to tell the user
-        that, not swallow the failure."""
-        try:
-            data = config.load(self.config_file)
-        except ValueError as e:
-            self._log("error", error=f"thinking_adjusted: unreadable configuration ({e})")
-            return False
-        name, item = config.profile(data)
-        if not item or item.get("model") != self.model:
-            self._log("error", error="thinking_adjusted: no saved profile matches "
-                      f"the active model ({self.model})")
-            return False
-        item["thinking"] = None
-        data["profiles"][name] = item
-        config.save(data, self.config_file)
-        return True
-
     def set_workspace(self, path, reset=False):
         new = Path(path).expanduser().resolve()
         if not new.exists():
@@ -240,47 +208,6 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin):
                 "content": f"The working directory is now: {new}",
             })
             self._log("meta", event="workspace", workspace=str(new))
-
-    def select_model(self):
-        import setup_ollama
-
-        code = setup_ollama.run_model_selector(config_file=self.config_file)
-        if code != 0:
-            message = (t("cli.model.selection_cancelled") if code == 130
-                       else t("cli.model.unchanged"))
-            self.redraw_session(message)
-            return
-        try:
-            data = config.load(self.config_file)
-        except ValueError as e:
-            print(t("cli.config.error", error=e))
-            return
-        name, item = config.profile(data)
-        if not item:
-            print(t("cli.model.profile_missing"))
-            return
-        self.model = item["model"]
-        self.thinking = item.get("thinking")
-        self.num_ctx = item.get("num_ctx")
-        self.provider = self._provider_from_profile(item)
-        self._log("meta", event="model", profile=name, model=self.model,
-                  thinking=self.thinking, num_ctx=self.num_ctx)
-        context = (t("cli.model.context_suffix", context=_short_context(self.num_ctx))
-                   if self.num_ctx else "")
-        effort = (t("cli.model.effort_suffix", effort=self.thinking)
-                  if self.thinking not in (None, False) else t("cli.model.no_reasoning"))
-        self.redraw_session(
-            t("cli.model.summary", name=name, context=context, effort=effort))
-
-    def _permission_mode_label(self):
-        return (t("cli.mode.saved_only") if self.permission_mode == "authorized_only"
-                else t("cli.mode.safe_auto"))
-
-    def _engine_label(self):
-        if self.provider.get("provider") == "ollama":
-            version = self.ensure_ollama(warn=False)
-            return f"Ollama {version}" if version else t("cli.engine.unavailable")
-        return self.provider.get("provider_name") or t("cli.engine.openai_compatible")
 
     def _show_working(self):
         self._assistant_label_pending = True
