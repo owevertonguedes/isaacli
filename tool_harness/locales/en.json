@@ -88,7 +88,7 @@
   "cli.cmd.clear": "clear the conversation context",
   "cli.cmd.new": "start a new session",
   "cli.cmd.exit": "exit Isaac",
-  "cli.welcome.greeting": "Welcome back, {user}!",
+  "cli.welcome.greeting": "Welcome back!",
   "cli.welcome.getting_started": "Getting started",
   "cli.welcome.setup": "models and engines",
   "cli.welcome.status": "session and usage",

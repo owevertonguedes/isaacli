@@ -590,18 +590,17 @@ check(out.getvalue().startswith("\n" + EN.t("cli.working.waiting")[:8])
       "the working indicator is transient and leaves a break before the answer")
 
 panel = app._welcome_lines(
-    "long-model", "Ollama 0.30.10", sub, width=100, user="Weverton",
+    "long-model", "Ollama 0.30.10", sub, width=100,
 )
 check(all(app._visual_width(line) == 100 for line in panel)
       and f"Isaac CLI v{app.APP_VERSION}" in panel[0]
-      and "Welcome back, Weverton!" in "\n".join(panel)
+      and "Welcome back!" in "\n".join(panel)
       and "┬" in panel[0] and panel[1].count("│") == 3
       and all(line in "\n".join(panel) for line in app.WORDMARK_ISAAC)
       and EN.t("cli.welcome.shift_tab") in "\n".join(panel),
-      "the welcome panel has the version, identity and stable alignment")
+      "the welcome panel has the version, neutral greeting and stable alignment")
 compact_panel = app._welcome_lines(
     "a-very-long-model-name", "engine", sub, width=40,
-    user="A very long user name indeed",
 )
 check(all(app._visual_width(line) == 40 for line in compact_panel),
       "the welcome panel also fits a narrow terminal")

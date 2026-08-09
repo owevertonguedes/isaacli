@@ -2,7 +2,6 @@
 
 Pure functions, entering and leaving strings. No session state lives here.
 """
-import getpass
 import os
 import re
 import shutil
@@ -203,12 +202,11 @@ def _short_context(value):
     return str(value)
 
 
-def _welcome_lines(model, engine, workspace, width=None, user=None):
+def _welcome_lines(model, engine, workspace, width=None):
     """Build the opening panel without ANSI so the alignment stays predictable."""
     columns = width if width is not None else shutil.get_terminal_size((100, 24)).columns - 2
     width = max(36, min(columns, 112))
     inner = width - 2
-    user = user or getpass.getuser().replace("_", " ").title()
     lines = []
 
     def body(text=""):
@@ -232,7 +230,7 @@ def _welcome_lines(model, engine, workspace, width=None, user=None):
             "",
         ]
         right_side = [
-            t("cli.welcome.greeting", user=user),
+            t("cli.welcome.greeting"),
             "",
             t("cli.welcome.getting_started"),
             f"{'/help':<9} " + t("cli.cmd.help"),
@@ -250,7 +248,7 @@ def _welcome_lines(model, engine, workspace, width=None, user=None):
     else:
         title = f"╭─── Isaac CLI v{APP_VERSION} "
         lines.append(title + "─" * max(0, width - len(title) - 1) + "╮")
-        body(t("cli.welcome.greeting", user=user))
+        body(t("cli.welcome.greeting"))
         for wordmark_line in WORDMARK_ISAAC:
             body(_pad_visual(wordmark_line, inner - 2, "center"))
         body(t("cli.welcome.compact"))
