@@ -3,9 +3,35 @@
 Detail that would bloat the [README](../README.md): the setup flow, the REPL
 commands, the permission model and how sessions are resumed.
 
+## Installation and removal
+
+From a fresh clone, install the per-user command and run setup:
+
+```bash
+./isaacli install
+isaacli setup
+```
+
+Installation creates only `~/.local/bin/isaacli`, a symlink to the clone. It
+does not need `sudo`, never overwrites another command and transparently runs on
+the host when invoked from a Flatpak terminal such as VS Code from Flathub.
+
+Removal has three deliberately separate levels:
+
+| Command | Removed | Preserved |
+| --- | --- | --- |
+| `isaacli uninstall` | the per-user command | configuration, secrets, sessions, Ollama and the clone |
+| `isaacli uninstall --purge` | command, configuration, API keys, permissions, sessions, feedback and runtime state | Ollama, its models and the clone |
+| `isaacli uninstall --purge --ollama` | everything above plus a recognised official Linux Ollama installation, its service, models and user data | the clone |
+
+The two purge forms require the exact confirmation displayed by the command.
+Purge refuses to run while another isaacli session is active. Ollama removal
+also refuses package-managed or otherwise unrecognised installations, which
+must be removed through the package manager that owns them.
+
 ## Setup
 
-`./isaacli setup` walks through language, engine, model, context size and
+`isaacli setup` walks through language, engine, model, context size and
 reasoning effort. The first interactive run opens it automatically when no
 profile exists.
 

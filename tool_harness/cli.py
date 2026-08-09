@@ -62,12 +62,18 @@ from cli_commands import (
 )
 from cli_ollama import (
     OllamaMixin, _close_without_interruption, _install_signals, _ollama_ok,
-    _pid_identity, _same_process, _shared_ollama_state,
+    _pid_identity, _shared_ollama_state,
 )
 from cli_providers import ProvidersMixin
+from installation import (
+    install_launcher as _install_launcher,
+    uninstall_launcher as _uninstall_launcher,
+    uninstall_official_ollama as _uninstall_official_ollama,
+)
 
 MAX_PREVIEW_CHARS = 1800
 MAX_PREVIEW_LINES = 28
+
 
 def _announce_rate_limit(seconds, attempt):
     """Show the provider's own wait so a paused turn does not look like a freeze."""
@@ -597,9 +603,25 @@ def main(argv=None):
     _install_signals()
     arguments = list(sys.argv[1:] if argv is None else argv)
     setup_requested = bool(arguments and arguments[0] == "setup")
+    install_requested = bool(arguments and arguments[0] == "install")
+    uninstall_requested = bool(arguments and arguments[0] == "uninstall")
+    purge_requested = uninstall_requested and arguments[1:] == ["--purge"]
+    ollama_purge_requested = (
+        uninstall_requested and arguments[1:] == ["--purge", "--ollama"]
+    )
     if setup_requested:
         if len(arguments) > 1:
             print(t("cli.setup.usage"))
+            return 2
+        arguments = []
+    elif install_requested:
+        if len(arguments) > 1:
+            print(t("cli.install.usage"))
+            return 2
+        arguments = []
+    elif uninstall_requested:
+        if len(arguments) > 1 and not (purge_requested or ollama_purge_requested):
+            print(t("cli.uninstall.usage"))
             return 2
         arguments = []
 
@@ -632,6 +654,32 @@ def main(argv=None):
         print(t("cli.config.warning", error=e))
         config_data = config.empty_config()
     set_language(config_data.get("language"))
+    if install_requested:
+        return _install_launcher()
+    if uninstall_requested:
+        if purge_requested or ollama_purge_requested:
+            warning_key = (
+                "cli.uninstall.ollama.warning" if ollama_purge_requested
+                else "cli.uninstall.purge_warning"
+            )
+            print(t(warning_key))
+            try:
+                confirmation = input(t("cli.uninstall.confirm"))
+            except (EOFError, KeyboardInterrupt):
+                print("\n" + t("cli.uninstall.cancelled"))
+                return 130
+            expected = "uninstall ollama" if ollama_purge_requested else "uninstall"
+            if confirmation.strip() != expected:
+                print(t("cli.uninstall.cancelled"))
+                return 130
+        uninstall_code = _uninstall_launcher(
+            purge=purge_requested or ollama_purge_requested,
+        )
+        if uninstall_code != 0:
+            return uninstall_code
+        if ollama_purge_requested:
+            return _uninstall_official_ollama()
+        return 0
     _profile_name, default_profile = config.profile(config_data)
     needs_setup = (
         setup_requested

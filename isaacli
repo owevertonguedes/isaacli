@@ -1,4 +1,20 @@
 #!/usr/bin/env sh
-# resolve the root from this script's location, so it works from any folder
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Follow an installed symlink before resolving the project root.
+SCRIPT=$0
+while [ -L "$SCRIPT" ]; do
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+    LINK=$(readlink "$SCRIPT")
+    case "$LINK" in
+        /*) SCRIPT=$LINK ;;
+        *) SCRIPT=$SCRIPT_DIR/$LINK ;;
+    esac
+done
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+
+# VS Code and other Flatpak terminals cannot see host programs such as Ollama
+# or bwrap. Run the whole CLI on the host while preserving cwd and arguments.
+if [ -n "${FLATPAK_ID:-}" ] && command -v flatpak-spawn >/dev/null 2>&1; then
+    exec flatpak-spawn --host "$ROOT/isaacli" "$@"
+fi
+
 exec python3 "$ROOT/tool_harness/cli.py" "$@"

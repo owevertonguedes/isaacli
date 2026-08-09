@@ -29,14 +29,29 @@ o sandbox.
 ```bash
 git clone https://github.com/owevertonguedes/isaacli.git
 cd isaacli
+./isaacli install                  # adiciona isaacli ao PATH do usuário
 
-./isaacli setup                    # escolhe modelo, contexto e esforço de raciocínio
+isaacli setup                      # escolhe modelo, contexto e esforço de raciocínio
 
-./isaacli                          # REPL interativo
-./isaacli "rode git status e me diga o que está pendente"
-./isaacli --workspace /caminho/do/projeto
-./isaacli --resume <id-da-sessão>
+isaacli                            # REPL interativo
+isaacli "rode git status e me diga o que está pendente"
+isaacli --workspace /caminho/do/projeto
+isaacli --resume <id-da-sessão>
 ```
+
+O comando de instalação cria um link do usuário em `~/.local/bin`; não precisa
+de `sudo` e nunca sobrescreve outro comando. O launcher também detecta terminais
+Flatpak (inclusive o VS Code do Flathub) e roda no host, onde estão instalados o
+Ollama e as dependências do sandbox.
+
+Para remover o comando e preservar configuração e histórico, execute `isaacli
+uninstall`. Para apagar permanentemente também configuração, chaves de API,
+permissões, sessões, avaliações e estado temporário, execute `isaacli uninstall
+--purge`. Se o Ollama foi instalado somente para o isaacli, `isaacli uninstall
+--purge --ollama` também remove uma instalação feita pelo script oficial do
+Ollama para Linux, seu serviço e todos os modelos. Essa forma exige uma
+confirmação mais forte e recusa instalações desconhecidas ou gerenciadas por
+pacotes. Todas as formas preservam o clone.
 
 A primeira execução interativa abre o setup automaticamente quando não existe
 perfil. O setup também configura qualquer endpoint compatível com OpenAI (Groq,

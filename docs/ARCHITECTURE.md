@@ -48,6 +48,7 @@ worked on.
 | `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. |
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
+| `tool_harness/installation.py` | per-user launcher install, uninstall and explicitly confirmed purge | It never removes a launcher owned by another checkout or an unrecognised Ollama installation. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
 | `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
 
@@ -81,6 +82,16 @@ New sessions use UUIDv4. Older date-based IDs are still accepted for resuming,
 and `_load_session` also reads logs written before the JSONL field names were
 translated, so sessions recorded by earlier versions do not silently rebuild as
 empty.
+
+`isaacli install` creates only a per-user symlink in `~/.local/bin`. A normal
+`uninstall` removes only that symlink; `uninstall --purge` also removes the
+configuration, secrets, sessions, feedback and stale runtime coordination after
+an explicit confirmation. `--purge --ollama` is the deliberately stronger Linux
+route for someone who installed Ollama solely for Isaac: it additionally removes
+an installation recognised as coming from Ollama's official script, including
+its service, models and user data. It refuses unrecognised layouts and never
+touches the clone. Purge also refuses to start while a live Isaac session is
+registered, so it cannot remove the engine underneath another process.
 
 The resume command uses `isaacli` when this installation is on `PATH`;
 otherwise it prints the absolute launcher that is actually executable.

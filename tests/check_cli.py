@@ -7,6 +7,7 @@ import json
 import os
 import pty
 import select
+import subprocess
 import sys
 import tempfile
 import termios
@@ -27,6 +28,7 @@ os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 import cli as app
 import cli_ollama
 import config
+import installation
 import setup_ollama
 import terminal_ui
 import tools
@@ -45,8 +47,113 @@ def check(condition, description):
         failures.append(description)
 
 
+official_paths = {
+    "/usr/local/bin/ollama", "/usr/local/lib/ollama",
+    "/etc/systemd/system/ollama.service", "/usr/share/ollama",
+}
+ollama_plan = installation.official_ollama_plan(
+    "/usr/local/bin/ollama",
+    path_exists=lambda path: str(path) in official_paths,
+    user_exists=True, group_exists=True,
+)
+check(ollama_plan[0] == ["sudo", "-v"]
+      and ["sudo", "rm", "-rf", "/usr/local/lib/ollama"] in ollama_plan
+      and ["sudo", "rm", "-rf", "/usr/share/ollama"] in ollama_plan
+      and installation.official_ollama_plan(
+          "/usr/bin/ollama", path_exists=lambda _path: True,
+      ) is None,
+      "Ollama purge uses only the recognized official layout")
+
+
 check(not hasattr(app, "FALLBACK_MODEL"),
       "the CLI has no hardcoded fallback model")
+
+install_dir = root / "bin"
+with redirect_stdout(io.StringIO()):
+    first_install = app._install_launcher(install_dir)
+    second_install = app._install_launcher(install_dir)
+installed_launcher = install_dir / "isaacli"
+installed_version = subprocess.run(
+    [str(installed_launcher), "--version"], capture_output=True, text=True,
+    check=False,
+)
+check(first_install == 0 and second_install == 0
+      and installed_launcher.is_symlink()
+      and installed_launcher.resolve() == HERE.parent / "isaacli"
+      and installed_version.returncode == 0
+      and "Isaac CLI v" in installed_version.stdout,
+      "install creates an idempotent, executable per-user launcher symlink")
+(install_dir / "isaacli").unlink()
+(install_dir / "isaacli").write_text("another command", encoding="utf-8")
+with redirect_stdout(io.StringIO()):
+    conflicting_install = app._install_launcher(install_dir)
+check(conflicting_install == 1
+      and (install_dir / "isaacli").read_text(encoding="utf-8") == "another command",
+      "install never overwrites an existing command")
+
+purge_root = root / "purge"
+purge_bin = purge_root / "bin"
+purge_config = purge_root / "config" / "isaacli"
+purge_sessions = purge_root / "cli_sessions"
+purge_feedback = purge_root / "feedback"
+purge_runtime = purge_root / "runtime" / "isaacli"
+for directory in (purge_config, purge_sessions, purge_feedback, purge_runtime):
+    directory.mkdir(parents=True)
+    (directory / "state").write_text("private", encoding="utf-8")
+untouched_clone = purge_root / "clone"
+untouched_clone.mkdir()
+with redirect_stdout(io.StringIO()):
+    app._install_launcher(purge_bin)
+    (purge_runtime / "ollama.json").write_text(json.dumps({"clients": [{
+        "pid": os.getpid(), "start": app._pid_identity(os.getpid()),
+    }]}), encoding="utf-8")
+    active_purge = app._uninstall_launcher(
+        purge=True, bin_dir=purge_bin, config_dir=purge_config,
+        data_dirs=[purge_sessions, purge_feedback], runtime_dir=purge_runtime,
+    )
+    (purge_runtime / "ollama.json").write_text("{}", encoding="utf-8")
+    purged = app._uninstall_launcher(
+        purge=True, bin_dir=purge_bin, config_dir=purge_config,
+        data_dirs=[purge_sessions, purge_feedback], runtime_dir=purge_runtime,
+    )
+check(active_purge == 1 and purged == 0 and not (purge_bin / "isaacli").exists()
+      and not any(path.exists() for path in (
+          purge_config, purge_sessions, purge_feedback, purge_runtime,
+      )) and untouched_clone.exists(),
+      "purge blocks active sessions, then removes private state and preserves the clone")
+
+original_uninstall = app._uninstall_launcher
+original_ollama_uninstall = app._uninstall_official_ollama
+original_input = builtins.input
+uninstall_calls = []
+ollama_uninstall_calls = []
+try:
+    app._uninstall_launcher = lambda purge=False: uninstall_calls.append(purge) or 0
+    app._uninstall_official_ollama = (
+        lambda: ollama_uninstall_calls.append(True) or 0
+    )
+    builtins.input = lambda _prompt: "keep everything"
+    with redirect_stdout(io.StringIO()):
+        cancelled_purge = app.main(["uninstall", "--purge"])
+    builtins.input = lambda _prompt: "uninstall"
+    with redirect_stdout(io.StringIO()):
+        confirmed_purge = app.main(["uninstall", "--purge"])
+        weak_ollama_confirmation = app.main(
+            ["uninstall", "--purge", "--ollama"],
+        )
+    builtins.input = lambda _prompt: "uninstall ollama"
+    with redirect_stdout(io.StringIO()):
+        confirmed_ollama_purge = app.main(
+            ["uninstall", "--purge", "--ollama"],
+        )
+finally:
+    app._uninstall_launcher = original_uninstall
+    app._uninstall_official_ollama = original_ollama_uninstall
+    builtins.input = original_input
+check(cancelled_purge == 130 and confirmed_purge == 0
+      and weak_ollama_confirmation == 130 and confirmed_ollama_purge == 0
+      and uninstall_calls == [True, True] and ollama_uninstall_calls == [True],
+      "each destructive uninstall requires its exact confirmation phrase")
 
 original_interactive = terminal_ui.interactive
 terminal_ui.interactive = lambda _input_fn=input: True

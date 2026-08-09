@@ -37,7 +37,8 @@ Requires [Ollama](https://ollama.com), Python 3.10+, and `bwrap`
 ```bash
 git clone https://github.com/owevertonguedes/isaacli.git
 cd isaacli
-./isaacli setup
+./isaacli install
+isaacli setup
 ```
 
 The checks are standalone scripts, not pytest modules: they run their
