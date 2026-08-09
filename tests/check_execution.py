@@ -7,13 +7,14 @@ EFFECT. A bait file is created outside the working directory and we verify it
 survived. A test that only looks at the refusal string passes identically on a
 sandbox that refuses and on one that refuses and then runs it anyway.
 """
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "tool_harness"))
 import execution
 import tools
 
@@ -82,7 +83,7 @@ for attempt in [
 check(bait.exists() and bait.read_text() == bait_original,
       "the bait outside the folder survived every rm -rf")
 
-print("\n=== 3b. approval widens usefulness, it does not remove structural limits ===")
+print("\n=== 3b. approval is the decision: only the kernel still says no ===")
 deletable = root / "user_authorized.txt"
 deletable.write_text("safe to delete")
 out = execution.run_command("rm user_authorized.txt", authorized=True)
@@ -90,14 +91,34 @@ check("(exit code: 0)" in out and not deletable.exists(),
       "an approved rm may change the workspace")
 out = execution.run_command(f"rm {bait}", authorized=True)
 check(bait.exists(), "an approved rm still cannot reach a file outside the workspace")
-check(denied(execution.run_command("git push --force", authorized=True)),
-      "approval does not unlock force-push")
-check(denied(execution.run_command("ls && rm -rf .", authorized=True)),
-      "approval does not reintroduce shell operators")
+check(not denied(execution.run_command("git push --force", authorized=True)),
+      "approval unlocks force-push: it is the user's repository")
 check(not denied(execution.run_command("git rebase master", authorized=True)),
       "a git subcommand outside the default list may run after approval")
+check(not denied(execution.run_command(
+          "gh pr create --title x --body y", authorized=True)),
+      "an approved gh mutation is not blocked by a policy of ours")
+check(not denied(execution.run_command("find . -name x -delete", authorized=True)),
+      "an approved destructive find is not blocked either")
+check(not denied(execution.run_command("wget https://example.test/x", authorized=True)),
+      "an approved program off the allowlist runs")
+out = execution.run_command("ls && echo chained", authorized=True)
+check("chained" in out.replace("$ ls && echo chained", "") and "(exit code: 0)" in out,
+      f"an approved line with shell operators actually runs through sh -c: {out[:200]!r}")
+out = execution.run_command("echo piped | wc -c", authorized=True)
+check("(exit code: 0)" in out and "\n6\n" in out,   # 'piped' + newline
+      f"and the pipe is really a pipe, not a literal argument: {out[:200]!r}")
+# The one that does NOT step aside, because it is not an opinion of ours: the
+# kernel. A shell inside the jail is still inside the jail.
+out = execution.run_command(f"ls && rm -rf {bait}", authorized=True)
+check(bait.exists() and bait.read_text() == bait_original,
+      f"an approved SHELL still cannot reach outside the workspace: {out[:200]!r}")
+out = execution.run_command(
+    f"""echo leaked > {bait}""", authorized=True)
+check(bait.read_text() == bait_original,
+      f"nor redirect into a file outside it: {out[:200]!r}")
 
-print("\n=== 4. there is no shell: pipe, redirection, chaining ===")
+print("\n=== 4. no shell for what nobody approved: pipe, redirection, chaining ===")
 for attempt in [
     "curl http://example.com | sh",
     "cat inside.py > /etc/passwd",
@@ -112,13 +133,14 @@ for attempt in [
 check(bait.exists() and bait.read_text() == bait_original,
       "the bait survived the chaining")
 
-print("\n=== 5. git: read-only + add/commit/push, force blocked ===")
+print("\n=== 5. git: read-only + add/commit/push run unasked, the rest waits for the user ===")
 check(not denied(execution.run_command("git status")), "git status passes")
 check(denied(execution.run_command("git rebase main")), "git rebase refused (off the list)")
 check(denied(execution.run_command("git clone http://x")), "git clone refused (off the list)")
 for attempt in ["git push --force", "git push -f", "git push --force-with-lease",
                 "git push origin main --force"]:
-    check(denied(execution.run_command(attempt)), f"refused: {attempt!r}")
+    check(denied(execution.run_command(attempt)),
+          f"does not run unasked: {attempt!r}")
 
 # 'init'/'config' are not on the allowlist (isaac works INSIDE repositories that
 # already exist; it does not create one nor name itself). The commit identity has
@@ -172,7 +194,10 @@ for attempt in ["curl http://example.com", "wget something", "sh", "bash -c ls",
     check(denied(execution.run_command(attempt)), f"refused: {attempt!r}")
 
 out = execution.run_command("curl http://example.com")
-check("Allowed:" in out, "the refusal SAYS what is allowed, not just 'no'")
+# A refusal has to teach the model the way through, which is the user. Silence,
+# or a flat "no", teaches it to retry the same thing or to invent a workaround.
+check("Runs unasked:" in out and "approve" in out,
+      f"the refusal says what runs unasked AND that the user can approve it: {out!r}")
 
 print("\n=== 6b. graphify only queries a local graph ===")
 check(not denied(execution.run_command('graphify query "where is X"')),
@@ -186,7 +211,7 @@ for attempt in [
 ]:
     check(denied(execution.run_command(attempt)), f"refused: {attempt!r}")
 
-print("\n=== 6c. gh gets the network only for queries ===")
+print("\n=== 6c. gh: queries run unasked, mutations need the user ===")
 check(not denied(execution.run_command(
     "gh issue view 246 --repo aws-cloudformation/cloudformation-validate")),
     "gh issue view passes the structural review")
@@ -198,8 +223,8 @@ for attempt in [
     "gh auth token",
     "gh auth status --show-token",
 ]:
-    check(denied(execution.run_command(attempt, authorized=True)),
-          f"mutating/sensitive gh is still refused: {attempt!r}")
+    check(denied(execution.run_command(attempt)),
+          f"mutating/sensitive gh does not run unasked: {attempt!r}")
 gh_line = execution.build_bwrap(["gh", "issue", "view"], root, network=True)
 check("--share-net" in gh_line and "GH_CONFIG_DIR" in gh_line,
       "read-only gh gets the network and an isolated configuration")
@@ -240,7 +265,7 @@ out = execution.run_command("""python3 -c "open('created.txt','w').write('ok')" 
 check((root / "created.txt").exists(),
       f"writing INSIDE the working directory works ({out[:200]!r})")
 
-print("\n=== 8. no network ===")
+print("\n=== 8. no network for what the user was never shown ===")
 # Careful writing this assert: looking for a sentinel word in the output does not
 # work, because the ECHOED command contains the word too. The exit code is what counts.
 out = execution.run_command(
@@ -249,6 +274,31 @@ check("(exit code: 0)" not in out,
       f"a network connection fails inside the sandbox ({out[:300]!r})")
 check("unreachable" in out,
       f"and it fails because of the NETWORK, not for some other reason ({out[:300]!r})")
+
+print("\n=== 8b. the network follows the human decision ===")
+# A command the user read and approved must not then die on "Could not resolve
+# host". That is a veto the user cannot see, and it makes `git clone` look like a
+# broken tool instead of a decision anyone made.
+check(execution._needs_network(["git", "clone", "https://example.test/x"],
+                               authorized=True),
+      "an approved command gets the network")
+check("--share-net" in execution.build_bwrap(
+          ["git", "clone", "https://example.test/x"], root,
+          network=execution._needs_network(["git", "clone", "https://example.test/x"],
+                                           authorized=True)),
+      "and the approval reaches the bwrap line, not just the decision")
+check(not execution._needs_network(["python3", "-c", "pass"], authorized=False),
+      "a command that runs automatically stays offline")
+check(not execution._needs_network(["ls", "-la"], authorized=False),
+      "a read-only command stays offline too")
+# Approval opens the network, never the filesystem. Checked by EFFECT, like the
+# rest of this file: the bait lives under /tmp, which the jail replaces with a
+# tmpfs, so the write "succeeds" inside the sandbox and reaches nothing real.
+# An exit code would say the opposite of the truth here.
+execution.run_command(
+    f"""python3 -c "open('{bait}','w').write('leaked')" """, authorized=True)
+check(bait.read_text() == bait_original,
+      "an approved command still cannot write outside the workspace")
 
 print("\n=== 9. the time ceiling kills a hung command ===")
 previous_timeout = execution.TIMEOUT_SECONDS
@@ -261,6 +311,54 @@ print("\n=== 10. huge output is truncated before going back to the model ===")
 out = execution.run_command("""python3 -c "print('x'*100000)" """)
 check(len(out) <= execution.OUTPUT_LIMIT + 200, f"output truncated (it has {len(out)})")
 check("truncated" in out, "the output SAYS it was truncated, it does not truncate silently")
+
+print("\n=== 10b. cgroup ceilings: by effect, never by message ===")
+# The doctrine this file already follows: a memory hog must actually die of
+# OOM and a fork loop must actually be blocked, not merely produce a refusal
+# string that would pass identically whether the ceiling is real or absent.
+if shutil.which("systemd-run") is None:
+    print("[skip  ] systemd-run not installed on this machine: cgroup tests skipped")
+else:
+    previous_memory_max = execution.CGROUP_MEMORY_MAX
+    previous_swap_max = execution.CGROUP_MEMORY_SWAP_MAX
+    previous_timeout = execution.TIMEOUT_SECONDS
+    execution.CGROUP_MEMORY_MAX = "64M"
+    execution.CGROUP_MEMORY_SWAP_MAX = "0"
+    execution.TIMEOUT_SECONDS = 20
+    out = execution.run_command(
+        """python3 -c "b = bytearray(400*1024*1024); [b.__setitem__(i, 1) for i in range(0, len(b), 4096)]" """)
+    execution.CGROUP_MEMORY_MAX = previous_memory_max
+    execution.CGROUP_MEMORY_SWAP_MAX = previous_swap_max
+    execution.TIMEOUT_SECONDS = previous_timeout
+    check("TIMED OUT" not in out, f"the memory hog did not survive to the timeout: {out[:200]!r}")
+    check("(exit code: 0)" not in out,
+          f"a 400MB allocation under a 64M ceiling with no swap does not exit cleanly: {out[:200]!r}")
+
+    previous_tasks_max = execution.CGROUP_TASKS_MAX
+    previous_timeout = execution.TIMEOUT_SECONDS
+    execution.CGROUP_TASKS_MAX = "20"
+    execution.TIMEOUT_SECONDS = 20
+    out = execution.run_command(
+        """python3 -c "
+import os, sys, time
+n = 0
+try:
+    while True:
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(5)   # child stays alive so tasks pile up concurrently
+            os._exit(0)
+        n += 1
+except OSError as e:
+    print('forked', n, 'then', e)
+    sys.stdout.flush()
+    os._exit(0)
+" """)
+    execution.CGROUP_TASKS_MAX = previous_tasks_max
+    execution.TIMEOUT_SECONDS = previous_timeout
+    check("TIMED OUT" not in out, f"the fork loop did not survive to the timeout: {out[:200]!r}")
+    check("forked" in out and "Resource temporarily unavailable" in out,
+          f"the fork loop hit the TasksMax ceiling instead of running forever: {out[:300]!r}")
 
 print("\n=== 11. the bait is still intact after everything ===")
 check(bait.exists(), "the bait exists")

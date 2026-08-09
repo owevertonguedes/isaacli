@@ -12,7 +12,7 @@ Read in this order before changing the project:
 2. this document;
 3. the current diff (`git diff`) and the Git state;
 4. only the modules related to the task;
-5. the matching tests in `tool_harness/check_*.py`.
+5. the matching tests in `tests/check_*.py`.
 
 Old logs and sessions are historical evidence, not current state. Re-verify
 processes, configuration, installed models and test results live.
@@ -43,8 +43,8 @@ worked on.
 | `tool_harness/terminal_ui.py` | alternate screen, menus, busy prompt | Must not enable mouse reporting: that breaks the terminal's native selection and copy. |
 | `tool_harness/setup_ollama.py` | local setup, curated catalog, local models, context, reasoning and OpenAI-compatible API | Context is per-request configuration; it must not create `16k`/`32k` Ollama copies. |
 | `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
-| `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; terminal commands stay offline in the sandbox. |
-| `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. |
+| `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
+| `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
 | `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
@@ -85,18 +85,24 @@ otherwise it prints the absolute launcher that is actually executable.
 
 ## Terminal and shutdown
 
-The REPL uses the alternate buffer so the conversation does not mix with the
-shell history. `/history` prints normally, which keeps the transcript in the
-terminal's native scrollback and leaves it selectable and copyable. ↑/↓ at the
-prompt belong to the typed-message history.
+The REPL runs on the main screen. The conversation is plain output in the
+terminal's own scrollback: the wheel scrolls it from the first message to the
+last, and the text stays selectable and copyable. ↑/↓ at the prompt belong to
+the typed-message history and to nothing else.
 
-Mouse reporting is never enabled. An earlier version drove a scrollable viewport
-with the wheel; it was removed because DEC 1007 turns the wheel and ↑ into the
-same sequence, and enabling reporting at all costs the terminal's native
-selection. Do not reintroduce it.
+The alternate buffer must not come back to the REPL. It has no scrollback, and
+terminals translate the wheel into ↑/↓ while it is active, so the wheel took
+over the prompt's message history. Only full-screen menus use it, and leaving it
+restores the conversation on its own, with no redraw.
 
-Full-screen menus must always redraw the recent conversation when returning to
-the REPL.
+Mouse reporting is never enabled either. An earlier version drove a scrollable
+viewport with the wheel; it was removed because DEC 1007 turns the wheel and ↑
+into the same sequence, and enabling reporting at all costs the terminal's
+native selection. Do not reintroduce it.
+
+Returning from a full-screen menu announces the outcome (`redraw_session`) and
+prints nothing else: reprinting the transcript would duplicate it in the
+scrollback.
 
 Keys received during startup are discarded before the first prompt. During
 generation, input is not echoed and is flushed at the end. `Ctrl+C` at the
@@ -136,6 +142,24 @@ may stop fitting entirely in the GPU.
 - the workspace as the boundary for files and commands;
 - approval before unauthorised mutations, and an explicit warning when the
   command is destructive, so approval does not become a reflex;
+- approval is the decision, not a suggestion. Exactly one thing may still refuse
+  after the user says yes: the kernel (`bwrap`, nothing writable outside the
+  workspace). The allowlist, the `gh` routes, the force-push flags, the network
+  and the no-shell parser are all defaults for what the user did not look at, and
+  every one of them steps aside on approval, an approved line with operators
+  running through `sh -c` inside the same jail. Adding a second veto is a
+  regression: whoever forked this owns their machine, and a rule that says "no,
+  not even if you insist" only pushes them to a plain terminal with no sandbox at
+  all. `git clone`, `push --force` and chained commands all paid for this;
+- a cgroup ceiling on every command, via `systemd-run --user --scope` wrapping
+  the `bwrap` line: `MemoryMax` together with `MemorySwapMax=0` (the first
+  alone is not a limit while swap exists), `TasksMax` against fork bombs, and
+  `CPUQuota`. This does not step aside on approval, same as `bwrap`: it is the
+  kernel's cgroup controller, not policy. When `systemd-run` is missing the
+  command still runs, unlimited, with a `NOTE:` appended to the output saying
+  so; the docs and the tests must never claim the ceiling exists on a machine
+  where it silently does not (see `tasks/pending/007-seccomp-and-cgroup-limits.md`
+  for the measurements behind the exact values);
 - no exposure of API keys in config, logs or output;
 - public URLs validated against local and private destinations;
 - child processes tied to the right lifecycle, and idempotent cleanup;
@@ -144,12 +168,12 @@ may stop fitting entirely in the GPU.
 ## Verification
 
 ```bash
-python3 tool_harness/check_cli.py
-python3 tool_harness/check_agent_config.py
-python3 tool_harness/check_setup.py
-python3 tool_harness/check_tools.py
-python3 tool_harness/check_sandbox.py
-python3 tool_harness/check_execution.py
+python3 tests/check_cli.py
+python3 tests/check_agent_config.py
+python3 tests/check_setup.py
+python3 tests/check_tools.py
+python3 tests/check_sandbox.py
+python3 tests/check_execution.py
 git diff --check
 ```
 

@@ -26,7 +26,7 @@ hardware reproductions are welcome.
    execution, the `bwrap` sandbox, and the permission/approval flow.
 2. Check `git status` / `git log` rather than assuming state from an
    earlier issue or PR discussion.
-3. Look for an existing check in `tool_harness/check_*.py` that already
+3. Look for an existing check in `tests/check_*.py` that already
    covers the area you're touching.
 
 ## Development setup
@@ -47,12 +47,12 @@ assertions at import time, which is why they are `check_*` and not
 ## Running the tests
 
 ```bash
-python3 tool_harness/check_cli.py
-python3 tool_harness/check_agent_config.py
-python3 tool_harness/check_setup.py
-python3 tool_harness/check_tools.py
-python3 tool_harness/check_sandbox.py
-python3 tool_harness/check_execution.py
+python3 tests/check_cli.py
+python3 tests/check_agent_config.py
+python3 tests/check_setup.py
+python3 tests/check_tools.py
+python3 tests/check_sandbox.py
+python3 tests/check_execution.py
 ```
 
 Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create

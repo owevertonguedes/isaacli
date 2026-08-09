@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
 import agent
 
@@ -145,6 +145,78 @@ assert "reasoning_effort" not in reasoning_attempts[1]
 assert msg["content"] == "ok" and msg["_thinking_rejected"] is True
 print("AGENT REASONING FALLBACK OK: the provider refuses reasoning_effort and call_api "
       "retries without the parameter")
+
+# A tokens-per-minute limit answers 429 to a turn that is merely large and says
+# how long the wait is. Turning that into an aborted turn loses work over a
+# handful of seconds, so the call waits the announced window out and retries.
+rate_limit_attempts = []
+
+
+def urlopen_rate_limited(req, timeout=0):
+    rate_limit_attempts.append(json.loads(req.data.decode()))
+    if len(rate_limit_attempts) == 1:
+        raise agent.urllib.error.HTTPError(
+            req.full_url, 429, "Too Many Requests", {},
+            io.BytesIO(json.dumps({"error": {"message": (
+                "Rate limit reached for model `qwen/qwen3.6-27b` on tokens per "
+                "minute (TPM): Limit 8000, Used 7941, Requested 3738. Please try "
+                "again in 2.5s.")}}).encode()),
+        )
+    return Response(json.dumps({
+        "choices": [{"message": {"role": "assistant", "content": "after the wait"}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+    }).encode())
+
+
+notices = []
+slept = []
+original = agent.urllib.request.urlopen
+original_sleep = agent.time.sleep
+original_notice = agent.RATE_LIMIT_NOTICE
+try:
+    agent.urllib.request.urlopen = urlopen_rate_limited
+    agent.time.sleep = slept.append
+    agent.RATE_LIMIT_NOTICE = lambda seconds, attempt: notices.append((seconds, attempt))
+    msg = agent.call_api(
+        "qwen/qwen3.6-27b", [{"role": "user", "content": "hi"}], use_tools=False,
+        api_key="test-key", base_url="https://api.example.test/v1",
+    )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.time.sleep = original_sleep
+    agent.RATE_LIMIT_NOTICE = original_notice
+assert len(rate_limit_attempts) == 2, "the 429 has to be retried, not raised"
+assert msg["content"] == "after the wait"
+assert slept and 2.5 <= slept[0] <= 4, f"it waits the announced window: {slept}"
+assert notices == [(2.5, 1)], f"the wait has to be announced on screen: {notices}"
+
+
+def urlopen_rate_limited_forever(req, timeout=0):
+    rate_limit_attempts.append(True)
+    raise agent.urllib.error.HTTPError(
+        req.full_url, 429, "Too Many Requests", {"retry-after": "1"},
+        io.BytesIO(b'{"error": {"message": "Rate limit reached"}}'))
+
+
+rate_limit_attempts.clear()
+original = agent.urllib.request.urlopen
+original_sleep = agent.time.sleep
+try:
+    agent.urllib.request.urlopen = urlopen_rate_limited_forever
+    agent.time.sleep = lambda _s: None
+    agent.call_api(
+        "qwen/qwen3.6-27b", [{"role": "user", "content": "hi"}], use_tools=False,
+        api_key="test-key", base_url="https://api.example.test/v1",
+    )
+    raise AssertionError("a limit that never lifts has to surface as an error")
+except RuntimeError as e:
+    assert "Rate limit reached" in str(e), f"the provider's reason must survive: {e}"
+finally:
+    agent.urllib.request.urlopen = original
+    agent.time.sleep = original_sleep
+assert len(rate_limit_attempts) == agent.RATE_LIMIT_RETRIES
+print("AGENT RATE LIMIT OK: a 429 with an announced wait is retried, and a "
+      "persistent limit still reports the provider's reason")
 
 # run() has to stop sending reasoning_effort for the rest of the turn as soon as
 # the provider rejects it, and signal that to the caller so it can persist the

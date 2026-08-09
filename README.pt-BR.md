@@ -14,9 +14,9 @@ do que eles precisam para funcionar de forma confiável. Não há restrição a 
 qualquer modelo servido pelo Ollama com chamada de ferramenta nativa, ou
 qualquer endpoint compatível com OpenAI, funciona do mesmo jeito.
 
-Ele lê e escreve arquivos, roda comandos de terminal dentro de um sandbox de
-três camadas, e conclui a tarefa ou diz que falhou. Nada sai da máquina, a menos
-que você configure uma API remota.
+Ele lê e escreve arquivos, roda comandos de terminal dentro de um sandbox em
+camadas com teto de recursos, e conclui a tarefa ou diz que falhou. Nada sai da
+máquina, a menos que você configure uma API remota.
 
 > [AGPLv3](LICENSE). Livre para usar, estudar e modificar. Oferecer como serviço
 > de rede fechado exige licença comercial: veja [LICENSING.md](LICENSING.md).
@@ -73,21 +73,35 @@ Nada de exótico. Quatro decisões, cada uma delas um modo de falha evitado:
 A execução de comandos é contida em três camadas independentes, em
 [`tool_harness/execution.py`](tool_harness/execution.py):
 
-- **execve direto**, sem shell, então não há injeção por `;`, `&&` ou `$()`
-- **uma lista de permitidos curta**, que só se amplia com aprovação explícita
-- **`bwrap`** com o disco inteiro em somente leitura, rede fechada, e apenas a
-  pasta de trabalho gravável
+- **execve direto** para o que roda sozinho, então o modelo não injeta por `;`,
+  `&&` ou `$()` sem você ver
+- **uma lista de permitidos curta**, que decide o que roda *sem perguntar*; o
+  resto é mostrado a você e roda se você aprovar
+- **`bwrap`** com o disco inteiro em somente leitura e apenas a pasta de
+  trabalho gravável. A rede fica fechada para o que roda sozinho; um comando que
+  o usuário aprova ganha rede, então `git clone` e afins funcionam depois do sim
+
+Além das três camadas, todo comando também roda sob um **teto de cgroup**
+(`systemd-run --user --scope`: memória, número de processos e CPU), então um
+comando descontrolado morre do próprio peso em vez de consumir a máquina. Se o
+`systemd-run` não estiver instalado, o comando ainda roda e a saída avisa com
+um `NOTE:`, em vez de ficar sem limite em silêncio.
 
 As ferramentas de arquivo se recusam a escapar da própria raiz, inclusive por
 caminho absoluto e `..`. As duas coisas são testadas tentando escapar de
 verdade, com iscas plantadas fora do diretório, em
-[`check_sandbox.py`](tool_harness/check_sandbox.py) e
-[`check_execution.py`](tool_harness/check_execution.py), em vez de conferir se a
-mensagem de recusa apareceu.
+[`check_sandbox.py`](tests/check_sandbox.py) e
+[`check_execution.py`](tests/check_execution.py), em vez de conferir se a
+mensagem de recusa apareceu. O mesmo arquivo prova o teto de cgroup pelo
+efeito: um consumidor de memória morre por OOM, um loop de fork é bloqueado.
 
-Aprovação nunca contorna o `bwrap`, o parser sem shell ou o bloqueio de
-force-push. Esta parte é reaproveitável sozinha, em qualquer projeto que execute
-código gerado por modelo, local ou na nuvem.
+O `bwrap` e o teto de cgroup são as únicas duas coisas que a aprovação nunca
+contorna, e não precisam contornar mais nada: o que você aprova roda, inclusive
+`push --force`, programas fora da lista e uma linha com pipe, que vai para
+`sh -c` dentro da mesma jaula. As duas primeiras camadas decidem o que acontece
+*sem perguntar*, não o que você tem
+permissão de fazer na sua própria máquina. Esta parte é reaproveitável sozinha,
+em qualquer projeto que execute código gerado por modelo, local ou na nuvem.
 
 ## Limites honestos
 

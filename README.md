@@ -13,9 +13,9 @@ budget hardware, and the harness was designed around what they need to work
 reliably. It is not restricted to 4 GB; any Ollama-served model with native tool
 calling, or any OpenAI-compatible endpoint, works the same way.
 
-It reads and writes files, runs shell commands inside a three-layer sandbox, and
-either finishes the task or tells you it failed. Nothing leaves the machine
-unless you configure a remote API.
+It reads and writes files, runs shell commands inside a layered sandbox with
+resource ceilings, and either finishes the task or tells you it failed. Nothing
+leaves the machine unless you configure a remote API.
 
 > [AGPLv3](LICENSE). Free to use, study and modify. Offering it as a closed
 > network service requires a commercial license: see [LICENSING.md](LICENSING.md).
@@ -72,20 +72,34 @@ Nothing exotic. Four decisions, each of which is a failure mode avoided:
 Command execution is contained in three independent layers, in
 [`tool_harness/execution.py`](tool_harness/execution.py):
 
-- **Direct execve**, no shell, so there is no injection through `;`, `&&` or `$()`
-- **A short default allowlist**, with explicit user approval required to widen it
-- **`bwrap`** with the whole disk read-only, networking closed, and only the
-  working directory writable
+- **Direct execve** for anything running unattended, so the model cannot inject
+  through `;`, `&&` or `$()` without you seeing it
+- **A short default allowlist** that decides what runs *without asking*; anything
+  else is shown to you and runs if you approve it
+- **`bwrap`** with the whole disk read-only and only the working directory
+  writable. Networking is closed for anything that runs on its own; a command
+  the user approves gets it, so `git clone` and friends work once you say yes
+
+On top of the three layers, every command also runs under a **cgroup
+ceiling** (`systemd-run --user --scope`: memory, process count and CPU), so a
+runaway command dies of its own weight instead of eating the host. If
+`systemd-run` is missing, the command still runs and the output says so with a
+`NOTE:` rather than silently going unlimited.
 
 File tools refuse to escape their root, including through absolute paths and
 `..`. Both are tested by trying to actually escape, with bait planted outside
-the directory, in [`check_sandbox.py`](tool_harness/check_sandbox.py) and
-[`check_execution.py`](tool_harness/check_execution.py), rather than by checking
-that a refusal message appeared.
+the directory, in [`check_sandbox.py`](tests/check_sandbox.py) and
+[`check_execution.py`](tests/check_execution.py), rather than by checking
+that a refusal message appeared. The same file proves the cgroup ceiling by
+effect: a memory hog is OOM-killed, a fork loop is blocked.
 
-Approval never bypasses `bwrap`, the no-shell parser, or the block on
-force-push. This part is reusable on its own, in any project that executes
-model-generated code, local or cloud.
+`bwrap` and the cgroup ceiling are the two things approval never bypasses, and
+they do not need to bypass anything else: what you approve runs, including
+`push --force`, programs off the list and a line with pipes, which goes to
+`sh -c` inside the same jail. The first two layers decide what happens *without
+asking*, not what you are permitted to do with your own machine. This part is
+reusable on its own, in any project that executes model-generated code, local
+or cloud.
 
 ## Honest limits
 

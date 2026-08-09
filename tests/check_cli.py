@@ -2,6 +2,7 @@
 """Cheap tests for Isaac's CLI, without calling Ollama."""
 import io
 import builtins
+import inspect
 import json
 import os
 import pty
@@ -14,7 +15,7 @@ from contextlib import redirect_stdout, nullcontext
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
 # Point the configuration at a throwaway directory BEFORE importing the CLI.
 # Without this the suite reads (and /permissions would write to) the real
@@ -52,13 +53,24 @@ try:
     screen_sequences = io.StringIO()
     with redirect_stdout(screen_sequences), terminal_ui.alternate_screen():
         pass
+    clear_sequences = io.StringIO()
+    with redirect_stdout(clear_sequences):
+        terminal_ui.clear()
 finally:
     terminal_ui.interactive = original_interactive
+# \033[3J drops the scrollback too. The REPL lives on the main screen, so its
+# scrollback is the conversation: the shell that launched it must not sit one
+# wheel turn above the first message.
+check("\033[2J" in clear_sequences.getvalue()
+      and "\033[3J" in clear_sequences.getvalue(),
+      "clearing the screen also empties the scrollback")
+check("terminal_ui.clear()" in inspect.getsource(app.IsaacCLI._initialize_repl),
+      "the session opens on a screen of its own")
 check("\033[?1049h" in screen_sequences.getvalue()
       and "\033[?1049l" in screen_sequences.getvalue()
       and "\033[?1007h" not in screen_sequences.getvalue()
       and "\033[?1000h" not in screen_sequences.getvalue(),
-      "the screen does not turn the wheel into arrows nor block native selection")
+      "the full-screen menu enables no mouse reporting, which would block native selection")
 
 original_launcher_which = app.shutil.which
 try:
@@ -236,8 +248,9 @@ cli_redraw._log("assistant_final", content="previous answer\n" * 30)
 cli_redraw.ensure_ollama = lambda warn=False: "test"
 original_interactive_redraw = terminal_ui.interactive
 original_clear_redraw = terminal_ui.clear
+cleared = []
 terminal_ui.interactive = lambda _input_fn=input: True
-terminal_ui.clear = lambda _input_fn=input: None
+terminal_ui.clear = lambda _input_fn=input: cleared.append(True)
 redraw_out = io.StringIO()
 try:
     with redirect_stdout(redraw_out):
@@ -245,10 +258,16 @@ try:
 finally:
     terminal_ui.interactive = original_interactive_redraw
     terminal_ui.clear = original_clear_redraw
-check("previous question" in redraw_out.getvalue()
-      and "previous answer" in redraw_out.getvalue()
-      and "model changed" in redraw_out.getvalue(),
-      "the redraw restores the current conversation like a resume")
+# Closing the menu already puts the alternate buffer back: the conversation is
+# on screen untouched. Clearing or reprinting it would erase or duplicate the
+# terminal's scrollback.
+check("model changed" in redraw_out.getvalue()
+      and not cleared
+      and "previous question" not in redraw_out.getvalue(),
+      "returning from a menu announces the outcome without redrawing the session")
+
+check("alternate_screen" not in inspect.getsource(app.IsaacCLI.repl),
+      "the REPL stays on the main screen so the wheel scrolls the conversation")
 
 # /history no longer opens another full-screen layer: it is a plain print, so it
 # stays in the terminal's native scrollback, with formatted, copyable markdown.
