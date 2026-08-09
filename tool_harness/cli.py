@@ -324,6 +324,18 @@ def _color(text, name):
     return f"{ANSI[name]}{text}{ANSI['reset']}"
 
 
+def _announce_rate_limit(seconds, attempt):
+    """Show the provider's own wait so a paused turn does not look like a freeze."""
+    # \r\033[2K: the progress line is redrawn in place and has no newline of its
+    # own, so writing over it is what keeps the notice on a line of its own.
+    print("\r\033[2K" + _color(
+        t("cli.api.rate_limit_wait", seconds=f"{seconds:.0f}",
+          attempt=attempt, total=agent.RATE_LIMIT_RETRIES), "warn"), flush=True)
+
+
+agent.RATE_LIMIT_NOTICE = _announce_rate_limit
+
+
 def _colored_prompt(text, name="prompt"):
     """Mark ANSI as non-printing so readline computes line wrapping correctly."""
     if not _uses_color():
@@ -1398,35 +1410,19 @@ class IsaacCLI:
         return "\n".join(lines).strip() or t("cli.history.empty")
 
     def redraw_session(self, message=None):
-        """Restore the conversation after a full-screen menu has been closed."""
+        """Report back to the conversation after a full-screen menu closed.
+
+        The menu is the only thing that uses the alternate buffer, so leaving it
+        already restores the conversation exactly as it was. Reprinting the
+        transcript here would duplicate it in the scrollback; only the outcome
+        of the menu is announced.
+        """
         if not terminal_ui.interactive():
             if message:
                 print(message)
             return
-        terminal_ui.clear()
-        _print_welcome(self.model, self._engine_label(), self.workspace)
-        text = self._history_text()
-        if text != t("cli.history.empty"):
-            height = max(5, shutil.get_terminal_size((100, 30)).lines - 17)
-            lines = text.splitlines()
-            users = [i for i, line in enumerate(lines) if line.startswith("❯ ")]
-            turn_start = users[-1] if users else max(0, len(lines) - height)
-            turn = lines[turn_start:]
-            if len(turn) <= height:
-                start = max(0, len(lines) - height)
-                visible = lines[start:]
-                omitted = start
-            else:
-                # The recent question must not vanish behind a long answer.
-                head = turn[:2]
-                tail_space = max(1, height - len(head) - 1)
-                visible = [*head, t("cli.history.middle_omitted"), *turn[-tail_space:]]
-                omitted = len(lines) - len(visible)
-            if omitted:
-                print(_color(t("cli.history.omitted", count=omitted), "dim"))
-            print(_format_markdown_terminal("\n".join(visible)))
         if message:
-            print("\n" + _color(message, "dim"))
+            print(_color(message, "dim"))
         print()
 
     def show_history(self, _movement=""):
@@ -1600,8 +1596,11 @@ class IsaacCLI:
         import execution
 
         rule = _command_rule(cmd)
-        # Validate before offering a choice: approving something that will stay
-        # forbidden (shell, destructive find, force-push) would be misleading.
+        # Validate before offering a choice: asking about a command that stays
+        # refused whatever the answer would be theatre. After the network fix and
+        # the removal of the post-approval vetoes, what is left here is what
+        # approval genuinely cannot change: shell operators, which have no shell
+        # to interpret them, and unreadable quoting.
         try:
             execution.review(cmd, authorized=True)
         except execution.Denied as e:
@@ -1789,8 +1788,11 @@ class IsaacCLI:
         return 1 if empty_answer else 0
 
     def repl(self):
-        with terminal_ui.alternate_screen():
-            code = self._repl_screen()
+        # No alternate buffer: the conversation belongs to the terminal's own
+        # scrollback, so the wheel scrolls it from start to end. In the
+        # alternate buffer there is no scrollback and terminals translate the
+        # wheel into ↑/↓, which stole the prompt's message history.
+        code = self._repl_screen()
         print()
         print(_color(t("cli.resume.hint"), "dim"))
         print(_resume_command(self.session_id))
@@ -1799,6 +1801,10 @@ class IsaacCLI:
 
     def _initialize_repl(self):
         _install_autocomplete()
+        # The session opens on a screen of its own. Scrolling up from here has to
+        # reach the first message of the conversation, not the shell that ran the
+        # launcher.
+        terminal_ui.clear()
         _print_welcome(self.model, self._engine_label(), self.workspace)
         print()
 

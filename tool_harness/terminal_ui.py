@@ -14,8 +14,14 @@ def interactive(input_fn=input):
 
 
 def clear(input_fn=input):
+    """Start from an empty screen *and* an empty scrollback.
+
+    Without \\033[3J the shell session that came before stays one wheel turn
+    above the conversation. Since the REPL lives on the main screen, its
+    scrollback is the conversation: nothing else belongs in it.
+    """
     if interactive(input_fn):
-        sys.stdout.write("\033[H\033[2J")
+        sys.stdout.write("\033[H\033[2J\033[3J")
         sys.stdout.flush()
 
 

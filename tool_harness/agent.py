@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 
@@ -110,14 +111,72 @@ def _api_request(payload, api_key, base_url):
     )
 
 
+def _api_body(e):
+    """Read the error body once: an HTTPError only yields it on the first read."""
+    body = getattr(e, "_isaac_body", None)
+    if body is None:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        try:
+            e._isaac_body = body
+        except AttributeError:
+            pass
+    return body
+
+
 def _api_error(e):
+    detail = _api_body(e)
+    if not detail:
+        return str(e)
     try:
-        detail = e.read().decode("utf-8", errors="replace")
         data = json.loads(detail)
         message = (data.get("error") or {}).get("message") or detail[:500]
-        return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[hidden]", message)
     except Exception:
-        return str(e)
+        message = detail[:500]
+    return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[hidden]", message)
+
+
+# A provider that limits tokens per minute (Groq's free tier caps at a few
+# thousand) answers 429 to a turn that is merely large, and says how long the
+# wait is. Losing the turn over a wait the provider itself measured in seconds
+# is worse than waiting it out.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_MAX_WAIT = 90.0
+# Set by the CLI so the wait shows up on screen instead of looking like a freeze.
+RATE_LIMIT_NOTICE = None
+
+
+def _rate_limit_wait(e):
+    header = (e.headers.get("retry-after") if e.headers else None) or ""
+    try:
+        return float(header.strip())
+    except ValueError:
+        pass
+    body = _api_body(e)
+    seconds = re.search(r"try again in\s*([0-9.]+)\s*(ms|s)\b", body, re.I)
+    if not seconds:
+        return None
+    value = float(seconds.group(1))
+    return value / 1000 if seconds.group(2).lower() == "ms" else value
+
+
+def _urlopen_api(payload, api_key, base_url, timeout=600):
+    for attempt in range(1, RATE_LIMIT_RETRIES + 1):
+        try:
+            return urllib.request.urlopen(
+                _api_request(payload, api_key, base_url), timeout=timeout)
+        except urllib.error.HTTPError as e:
+            delay = _rate_limit_wait(e) if e.code == 429 else None
+            if (delay is None or delay > RATE_LIMIT_MAX_WAIT
+                    or attempt == RATE_LIMIT_RETRIES):
+                raise
+            if RATE_LIMIT_NOTICE:
+                RATE_LIMIT_NOTICE(delay, attempt)
+            # A whole second of margin: the announced window is the provider's
+            # estimate, and coming back early spends another 429.
+            time.sleep(delay + 1)
 
 
 def _reasoning_effort_rejected(error_text):
@@ -145,7 +204,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
         payload["reasoning_effort"] = thinking
     thinking_rejected = False
     try:
-        with urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600) as r:
+        with _urlopen_api(payload, api_key, base_url) as r:
             data = json.load(r)
     except urllib.error.HTTPError as e:
         detail = _api_error(e)
@@ -153,7 +212,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
             payload.pop("reasoning_effort")
             thinking_rejected = True
             try:
-                with urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600) as r:
+                with _urlopen_api(payload, api_key, base_url) as r:
                     data = json.load(r)
             except urllib.error.HTTPError as e2:
                 raise RuntimeError(f"API: {_api_error(e2)}") from e2
@@ -189,14 +248,14 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
     usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
     thinking_rejected = False
     try:
-        response = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
+        response = _urlopen_api(payload, api_key, base_url)
     except urllib.error.HTTPError as e:
         detail = _api_error(e)
         if payload.get("reasoning_effort") and _reasoning_effort_rejected(detail):
             payload.pop("reasoning_effort")
             thinking_rejected = True
             try:
-                response = urllib.request.urlopen(_api_request(payload, api_key, base_url), timeout=600)
+                response = _urlopen_api(payload, api_key, base_url)
             except urllib.error.HTTPError as e2:
                 raise RuntimeError(f"API: {_api_error(e2)}") from e2
         else:
