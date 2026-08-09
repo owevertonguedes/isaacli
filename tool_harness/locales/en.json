@@ -142,6 +142,8 @@
   "cli.uninstall.ollama.warning": "DANGER: this permanently deletes all isaacli data AND Ollama, its service, every downloaded model and ~/.ollama. The clone is the only isaacli component preserved. Type: uninstall ollama",
   "cli.uninstall.ollama.unsupported": "Automatic Ollama removal is currently supported only on Linux.",
   "cli.uninstall.ollama.unrecognized": "Ollama at {path} does not match the official Linux installer layout. Remove it with the package manager that installed it.",
+  "cli.uninstall.ollama.custom_models": "Refusing automatic removal because custom Ollama model storage is configured at: {paths}. Move or remove it explicitly, then clear OLLAMA_MODELS or the systemd override.",
+  "cli.uninstall.ollama.not_installed": "No recognized Ollama installation remains.",
   "cli.uninstall.ollama.no_sudo": "Ollama is installed system-wide, but sudo is not available to remove it.",
   "cli.uninstall.ollama.failed": "Ollama removal stopped because this command failed: {command}",
   "cli.uninstall.ollama.removed": "Ollama, its service, models and user data were removed.",

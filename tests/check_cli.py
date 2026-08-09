@@ -56,13 +56,37 @@ ollama_plan = installation.official_ollama_plan(
     path_exists=lambda path: str(path) in official_paths,
     user_exists=True, group_exists=True,
 )
-check(ollama_plan[0] == ["sudo", "-v"]
+check(ollama_plan[0] == ["sudo", "true"]
       and ["sudo", "rm", "-rf", "/usr/local/lib/ollama"] in ollama_plan
       and ["sudo", "rm", "-rf", "/usr/share/ollama"] in ollama_plan
       and installation.official_ollama_plan(
           "/usr/bin/ollama", path_exists=lambda _path: True,
+          package_owned=False,
+      ) is not None
+      and installation.official_ollama_plan(
+          "/usr/bin/ollama", path_exists=lambda _path: True,
+          package_owned=True,
       ) is None,
-      "Ollama purge uses only the recognized official layout")
+      "Ollama purge recognizes official /usr/local and /usr layouts but not packages")
+custom_models = root / "custom-models"
+custom_service = root / "ollama.service"
+custom_service.write_text(
+    '[Service]\nEnvironment="OLLAMA_MODELS=/srv/ollama-models"\n',
+    encoding="utf-8",
+)
+check(installation.custom_ollama_model_paths(
+          home_dir=root / "home", environ={"OLLAMA_MODELS": str(custom_models)},
+          service=root / "missing.service",
+      ) == [custom_models],
+      "Ollama purge detects custom model storage instead of claiming full removal")
+check(installation.custom_ollama_model_paths(
+          home_dir=root / "home", environ={}, service=custom_service,
+      ) == [Path("/srv/ollama-models")]
+      and installation.custom_ollama_model_paths(
+          home_dir=root / "home", environ={"OLLAMA_MODELS": "relative-models"},
+          service=root / "missing.service",
+      ) == [Path("relative-models")],
+      "systemd and relative custom model paths are both reported")
 
 
 check(not hasattr(app, "FALLBACK_MODEL"),
@@ -127,10 +151,17 @@ original_ollama_uninstall = app._uninstall_official_ollama
 original_input = builtins.input
 uninstall_calls = []
 ollama_uninstall_calls = []
+uninstall_order = []
 try:
-    app._uninstall_launcher = lambda purge=False: uninstall_calls.append(purge) or 0
+    def fake_uninstall(purge=False, check_only=False):
+        uninstall_calls.append((purge, check_only))
+        uninstall_order.append("check" if check_only else "isaac")
+        return 0
+
+    app._uninstall_launcher = fake_uninstall
     app._uninstall_official_ollama = (
-        lambda: ollama_uninstall_calls.append(True) or 0
+        lambda: (ollama_uninstall_calls.append(True),
+                 uninstall_order.append("ollama"), 0)[-1]
     )
     builtins.input = lambda _prompt: "keep everything"
     with redirect_stdout(io.StringIO()):
@@ -152,8 +183,10 @@ finally:
     builtins.input = original_input
 check(cancelled_purge == 130 and confirmed_purge == 0
       and weak_ollama_confirmation == 130 and confirmed_ollama_purge == 0
-      and uninstall_calls == [True, True] and ollama_uninstall_calls == [True],
-      "each destructive uninstall requires its exact confirmation phrase")
+      and uninstall_calls == [(True, False), (True, True), (True, False)]
+      and ollama_uninstall_calls == [True]
+      and uninstall_order[-3:] == ["check", "ollama", "isaac"],
+      "strong uninstall confirms, validates, removes Ollama, then local data")
 
 original_interactive = terminal_ui.interactive
 terminal_ui.interactive = lambda _input_fn=input: True

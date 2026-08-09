@@ -672,14 +672,19 @@ def main(argv=None):
             if confirmation.strip() != expected:
                 print(t("cli.uninstall.cancelled"))
                 return 130
-        uninstall_code = _uninstall_launcher(
+        if ollama_purge_requested:
+            # Validate ownership and live-session state before touching Ollama.
+            # This also leaves the launcher and local data available when the
+            # system installation is unknown or custom model storage is known.
+            uninstall_code = _uninstall_launcher(purge=True, check_only=True)
+            if uninstall_code != 0:
+                return uninstall_code
+            ollama_code = _uninstall_official_ollama()
+            if ollama_code != 0:
+                return ollama_code
+        return _uninstall_launcher(
             purge=purge_requested or ollama_purge_requested,
         )
-        if uninstall_code != 0:
-            return uninstall_code
-        if ollama_purge_requested:
-            return _uninstall_official_ollama()
-        return 0
     _profile_name, default_profile = config.profile(config_data)
     needs_setup = (
         setup_requested

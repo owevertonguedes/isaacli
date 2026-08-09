@@ -3,6 +3,7 @@ import grp
 import json
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,12 @@ from cli_ollama import _runtime_ollama_dir, _same_process
 from cli_sessions import FEEDBACK_DIR, SESSIONS_DIR
 
 HERE = Path(__file__).resolve().parent
+OFFICIAL_SERVICE = Path("/etc/systemd/system/ollama.service")
+OFFICIAL_SHARED_DATA = Path("/usr/share/ollama")
+OFFICIAL_LAYOUTS = {
+    Path("/usr/local/bin/ollama"): Path("/usr/local/lib/ollama"),
+    Path("/usr/bin/ollama"): Path("/usr/lib/ollama"),
+}
 
 
 def install_launcher(bin_dir=None):
@@ -45,6 +52,7 @@ def install_launcher(bin_dir=None):
 
 def uninstall_launcher(
     purge=False, bin_dir=None, config_dir=None, data_dirs=None, runtime_dir=None,
+    check_only=False,
 ):
     """Remove only this checkout's launcher and, when requested, its local data."""
     source = (HERE.parent / "isaacli").resolve()
@@ -80,6 +88,9 @@ def uninstall_launcher(
             print(t("cli.uninstall.active", count=len(active)))
             return 1
 
+    if check_only:
+        return 0
+
     try:
         if target.is_symlink():
             target.unlink()
@@ -97,35 +108,110 @@ def uninstall_launcher(
     return 0
 
 
+def _package_owns(path):
+    """Return whether RPM or dpkg reports ownership of an executable."""
+    checks = (
+        (["rpm", "-qf", str(path)], shutil.which("rpm")),
+        (["dpkg-query", "-S", str(path)], shutil.which("dpkg-query")),
+    )
+    for command, executable in checks:
+        if not executable:
+            continue
+        result = subprocess.run(
+            command, check=False, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def _service_model_paths(service=OFFICIAL_SERVICE):
+    """Read absolute OLLAMA_MODELS paths declared by the unit or its drop-ins."""
+    files = [service]
+    drop_in = service.with_name(service.name + ".d")
+    try:
+        files.extend(sorted(drop_in.glob("*.conf")))
+    except OSError:
+        pass
+    paths = []
+    pattern = re.compile(r"OLLAMA_MODELS=([^\s\"']+|\"[^\"]+\"|'[^']+')")
+    for path in files:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in pattern.finditer(content):
+            value = match.group(1).strip("\"'")
+            candidate = Path(value).expanduser()
+            if candidate not in paths:
+                paths.append(candidate)
+    return paths
+
+
+def custom_ollama_model_paths(home_dir=None, environ=None, service=OFFICIAL_SERVICE):
+    """Return known model paths not covered by the fixed safe teardown."""
+    environ = os.environ if environ is None else environ
+    candidates = _service_model_paths(service)
+    value = environ.get("OLLAMA_MODELS")
+    if value:
+        candidate = Path(value).expanduser()
+        if candidate not in candidates:
+            candidates.append(candidate)
+    home = Path(home_dir) if home_dir else Path.home()
+    covered = (OFFICIAL_SHARED_DATA.resolve(), (home / ".ollama").resolve())
+    custom = []
+    for path in candidates:
+        if not path.is_absolute():
+            custom.append(path)
+            continue
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            custom.append(path)
+            continue
+        if not any(resolved == root or root in resolved.parents for root in covered):
+            custom.append(path)
+    return custom
+
+
 def official_ollama_plan(found=None, path_exists=None, user_exists=None,
-                         group_exists=None):
+                         group_exists=None, package_owned=None):
     """Build the fixed-path teardown for the official Linux script layout."""
     found = shutil.which("ollama") if found is None else found
     path_exists = path_exists or (lambda path: path.exists())
     executable = Path(found).resolve() if found else None
-    official_binary = Path("/usr/local/bin/ollama")
-    official_library = Path("/usr/local/lib/ollama")
-    service = Path("/etc/systemd/system/ollama.service")
-    shared_data = Path("/usr/share/ollama")
-    if executable != official_binary or not (
-        path_exists(official_library) or path_exists(service)
-    ):
+    official_library = OFFICIAL_LAYOUTS.get(executable)
+    if official_library is None:
+        return None
+    package_owned = _package_owns(executable) if package_owned is None else package_owned
+    if package_owned:
+        return None
+    # /usr is also the package-manager prefix. Requiring both official-script
+    # artifacts there avoids guessing that an RPM/DEB-like partial layout is ours.
+    if executable == Path("/usr/bin/ollama"):
+        recognized = path_exists(official_library) and path_exists(OFFICIAL_SERVICE)
+    else:
+        recognized = path_exists(official_library) or path_exists(OFFICIAL_SERVICE)
+    if not recognized:
         return None
 
-    commands = [["sudo", "-v"]]
-    if path_exists(service):
+    # Unlike `sudo -v`, this also works for a valid NOPASSWD policy while still
+    # prompting up front when the policy requires authentication.
+    commands = [["sudo", "true"]]
+    if path_exists(OFFICIAL_SERVICE):
         commands.extend([
             ["sudo", "systemctl", "stop", "ollama"],
             ["sudo", "systemctl", "disable", "ollama"],
-            ["sudo", "rm", "-f", str(service)],
+            ["sudo", "rm", "-f", str(OFFICIAL_SERVICE)],
             ["sudo", "systemctl", "daemon-reload"],
         ])
     if path_exists(official_library):
         commands.append(["sudo", "rm", "-rf", str(official_library)])
-    if path_exists(official_binary):
-        commands.append(["sudo", "rm", "-f", str(official_binary)])
-    if path_exists(shared_data):
-        commands.append(["sudo", "rm", "-rf", str(shared_data)])
+    if path_exists(executable):
+        commands.append(["sudo", "rm", "-f", str(executable)])
+    if path_exists(OFFICIAL_SHARED_DATA):
+        commands.append(["sudo", "rm", "-rf", str(OFFICIAL_SHARED_DATA)])
     if user_exists is None:
         try:
             pwd.getpwnam("ollama")
@@ -150,9 +236,25 @@ def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
     if not sys.platform.startswith("linux"):
         print(t("cli.uninstall.ollama.unsupported"))
         return 1
+    custom_paths = custom_ollama_model_paths(home_dir=home_dir)
+    if custom_paths:
+        print(t("cli.uninstall.ollama.custom_models",
+                paths=", ".join(str(path) for path in custom_paths)))
+        return 1
+    user_data = Path(home_dir) / ".ollama" if home_dir else Path.home() / ".ollama"
     found = shutil.which("ollama")
     commands = official_ollama_plan(found)
     if commands is None:
+        known_paths = [*OFFICIAL_LAYOUTS, *OFFICIAL_LAYOUTS.values(),
+                       OFFICIAL_SERVICE, OFFICIAL_SHARED_DATA, user_data]
+        accounts_remain = any((
+            _account_exists(pwd.getpwnam, "ollama"),
+            _account_exists(grp.getgrnam, "ollama"),
+        ))
+        if (found is None and not accounts_remain
+                and not any(path.exists() for path in known_paths)):
+            print(t("cli.uninstall.ollama.not_installed"))
+            return 0
         print(t("cli.uninstall.ollama.unrecognized", path=found or "—"))
         return 1
     if shutil.which("sudo") is None:
@@ -165,7 +267,6 @@ def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
         if result.returncode not in allowed:
             print(t("cli.uninstall.ollama.failed", command=" ".join(command)))
             return 1
-    user_data = Path(home_dir) / ".ollama" if home_dir else Path.home() / ".ollama"
     try:
         if user_data.exists():
             shutil.rmtree(user_data)
@@ -174,3 +275,11 @@ def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
         return 1
     print(t("cli.uninstall.ollama.removed"))
     return 0
+
+
+def _account_exists(lookup, name):
+    try:
+        lookup(name)
+        return True
+    except KeyError:
+        return False

@@ -17,6 +17,10 @@ Read in this order before changing the project:
 Old logs and sessions are historical evidence, not current state. Re-verify
 processes, configuration, installed models and test results live.
 
+Read [SECURITY.md](SECURITY.md) before changing persistence, logs or remote
+providers. Read [INSTALLATION.md](INSTALLATION.md) before changing the launcher,
+install or any removal path.
+
 ## Main flow
 
 ```text
@@ -72,6 +76,11 @@ ceremony without a second reader.
 
 ## Local state and data
 
+The inventory below describes current paths. Its privacy guarantees and known
+gaps are documented in [SECURITY.md](SECURITY.md); installation ownership,
+recovery and destructive validation live in
+[INSTALLATION.md](INSTALLATION.md).
+
 - Configuration: `~/.config/isaacli/config.json` (or `XDG_CONFIG_HOME`).
 - Secrets: `~/.config/isaacli/secrets.json`.
 - Sessions: `tool_harness/cli_sessions/*.jsonl`.
@@ -90,7 +99,14 @@ an explicit confirmation. `--purge --ollama` is the deliberately stronger Linux
 route for someone who installed Ollama solely for Isaac: it additionally removes
 an installation recognised as coming from Ollama's official script, including
 its service, models and user data. It refuses unrecognised layouts and never
-touches the clone. Purge also refuses to start while a live Isaac session is
+touches the clone. The official script may choose either `/usr/local` or `/usr`;
+the latter is accepted only with both official-layout artifacts and no RPM/DEB
+ownership. A known custom `OLLAMA_MODELS` path in the environment or systemd
+unit/drop-in blocks automatic removal instead of making a false full-cleanup
+claim. Strong purge validates the Isaac ownership/session state and completes
+the Ollama removal before deleting the launcher and Isaac data, so a refused or
+failed system teardown leaves a usable recovery route. Purge also refuses to
+start while a live Isaac session is
 registered, so it cannot remove the engine underneath another process.
 
 The resume command uses `isaacli` when this installation is on `PATH`;

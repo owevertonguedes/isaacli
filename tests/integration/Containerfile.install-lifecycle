@@ -1,0 +1,14 @@
+FROM registry.fedoraproject.org/fedora:43
+
+RUN dnf -y install \
+        bubblewrap findutils procps-ng python3 shadow-utils sudo systemd util-linux \
+    && dnf clean all \
+    && useradd --create-home --shell /bin/bash isaac \
+    && printf 'isaac ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/isaac \
+    && chmod 0440 /etc/sudoers.d/isaac
+
+COPY . /opt/isaacli
+RUN chown -R isaac:isaac /opt/isaacli
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
