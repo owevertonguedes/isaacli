@@ -19,6 +19,7 @@ import config
 import terminal_ui
 import tools
 from cli_i18n import set_language, t
+from cli_ollama import _ollama_ok
 from cli_presentation import _color, _short_context
 from cli_sessions import FEEDBACK_DIR, _build_history, _now
 
@@ -304,12 +305,8 @@ class CommandsMixin:
         return True
 
     def status(self):
-        # Lazy: cli.py imports this module, so importing cli back here at
-        # call time (not at module load) is what avoids a circular import.
-        import cli
-
         if self.provider.get("provider") == "ollama":
-            engine = cli._ollama_ok() or t("cli.engine.no_response")
+            engine = _ollama_ok() or t("cli.engine.no_response")
         else:
             engine = self.provider.get("provider_name") or t("cli.engine.openai_compatible")
         duration_s = self.total_usage.get("total_duration", 0) / 1_000_000_000

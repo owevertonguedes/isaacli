@@ -25,6 +25,7 @@ root = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 
 import cli as app
+import cli_ollama
 import config
 import setup_ollama
 import terminal_ui
@@ -775,11 +776,11 @@ check(resume_safe, "--resume rejects IDs used as a path")
 # Two sessions have to share the server Isaac started. The first one to leave
 # must not take it down; only the last one ends the managed process.
 original_runtime = os.environ.get("ISAACLI_RUNTIME_DIR")
-original_ok = app._ollama_ok
+original_ok = cli_ollama._ollama_ok
 original_which = app.shutil.which
 original_popen = app.subprocess.Popen
-original_identity = app._pid_identity
-original_same = app._same_process
+original_identity = cli_ollama._pid_identity
+original_same = cli_ollama._same_process
 original_kill = app.os.kill
 server = {"active": False}
 identities = {101: "client-a", 202: "client-b"}
@@ -808,11 +809,11 @@ class FakeOllamaProcess:
 
 try:
     os.environ["ISAACLI_RUNTIME_DIR"] = str(root / "runtime")
-    app._ollama_ok = lambda timeout=2: "0.30-test" if server["active"] else None
+    cli_ollama._ollama_ok = lambda timeout=2: "0.30-test" if server["active"] else None
     app.shutil.which = lambda _name: "/usr/bin/ollama"
     app.subprocess.Popen = FakeOllamaProcess
-    app._pid_identity = lambda pid: identities.get(int(pid))
-    app._same_process = lambda pid, start: identities.get(int(pid or -1)) == start
+    cli_ollama._pid_identity = lambda pid: identities.get(int(pid))
+    cli_ollama._same_process = lambda pid, start: identities.get(int(pid or -1)) == start
 
     def fake_kill(pid, signal_number):
         kills.append((pid, signal_number))
@@ -838,11 +839,11 @@ finally:
         os.environ.pop("ISAACLI_RUNTIME_DIR", None)
     else:
         os.environ["ISAACLI_RUNTIME_DIR"] = original_runtime
-    app._ollama_ok = original_ok
+    cli_ollama._ollama_ok = original_ok
     app.shutil.which = original_which
     app.subprocess.Popen = original_popen
-    app._pid_identity = original_identity
-    app._same_process = original_same
+    cli_ollama._pid_identity = original_identity
+    cli_ollama._same_process = original_same
     app.os.kill = original_kill
 
 print()
