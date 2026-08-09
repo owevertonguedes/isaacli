@@ -159,6 +159,19 @@ truth: the agent retries without the parameter, stops sending it for the rest of
 the turn, and signals the caller so `cli._persist_adjusted_thinking` can write
 the correction to the profile. There is no per-model table.
 
+Compatible API rate limits follow the same direction: successful response
+headers provide the remaining quota and reset window, and the adapter uses the
+provider's reported usage to estimate whether the next tool-loop request fits.
+It waits before crossing that boundary when possible; a 429 with `retry-after`
+or an equivalent error body remains the fallback. Provider names, plans, models
+and numeric limits do not belong in the adapter.
+
+For an explicit mutation request, a textual answer is not evidence of a change.
+Until a changing tool has been called, the first text-only answer is discarded
+and the model gets one explicit corrective attempt. Read-only exploration does
+not satisfy that contract, the correction never loops, and a second text-only
+answer is surfaced honestly as a clarification or failure.
+
 Generation metrics are only comparable when context, prompt and tools are
 equivalent too. A short benchmark at `num_ctx=4096` does not represent the cost
 of an agent session at `num_ctx=32768` with history and tool schemas: beyond

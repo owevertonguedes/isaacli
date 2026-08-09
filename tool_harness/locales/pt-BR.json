@@ -209,6 +209,7 @@
   "cli.show.full": "comando #{id} completo: {cmd}",
   "cli.working.waiting": "Trabalhando… · aguardando tokens",
   "cli.api.rate_limit_wait": "Limite de uso do provedor atingido: aguardando {seconds}s antes de tentar de novo ({attempt}/{total})…",
+  "cli.api.rate_limit_preemptive": "A cota do provedor está quase esgotada: aguardando {seconds}s antes da próxima requisição…",
   "cli.working.rate": "Trabalhando… · ≈ {rate} tok/s",
   "cli.generation.rate": "{approx}{rate} tok/s · {count} tokens gerados",
   "cli.permission.required": "Permissão necessária · use ↑/↓ e Enter, ou w/g/n",

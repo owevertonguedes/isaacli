@@ -16,6 +16,10 @@ original = agent.urllib.request.urlopen
 
 
 class Response(io.BytesIO):
+    def __init__(self, data, headers=None):
+        super().__init__(data)
+        self.headers = headers or {}
+
     def __enter__(self):
         return self
 
@@ -218,6 +222,51 @@ assert len(rate_limit_attempts) == agent.RATE_LIMIT_RETRIES
 print("AGENT RATE LIMIT OK: a 429 with an announced wait is retried, and a "
       "persistent limit still reports the provider's reason")
 
+# Successful responses advertise the remaining quota and reset window. The
+# adapter should use those provider-supplied values to pause BEFORE another
+# request crosses the boundary; no provider/model limit belongs in isaacli.
+preventive_attempts = []
+
+
+def urlopen_quota_headers(req, timeout=0):
+    preventive_attempts.append(json.loads(req.data.decode()))
+    headers = ({
+        "x-ratelimit-remaining-tokens": "1",
+        "x-ratelimit-reset-tokens": "2.5s",
+    } if len(preventive_attempts) == 1 else {})
+    return Response(json.dumps({
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+    }).encode(), headers=headers)
+
+
+preemptive_notices = []
+slept = []
+original = agent.urllib.request.urlopen
+original_sleep = agent.time.sleep
+original_preemptive_notice = agent.RATE_LIMIT_PREEMPTIVE_NOTICE
+agent._RATE_LIMITS.clear()
+try:
+    agent.urllib.request.urlopen = urlopen_quota_headers
+    agent.time.sleep = slept.append
+    agent.RATE_LIMIT_PREEMPTIVE_NOTICE = preemptive_notices.append
+    for _ in range(2):
+        agent.call_api(
+            "header-driven-model", [{"role": "user", "content": "hi"}],
+            use_tools=False, api_key="test-key",
+            base_url="https://headers.example.test/v1",
+        )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.time.sleep = original_sleep
+    agent.RATE_LIMIT_PREEMPTIVE_NOTICE = original_preemptive_notice
+    agent._RATE_LIMITS.clear()
+assert len(preventive_attempts) == 2, "both successful requests should complete"
+assert len(slept) == 1 and 3 <= slept[0] <= 4, f"reset header drives the wait: {slept}"
+assert len(preemptive_notices) == 1 and 2 <= preemptive_notices[0] <= 3
+assert agent._duration_seconds("2m59.56s") == 179.56
+print("AGENT PREEMPTIVE RATE LIMIT OK: successful response headers pace the next call")
+
 # run() has to stop sending reasoning_effort for the rest of the turn as soon as
 # the provider rejects it, and signal that to the caller so it can persist the
 # correction in the profile (cli._persist_adjusted_thinking).
@@ -252,6 +301,75 @@ assert thinking_calls == ["medium", None], (
 assert thinking_result["thinking_adjusted"] is True
 print("AGENT REASONING TURN OFF OK: after a rejection the rest of the turn stops "
       "sending reasoning_effort")
+
+# A weak model may print a complete-looking file instead of calling write_file.
+# For a mutation request, discard that uncommitted draft and give it exactly one
+# explicit chance to correct itself, even after harmless read tools ran first.
+mutation_messages = []
+mutation_responses = [
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "read1", "type": "function",
+        "function": {"name": "list_dir", "arguments": "{}"},
+    }]},
+    {"role": "assistant", "content": "# Design shown but not saved"},
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "write1", "type": "function",
+        "function": {"name": "write_file", "arguments": json.dumps({
+            "path": "design.md", "content": "# Design\n",
+        })},
+    }]},
+    {"role": "assistant", "content": "Saved design.md"},
+]
+
+
+def mutation_call(_model, messages, **_kwargs):
+    mutation_messages.append(json.loads(json.dumps(messages)))
+    return mutation_responses.pop(0)
+
+
+mutation_history = []
+original_call = agent.call
+original_execute = agent.tools.execute
+try:
+    agent.call = mutation_call
+    agent.tools.execute = lambda name, _args: "pages/" if name == "list_dir" else "OK"
+    mutation_result = agent.run(
+        "create design.md", "weak-local-model", verbose=False,
+        history=mutation_history, require_change=True,
+        is_changing_tool=lambda name, _args: name == "write_file",
+    )
+finally:
+    agent.call = original_call
+    agent.tools.execute = original_execute
+assert mutation_result["final"] == "Saved design.md"
+assert mutation_result["changing_calls"] == 1
+assert [call[0] for call in mutation_result["calls"]] == ["list_dir", "write_file"]
+assert any(message.get("content") == agent.MUTATION_RETRY
+           for message in mutation_messages[2])
+assert all(message.get("content") != "# Design shown but not saved"
+           for message in mutation_history)
+assert all(message.get("content") != agent.MUTATION_RETRY
+           for message in mutation_history)
+print("AGENT MUTATION RETRY OK: an unsaved draft gets one explicit tool-call correction")
+
+clarification_responses = [
+    {"role": "assistant", "content": "unsaved draft"},
+    {"role": "assistant", "content": "Which filename should I use?"},
+]
+visible_correction = []
+original_call = agent.call
+try:
+    agent.call = lambda *_args, **_kwargs: clarification_responses.pop(0)
+    clarification_result = agent.run(
+        "create the file", "weak-local-model", verbose=False,
+        require_change=True, on_token=visible_correction.append,
+    )
+finally:
+    agent.call = original_call
+assert clarification_result["final"] == "Which filename should I use?"
+assert visible_correction == ["Which filename should I use?"]
+assert not clarification_responses, "the corrective attempt must happen exactly once"
+print("AGENT MUTATION CLARIFICATION OK: one failed correction stays visible and does not loop")
 
 # Ollama sends the reasoning in message.thinking. It only feeds the progress
 # indicator: it must not leak into the visible answer or into the history.

@@ -11,6 +11,7 @@ What it does, in a cycle:
 """
 import argparse
 import json
+import math
 import os
 import re
 import time
@@ -138,14 +139,112 @@ def _api_error(e):
     return re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[hidden]", message)
 
 
-# A provider that limits tokens per minute (Groq's free tier caps at a few
-# thousand) answers 429 to a turn that is merely large, and says how long the
-# wait is. Losing the turn over a wait the provider itself measured in seconds
-# is worse than waiting it out.
+# A compatible provider may answer 429 to a turn that is merely large and say
+# how long the wait is. Losing the turn over a wait the provider itself measured
+# in seconds is worse than waiting it out.
 RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_MAX_WAIT = 90.0
 # Set by the CLI so the wait shows up on screen instead of looking like a freeze.
 RATE_LIMIT_NOTICE = None
+RATE_LIMIT_PREEMPTIVE_NOTICE = None
+_RATE_LIMITS = {}
+
+
+def _duration_seconds(value):
+    """Parse provider reset durations such as 7.66s or 2m59.56s."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    matches = list(re.finditer(r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)", text))
+    if not matches or re.sub(r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)", "", text).strip():
+        return None
+    units = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+    return sum(float(match.group(1)) * units[match.group(2)] for match in matches)
+
+
+def _rate_limit_scope(payload, base_url):
+    return (base_url.rstrip("/"), str(payload.get("model") or ""))
+
+
+def _payload_chars(payload):
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+
+def _header_number(headers, name, integer=False):
+    if not headers:
+        return None
+    value = headers.get(name)
+    try:
+        return int(value) if integer else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _remember_rate_limit_headers(response, payload, base_url):
+    """Remember generic quota headers from a successful compatible API call."""
+    headers = getattr(response, "headers", None)
+    remaining_tokens = _header_number(headers, "x-ratelimit-remaining-tokens", integer=True)
+    remaining_requests = _header_number(headers, "x-ratelimit-remaining-requests", integer=True)
+    reset_tokens = _duration_seconds(headers.get("x-ratelimit-reset-tokens")) if headers else None
+    reset_requests = _duration_seconds(headers.get("x-ratelimit-reset-requests")) if headers else None
+    if all(value is None for value in (
+        remaining_tokens, remaining_requests, reset_tokens, reset_requests,
+    )):
+        return
+    state = _RATE_LIMITS.setdefault(_rate_limit_scope(payload, base_url), {})
+    now = time.monotonic()
+    state.update({
+        "remaining_tokens": remaining_tokens,
+        "remaining_requests": remaining_requests,
+        "reset_tokens_at": now + reset_tokens if reset_tokens is not None else None,
+        "reset_requests_at": now + reset_requests if reset_requests is not None else None,
+        "payload_chars": _payload_chars(payload),
+    })
+
+
+def _remember_rate_limit_usage(payload, base_url, usage):
+    """Calibrate the next request estimate from usage reported by the provider."""
+    prompt = int((usage or {}).get("prompt_tokens") or 0)
+    completion = int((usage or {}).get("completion_tokens") or 0)
+    if prompt <= 0:
+        return
+    state = _RATE_LIMITS.get(_rate_limit_scope(payload, base_url))
+    if not state:
+        return
+    chars = _payload_chars(payload)
+    state["chars_per_prompt_token"] = chars / prompt
+    state["last_completion_tokens"] = completion
+
+
+def _wait_for_rate_limit_capacity(payload, base_url):
+    """Wait before crossing a quota advertised by the provider itself."""
+    state = _RATE_LIMITS.get(_rate_limit_scope(payload, base_url))
+    if not state:
+        return
+    delays = []
+    now = time.monotonic()
+    ratio = state.get("chars_per_prompt_token")
+    remaining_tokens = state.get("remaining_tokens")
+    if ratio and remaining_tokens is not None:
+        estimated = math.ceil(_payload_chars(payload) / ratio)
+        estimated += int(state.get("last_completion_tokens") or 0)
+        if estimated >= remaining_tokens and state.get("reset_tokens_at") is not None:
+            delays.append(state["reset_tokens_at"] - now)
+    if (state.get("remaining_requests") is not None
+            and state["remaining_requests"] <= 0
+            and state.get("reset_requests_at") is not None):
+        delays.append(state["reset_requests_at"] - now)
+    delay = max(delays, default=0)
+    if delay <= 0:
+        return
+    if delay > RATE_LIMIT_MAX_WAIT:
+        return
+    if RATE_LIMIT_PREEMPTIVE_NOTICE:
+        RATE_LIMIT_PREEMPTIVE_NOTICE(delay)
+    time.sleep(delay + 1)
+    # The remembered counters describe the old window. The next response will
+    # replace them with the provider's current view.
+    _RATE_LIMITS.pop(_rate_limit_scope(payload, base_url), None)
 
 
 def _rate_limit_wait(e):
@@ -163,10 +262,13 @@ def _rate_limit_wait(e):
 
 
 def _urlopen_api(payload, api_key, base_url, timeout=600):
+    _wait_for_rate_limit_capacity(payload, base_url)
     for attempt in range(1, RATE_LIMIT_RETRIES + 1):
         try:
-            return urllib.request.urlopen(
+            response = urllib.request.urlopen(
                 _api_request(payload, api_key, base_url), timeout=timeout)
+            _remember_rate_limit_headers(response, payload, base_url)
+            return response
         except urllib.error.HTTPError as e:
             delay = _rate_limit_wait(e) if e.code == 429 else None
             if (delay is None or delay > RATE_LIMIT_MAX_WAIT
@@ -222,6 +324,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
         raise RuntimeError(f"API: could not connect to the endpoint: {e.reason}") from e
     msg = _normalize_msg(data["choices"][0]["message"])
     usage = data.get("usage") or {}
+    _remember_rate_limit_usage(payload, base_url, usage)
     msg["_usage"] = {"prompt_eval_count": int(usage.get("prompt_tokens") or 0),
                      "eval_count": int(usage.get("completion_tokens") or 0),
                      "total_duration": 0}
@@ -297,6 +400,10 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                 f = tc.get("function") or {}
                 acc["function"]["name"] += f.get("name") or ""
                 acc["function"]["arguments"] += f.get("arguments") or ""
+    _remember_rate_limit_usage(payload, base_url, {
+        "prompt_tokens": usage["prompt_eval_count"],
+        "completion_tokens": usage["eval_count"],
+    })
     msg = {"role": "assistant", "content": "".join(content)}
     if tc_acc:
         msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
@@ -415,10 +522,15 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
 # the problem is the model, not the parser.
 
 
+MUTATION_RETRY = """The user asked for a change, but your previous response called no changing tool, so it changed nothing. If the task has enough information, call exactly one appropriate tool now and continue from its result. Do not present file contents as saved unless a tool saved them. If essential information is missing, ask one concise clarification question instead."""
+CHANGING_TOOLS = {"write_file", "append_file", "replace_between"}
+
+
 def run(request, model, max_steps=8, use_tools=True, verbose=True,
         on_token=None, on_tool=None, on_tool_before=None, history=None,
         tools_schema=None, thinking=None, on_working=None, provider=None,
-        on_thinking=None, num_ctx=None):
+        on_thinking=None, num_ctx=None, require_change=False,
+        is_changing_tool=None):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
@@ -439,14 +551,21 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
     total_usage = {"prompt_eval_count": 0, "eval_count": 0,
                    "total_duration": 0, "eval_duration": 0}
     thinking_adjusted = False
+    changing_calls = 0
+    correction_pending = False
+    correction_sent = False
     for step in range(max_steps):
         if on_working:
             on_working()
         provider_kind = (provider or {}).get("provider", "ollama")
         active_schema = tools_schema or tools.SCHEMA
 
+        stream_response = bool(
+            on_token and (not require_change or changing_calls or correction_sent)
+        )
+
         def query(schema):
-            if provider_kind == "openai_compatible" and on_token:
+            if provider_kind == "openai_compatible" and stream_response:
                 return call_stream_api(
                     model, msgs, use_tools=use_tools, on_token=on_token,
                     tools_schema=schema, thinking=thinking,
@@ -457,7 +576,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                     model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"))
-            if on_token:
+            if stream_response:
                 return call_stream(
                     model, msgs, use_tools=use_tools, on_token=on_token,
                     tools_schema=schema, thinking=thinking,
@@ -465,20 +584,33 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             return call(model, msgs, use_tools=use_tools,
                         tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
 
+        if correction_pending:
+            msgs.append({"role": "system", "content": MUTATION_RETRY})
         msg = query(active_schema)
+        if correction_pending:
+            msgs.pop()
+            correction_pending = False
+            correction_sent = True
         tc = msg.get("tool_calls")
         _add_usage(total_usage, msg.get("_usage"))
         if msg.pop("_thinking_rejected", False):
             thinking = None
             thinking_adjusted = True
 
-        msgs.append(msg)
-
         if not tc:
+            if require_change and not changing_calls and not correction_sent:
+                correction_pending = True
+                continue
+            msgs.append(msg)
+            if on_token and not stream_response and msg.get("content"):
+                on_token(msg["content"])
             if verbose:
                 print(f"[step {step}] FINAL ANSWER:\n{msg.get('content')}")
             return {"final": msg.get("content"), "calls": calls, "steps": step,
-                    "usage": total_usage, "thinking_adjusted": thinking_adjusted}
+                    "usage": total_usage, "thinking_adjusted": thinking_adjusted,
+                    "changing_calls": changing_calls}
+
+        msgs.append(msg)
 
         for c in tc:
             name = c["function"]["name"]
@@ -491,13 +623,18 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             if verbose:
                 print(f"           <- {result[:200]}")
             calls.append((name, args, result, "native"))
+            changing = (is_changing_tool(name, args) if is_changing_tool
+                        else name in CHANGING_TOOLS)
+            if changing:
+                changing_calls += 1
             if on_tool:
                 on_tool(name, args, result, "native")
             msgs.append({"role": "tool", "tool_call_id": c.get("id", name), "content": result})
 
     return {"final": "(step limit reached)", "calls": calls,
             "steps": max_steps, "usage": total_usage,
-            "thinking_adjusted": thinking_adjusted}
+            "thinking_adjusted": thinking_adjusted,
+            "changing_calls": changing_calls}
 
 
 if __name__ == "__main__":

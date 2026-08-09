@@ -87,6 +87,51 @@ def _announce_rate_limit(seconds, attempt):
 agent.RATE_LIMIT_NOTICE = _announce_rate_limit
 
 
+def _announce_rate_limit_preemptive(seconds):
+    """Show a provider-directed pause taken before the next request can fail."""
+    print("\r\033[2K" + _color(
+        t("cli.api.rate_limit_preemptive", seconds=f"{seconds:.0f}"), "warn"),
+        flush=True,
+    )
+
+
+agent.RATE_LIMIT_PREEMPTIVE_NOTICE = _announce_rate_limit_preemptive
+
+
+_MUTATION_ACTION = (
+    r"(?:apag(?:ue|ar)|delet(?:e|ar)|remov(?:a|er)|exclu(?:a|ir)|"
+    r"cri(?:e|ar)|edit(?:e|ar)|alter(?:e|ar)|modifi(?:que|car)|"
+    r"escrev(?:a|er)|salv(?:e|ar)|atualiz(?:e|ar)|implement(?:e|ar)|"
+    r"adicion(?:e|ar)|corrij(?:a|ir)|faça|delete|remove|create|edit|"
+    r"modify|write|save|update|implement|add|fix)"
+)
+_MUTATION_REQUEST = re.compile(
+    rf"(?:^|[\n.!?:]\s*)(?:please\s+|por\s+favor[, ]+)?{_MUTATION_ACTION}\b|"
+    rf"\b(?:can|could|would)\s+you\s+{_MUTATION_ACTION}\b|"
+    rf"\b(?:quero|preciso|gostaria)\s+que\s+(?:você\s+|voce\s+)?"
+    rf"{_MUTATION_ACTION}\b|"
+    rf"\b(?:você|voce|vamos|pode|poderia)\b[^\n.!?]{{0,80}}\b"
+    rf"{_MUTATION_ACTION}\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_mutation(request):
+    return bool(_MUTATION_REQUEST.search(request))
+
+
+def _changing_tool_call(name, args):
+    if name in agent.CHANGING_TOOLS:
+        return True
+    if name != "run_command":
+        return False
+    try:
+        data = json.loads(args) if isinstance(args, str) else (args or {})
+    except json.JSONDecodeError:
+        return False
+    return not _safe_read_command(data.get("cmd", ""))
+
+
 def _exit_code(result):
     m = re.search(r"\(exit code: (-?\d+)\)\s*$", result.strip())
     return int(m.group(1)) if m else None
@@ -411,6 +456,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             self._log("error", error=error)
             return 1
         self._log("user", content=request)
+        asked_for_mutation = _asks_for_mutation(request)
         commands_before = len(self.commands)
         self._turn_start = time.monotonic()
         try:
@@ -429,6 +475,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     thinking=self.thinking,
                     num_ctx=self.num_ctx,
                     provider=self.provider,
+                    require_change=asked_for_mutation,
+                    is_changing_tool=_changing_tool_call,
                 )
         except RuntimeError as e:
             self._clear_working()
@@ -481,12 +529,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             print(_color(t("cli.generation.rate", approx=approx,
                            rate=f"{eval_count / measured_time:.1f}",
                            count=eval_count), "dim"))
-        asked_for_mutation = bool(re.search(
-            r"\b(apag(?:ue|ar)|delet(?:e|ar)|remov(?:a|er)|exclu(?:a|ir)|"
-            r"cri(?:e|ar)|edit(?:e|ar)|alter(?:e|ar)|modifi(?:que|car)|"
-            r"delete|remove|create|edit|modify)\b", request, re.IGNORECASE,
-        ))
-        if asked_for_mutation and not calls:
+        if asked_for_mutation and not int((r or {}).get("changing_calls") or 0):
             print(_color(t("cli.note.no_mutation"), "warn"))
         new_commands = self.commands[commands_before:]
         if (new_commands and not new_commands[-1].get("denied")

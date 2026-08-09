@@ -209,6 +209,7 @@
   "cli.show.full": "command #{id} in full: {cmd}",
   "cli.working.waiting": "Working… · waiting for tokens",
   "cli.api.rate_limit_wait": "Provider rate limit reached: waiting {seconds}s before retrying ({attempt}/{total})…",
+  "cli.api.rate_limit_preemptive": "Provider quota is nearly exhausted: waiting {seconds}s before the next request…",
   "cli.working.rate": "Working… · ≈ {rate} tok/s",
   "cli.generation.rate": "{approx}{rate} tok/s · {count} tokens generated",
   "cli.permission.required": "Permission required · use ↑/↓ and Enter, or w/g/n",

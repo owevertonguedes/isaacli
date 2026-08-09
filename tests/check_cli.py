@@ -695,6 +695,15 @@ finally:
     cli.ensure_ollama = original_ensure
 check("no changing tool was executed" in out.getvalue(),
       "the CLI contradicts a hallucinated success when no tool changed anything")
+check(app._asks_for_mutation("vamos começar a criar um design.md")
+      and app._asks_for_mutation("write a design file")
+      and not app._asks_for_mutation("como criar um design.md?")
+      and not app._asks_for_mutation("how do I create a design file?")
+      and app._changing_tool_call("write_file", {})
+      and not app._changing_tool_call("list_dir", {})
+      and not app._changing_tool_call("run_command", {"cmd": "find . -name README.md"})
+      and app._changing_tool_call("run_command", {"cmd": "mkdir site"}),
+      "mutation intent and changing tools stay distinct from read-only exploration")
 
 try:
     cli.ensure_ollama = lambda warn=False: "test"
@@ -717,7 +726,7 @@ def denied_agent(*_a, on_tool=None, **_kw):
     on_tool("run_command", {"cmd": "rm x"}, result, "test")
     return {"final": "The deletion was denied.",
             "calls": [("run_command", {"cmd": "rm x"}, result, "test")],
-            "usage": {}}
+            "usage": {}, "changing_calls": 1}
 
 
 try:
