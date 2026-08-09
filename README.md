@@ -1,156 +1,78 @@
 # isaacli
 
-**A local-first CLI coding agent, built and measured for models that fit in 4 GB
-of VRAM.**
+**A local-first CLI coding agent designed for models that fit in 4 GB of VRAM, without limiting you to them.**
 
 *[Leia em português](README.pt-BR.md)*
 
-Most agent harnesses assume a frontier cloud model. Point them at a small local
-model and they tend to do one of two things: invent tool names that do not
-exist, or describe the work instead of doing it. `isaacli` is a small harness
-built the other way around: the starting question was which models run well on
-budget hardware, and the harness was designed around what they need to work
-reliably. It is not restricted to 4 GB; any Ollama-served model with native tool
-calling, or any OpenAI-compatible endpoint, works the same way.
+`isaacli` reads and edits files, runs commands in a layered Linux sandbox and keeps working until the task finishes or fails clearly. It was built around small local models instead of assuming a frontier cloud model, but the same interface also supports larger Ollama models and OpenAI-compatible APIs.
 
-It reads and writes files, runs shell commands inside a layered sandbox with
-resource ceilings, and either finishes the task or tells you it failed. Nothing
-leaves the machine unless you configure a remote API.
+Nothing is sent to a remote model unless you configure one. Web reads use explicit, constrained routes; terminal commands outside the approval flow stay offline by default.
 
-> [AGPLv3](LICENSE). Free to use, study and modify. Offering it as a closed
-> network service requires a commercial license: see [LICENSING.md](LICENSING.md).
+> [AGPLv3](LICENSE). Free to use, study and modify. Offering isaacli as a closed network service requires a commercial license; see [LICENSING.md](LICENSING.md).
 
 ## Quickstart
 
-Requires [Ollama](https://ollama.com), Python 3.10+, and `bwrap` (`bubblewrap`)
-for the sandbox.
+Requires [Ollama](https://ollama.com), Python 3.10+ and `bwrap` (`bubblewrap`).
 
 ```bash
 git clone https://github.com/owevertonguedes/isaacli.git
 cd isaacli
-./isaacli install                  # add isaacli to the user's PATH
+./isaacli install
 
-isaacli setup                      # choose model, context and reasoning effort
-
-isaacli                            # interactive REPL
-isaacli "run git status and tell me what is pending"
-isaacli --workspace /path/to/project
-isaacli --resume <session-id>
+isaacli setup
+isaacli
 ```
 
-The install command creates a per-user link in `~/.local/bin`; it does not need
-`sudo` and never overwrites an existing command. The launcher also detects
-Flatpak terminals (including VS Code from Flathub) and runs on the host, where
-Ollama and the sandbox dependencies are installed.
+Installation adds a per-user link in `~/.local/bin`; it needs no `sudo` and does not overwrite an existing command. The launcher also works from Flatpak terminals such as VS Code from Flathub by running on the host, where Ollama and the sandbox dependencies live.
 
-To remove the command while keeping configuration and history, run `isaacli
-uninstall`. To also permanently delete configuration, API keys, permissions,
-sessions, feedback and temporary state, run `isaacli uninstall --purge`. If
-Ollama was installed only for isaacli, `isaacli uninstall --purge --ollama`
-also removes an installation made by Ollama's official Linux script, its
-service and every model. It requires a stronger confirmation and refuses
-unrecognised/package-managed installations. All forms preserve the clone.
+Setup selects the interface language, engine, model, context and reasoning effort. It can use a local Ollama model with native tool calling or a configurable OpenAI-compatible endpoint. API keys are stored outside the workspace in a `0600` secrets file.
 
-The first interactive run opens the setup automatically when no profile exists.
-Setup can also configure any OpenAI-compatible endpoint (Groq, for example); the
-API key is stored in `~/.config/isaacli/secrets.json` with mode `0600`, never in
-the workspace or in a session log.
+Useful entry points:
 
-The interface speaks English and Brazilian Portuguese, selected during setup and
-changeable at any time with `/language`.
+```bash
+isaacli "run git status and explain what is pending"
+isaacli --workspace /path/to/project
+isaacli --resume <session-id>
+isaacli uninstall
+```
 
-Inside the REPL, `/help` lists every command. See
-**[docs/USAGE.md](docs/USAGE.md)** for the commands, the permission modes,
-session resuming and the setup flow in detail.
+See [Installation](docs/INSTALLATION.md) for Flatpak details, recovery and the explicitly confirmed purge options.
 
-## Why it works
+## What it provides
 
-Nothing exotic. Four decisions, each of which is a failure mode avoided:
+- File, web and terminal tools exposed through a compact schema suitable for smaller models.
+- Interactive permission prompts with one-time, workspace and global authorizations.
+- English and Brazilian Portuguese interfaces, switchable with `/language`.
+- Model, context and reasoning selection without creating duplicate Ollama models.
+- Resumable JSONL sessions, command output history and task feedback.
+- OpenAI-compatible remote profiles with a configurable endpoint and exact model ID.
 
-1. **Native `/api/chat`**, not an OpenAI-compat translation layer. Ollama drops
-   `options.num_ctx` on its OpenAI-compatible `/v1` endpoint and honours it on
-   the native one, so the compat layer costs you the context window before a
-   single token is generated.
-2. **A short tool schema.** Seven file and shell tools, so the list stays inside
-   what a small model can hold and match against.
-3. **A model with native tool calling**, picked by measurement rather than by
-   parameter count. See the reasoning in
-   [`Modelfile.isaac-granite.tmpl`](tool_harness/Modelfile.isaac-granite.tmpl).
-4. **`num_ctx` and `temperature` set explicitly**, so they travel with the
-   profile instead of depending on how the server was started. Ollama's default
-   context truncates the tool schema silently, and a model that cannot see its
-   tools invents plausible ones.
+Inside the REPL, type `/` to open the command palette or `/help` to list every command. [Usage](docs/USAGE.md) covers setup, permissions, sessions, terminal behaviour and the full command reference.
 
-## The sandbox
+## Safety and privacy
 
-Command execution is contained in three independent layers, in
-[`tool_harness/execution.py`](tool_harness/execution.py):
+Unattended commands execute without a shell, inside `bwrap`, with the workspace as the only writable location. Commands outside the default policy are shown before execution; after approval they may use a shell or network, but remain inside the same filesystem, resource and syscall boundaries.
 
-- **Direct execve** for anything running unattended, so the model cannot inject
-  through `;`, `&&` or `$()` without you seeing it
-- **A short default allowlist** that decides what runs *without asking*; anything
-  else is shown to you and runs if you approve it
-- **`bwrap`** with the whole disk read-only and only the working directory
-  writable. Networking is closed for anything that runs on its own; a command
-  the user approves gets it, so `git clone` and friends work once you say yes
+Resource ceilings use `systemd-run --user`; the seccomp filter is x86_64-only. When either layer is unavailable, isaacli reports that limitation instead of claiming protection that is not present. The sandbox limits model-generated commands, but it is not a security boundary against the user, root or malware already running under the same account.
 
-On top of the three layers, every command also runs under a **cgroup
-ceiling** (`systemd-run --user --scope`: memory, process count and CPU), so a
-runaway command dies of its own weight instead of eating the host. If
-`systemd-run` is missing, the command still runs and the output says so with a
-`NOTE:` rather than silently going unlimited.
-
-Every command also carries a **seccomp filter** that denies the syscalls no
-build or test step needs: mounts, `unshare`/`setns`, module loading, `kexec`,
-the kernel keyring, `bpf`, `userfaultfd`, `ptrace`. The namespace group is why
-it exists, since without it a command in the jail can still call
-`unshare(CLONE_NEWUSER)` and get a full capability set inside the new
-namespace. It is not airtight and does not claim to be: `clone3` can still
-reach a user namespace, because seccomp cannot read the flags behind its struct
-pointer and denying it would break threads in `python3` and `pytest`. The
-filter is x86_64-only and says so with a `NOTE:` elsewhere.
-
-File tools refuse to escape their root, including through absolute paths and
-`..`. Both are tested by trying to actually escape, with bait planted outside
-the directory, in [`check_sandbox.py`](tests/check_sandbox.py) and
-[`check_execution.py`](tests/check_execution.py), rather than by checking
-that a refusal message appeared. The same file proves the cgroup ceiling and
-the seccomp filter by effect: a memory hog is OOM-killed, a fork loop is
-blocked, and the denied syscalls are attempted from inside the sandbox and have
-to come back `EPERM`. A control run of the same probe with the filter removed
-separates the calls the filter denies from the ones that were already failing
-for lack of capabilities, and prints both lists, so the section cannot take
-credit for a refusal it did not cause.
-
-`bwrap`, the cgroup ceiling and the seccomp filter are what approval never bypasses, and
-they do not need to bypass anything else: what you approve runs, including
-`push --force`, programs off the list and a line with pipes, which goes to
-`sh -c` inside the same jail. The first two layers decide what happens *without
-asking*, not what you are permitted to do with your own machine. This part is
-reusable on its own, in any project that executes model-generated code, local
-or cloud.
+Local sessions and feedback may contain prompts, answers, paths, commands and tool results. They are ignored by Git but are currently stored as plaintext. A remote provider receives the conversation and any tool results included in later model requests. Read [Security and privacy](docs/SECURITY.md) before using sensitive data or a remote endpoint.
 
 ## Honest limits
 
-- A 2 GB model is a 2 GB model. Raw capability comes from pretraining and you
-  download it finished. What this repo adds is reliability and specialisation,
-  not intelligence.
-- This targets file and shell work through a small, fixed tool schema. It does
-  not aim to replace what Aider or Codex are built for: diff-based editing
-  across a large repository, deep git integration, or driving frontier cloud
-  models.
+- A small model remains a small model: the harness improves reliability and tool use, not the model's underlying knowledge or reasoning capacity.
+- The project targets file and terminal work through a compact tool set; it is not a full IDE or a general browser-automation framework.
+- Sandboxing reduces accidental damage and workspace escape, but no local agent should be treated as a boundary against a compromised host or account.
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md): commands, permissions, sessions, setup
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): module map, main flow, invariants
-- [CONTRIBUTING.md](CONTRIBUTING.md): setup, tests and ground rules
+- [Usage](docs/USAGE.md): setup, commands, permissions, sessions and terminal behaviour
+- [Architecture](docs/ARCHITECTURE.md): module map, data flow and implementation invariants
+- [Installation](docs/INSTALLATION.md): install, Flatpak, removal, purge and recovery
+- [Security and privacy](docs/SECURITY.md): stored data, remote APIs and current limits
+- [Contributing](CONTRIBUTING.md): development setup, tests and ground rules
 
 ## Contributing
 
-Issues and pull requests are welcome, particularly reproductions on other
-hardware, and particularly another measurement bug that slipped through.
+Issues and pull requests are welcome, particularly reproducible failures on other hardware or with other tool-capable models.
 
-By submitting a pull request you agree to license your contribution under AGPLv3
-and grant the maintainer the right to include it in commercial licenses of this
-project. See [LICENSING.md](LICENSING.md).
+By submitting a pull request you agree to license your contribution under AGPLv3 and grant the maintainer the right to include it in commercial licenses of this project. See [LICENSING.md](LICENSING.md).
