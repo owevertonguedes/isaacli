@@ -54,6 +54,11 @@ import config
 import terminal_ui
 import tools
 from cli_i18n import set_language, t
+from cli_permissions import (
+    DESTRUCTIVE_COMMANDS, DESTRUCTIVE_GIT, READ_ONLY_COMMANDS, READ_ONLY_GH,
+    READ_ONLY_GIT, _command_parts, _command_rule, _destructive_command,
+    _safe_read_command,
+)
 from cli_presentation import (
     ANSI, APP_VERSION, WORDMARK_ISAAC, _color, _colored_prompt,
     _format_markdown_terminal, _friendly_path, _markdown_inline, _pad_visual,
@@ -102,22 +107,6 @@ SESSION_ID_UUID = re.compile(
 SESSION_ID_LEGACY = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-[a-f0-9]{6}"
 )
-
-READ_ONLY_COMMANDS = {"ls", "cat", "head", "tail", "wc", "grep", "find"}
-READ_ONLY_GIT = {"status", "diff", "log", "show"}
-READ_ONLY_GH = {
-    ("issue", "view"), ("pr", "view"), ("repo", "view"),
-    ("release", "view"), ("run", "view"), ("auth", "status"),
-    ("search", "issues"), ("search", "prs"), ("search", "repos"),
-    ("search", "commits"),
-}
-
-# Commands whose effect is destructive or hard to undo. The sandbox and the
-# approval prompt already gate them; naming them out loud is what keeps approval
-# from becoming a reflex.
-DESTRUCTIVE_COMMANDS = {"rm", "rmdir", "mv", "dd", "truncate", "shred", "chmod", "chown"}
-DESTRUCTIVE_GIT = {"push", "reset", "clean", "checkout", "restore", "rebase", "revert"}
-
 
 def _runtime_ollama_dir():
     base = os.environ.get("ISAACLI_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR")
@@ -305,58 +294,6 @@ agent.RATE_LIMIT_NOTICE = _announce_rate_limit
 def _exit_code(result):
     m = re.search(r"\(exit code: (-?\d+)\)\s*$", result.strip())
     return int(m.group(1)) if m else None
-
-
-def _command_parts(cmd):
-    try:
-        return shlex.split(cmd)
-    except ValueError:
-        return []
-
-
-def _command_rule(cmd):
-    parts = _command_parts(cmd)
-    if not parts:
-        return ""
-    if parts[0] == "git" and len(parts) > 1:
-        sub = next((p for p in parts[1:] if not p.startswith("-")), "*")
-        return f"git {sub}"
-    if parts[0] == "gh" and len(parts) > 2:
-        route = [p for p in parts[1:] if not p.startswith("-")][:2]
-        return "gh " + " ".join(route)
-    return parts[0]
-
-
-def _safe_read_command(cmd):
-    parts = _command_parts(cmd)
-    if not parts:
-        return False
-    if parts[0] in READ_ONLY_COMMANDS:
-        return True
-    if parts[0] == "gh":
-        route = tuple(p for p in parts[1:] if not p.startswith("-"))[:2]
-        return route in READ_ONLY_GH
-    return (parts[0] == "git" and len(parts) > 1
-            and next((p for p in parts[1:] if not p.startswith("-")), None)
-            in READ_ONLY_GIT)
-
-
-def _destructive_command(cmd):
-    """Whether the command deserves an explicit warning above the approval prompt.
-
-    Being wrong here is cheap in one direction and expensive in the other: an
-    extra warning costs a line of text, a missing one costs the habit of reading
-    before pressing enter.
-    """
-    parts = _command_parts(cmd)
-    if not parts:
-        return False
-    if parts[0] in DESTRUCTIVE_COMMANDS:
-        return True
-    if parts[0] == "git":
-        sub = next((p for p in parts[1:] if not p.startswith("-")), None)
-        return sub in DESTRUCTIVE_GIT
-    return any(flag in parts for flag in ("--force", "-f", "--hard", "--delete"))
 
 
 def _preview(text):
