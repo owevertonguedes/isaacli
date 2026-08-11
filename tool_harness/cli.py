@@ -132,6 +132,14 @@ def _changing_tool_call(name, args):
     return not _safe_read_command(data.get("cmd", ""))
 
 
+def _changing_tool_succeeded(name, _args, result):
+    if name in agent.CHANGING_TOOLS:
+        return result.startswith("OK:")
+    if name == "run_command":
+        return _exit_code(result) == 0
+    return False
+
+
 def _exit_code(result):
     m = re.search(r"\(exit code: (-?\d+)\)\s*$", result.strip())
     return int(m.group(1)) if m else None
@@ -258,6 +266,9 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             self._log("meta", event="workspace", workspace=str(new))
 
     def _show_working(self):
+        continuing = self._working_visible
+        if continuing:
+            print("\r\033[2K", end="", flush=True)
         self._assistant_label_pending = True
         self._generation_start = time.monotonic()
         self._generation_chunks = 0
@@ -265,7 +276,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self._token_buffer = []
         self._first_token_at = None
         self._stream_started = False
-        print()
+        if not continuing:
+            print()
         self._output_block = False
         print(_color(t("cli.working.waiting"), "dim"), end="", flush=True)
         self._working_visible = True
@@ -303,28 +315,28 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
     def _token(self, chunk):
         if not chunk:
             return
-        now = time.monotonic()
-        if self._first_token_at is None:
-            self._first_token_at = now
         self._token_buffer.append(chunk)
-        self._generation_chunks += 1
-        elapsed = now - self._first_token_at
-        if elapsed >= 0.05 and now - self._generation_status_at >= 0.05:
-            self._print_rate(elapsed)
-            self._generation_status_at = now
         # We keep the whole step buffered so we do not break Markdown markers
         # (for example ** and ```) that can arrive split across several tokens.
 
     def _thinking_token(self, chunk):
         """Count the reasoning stream without revealing its content in the terminal."""
+        self._generation_progress(chunk)
+
+    def _generation_progress(self, chunk):
+        """Show an approximate live rate for every kind of generated output."""
         if not chunk or not self._working_visible:
             return
         now = time.monotonic()
         if self._first_token_at is None:
             self._first_token_at = now
-        self._generation_chunks += 1
+        # Ollama reports the exact eval_count only when a request finishes. A
+        # streamed piece is often one token for text but may contain a complete
+        # tool argument object, so bytes/4 is a better live approximation than
+        # counting callbacks. The UI marks this number with an approximation.
+        self._generation_chunks += max(1, len(chunk.encode("utf-8")) // 4)
         elapsed = now - self._first_token_at
-        if elapsed >= 0.05 and now - self._generation_status_at >= 0.05:
+        if elapsed >= 0.25 and now - self._generation_status_at >= 0.25:
             self._print_rate(elapsed)
             self._generation_status_at = now
 
@@ -467,7 +479,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     max_steps=self.max_steps,
                     verbose=False,
                     on_token=self._token,
-                    on_thinking=self._thinking_token,
+                    on_progress=self._generation_progress,
                     on_tool_before=self._tool_before,
                     on_tool=self._tool_after,
                     on_working=self._show_working,
@@ -477,6 +489,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     provider=self.provider,
                     require_change=asked_for_mutation,
                     is_changing_tool=_changing_tool_call,
+                    changing_tool_succeeded=_changing_tool_succeeded,
                 )
         except RuntimeError as e:
             self._clear_working()
@@ -502,7 +515,10 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self._clear_working()
         final = (r or {}).get("final") or ""
         calls = (r or {}).get("calls") or []
-        empty_answer = not final and not calls
+        # Tool calls are observable work, but they are not a final answer. An
+        # empty response after a tool failure or denial must not become exit 0
+        # merely because a call was attempted.
+        empty_answer = not final
         self.last_answer = final
         usage = (r or {}).get("usage") or {}
         for key in self.total_usage:
@@ -529,9 +545,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             print(_color(t("cli.generation.rate", approx=approx,
                            rate=f"{eval_count / measured_time:.1f}",
                            count=eval_count), "dim"))
-        if asked_for_mutation and not int((r or {}).get("changing_calls") or 0):
-            print(_color(t("cli.note.no_mutation"), "warn"))
         new_commands = self.commands[commands_before:]
+        denied_change = bool(new_commands and new_commands[-1].get("denied"))
+        if (asked_for_mutation
+                and not int((r or {}).get("successful_changes") or 0)
+                and not denied_change):
+            print(_color(t("cli.note.no_mutation"), "warn"))
         if (new_commands and not new_commands[-1].get("denied")
                 and new_commands[-1].get("code") not in (None, 0)):
             print(_color(t("cli.note.command_failed",

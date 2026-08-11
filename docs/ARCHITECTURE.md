@@ -172,6 +172,34 @@ and the model gets one explicit corrective attempt. Read-only exploration does
 not satisfy that contract, the correction never loops, and a second text-only
 answer is surfaced honestly as a clarification or failure.
 
+The explicit-request detector is only a fast path for common phrasing; it is
+not treated as a complete natural-language parser. Every read-only tool result
+also carries an English model-facing reminder that inspection changed nothing
+and that a persistent outcome requires a changing tool. This catches uncommon
+wording without growing parallel verb lists for every interface language or
+adding a separate intent-classification inference to every turn. A changing
+call counts as confirmed only when its result reports success: a denied command,
+non-zero exit or file-tool error remains an attempted change and receives a
+model-facing failure reminder instead.
+
+Successful file mutations return bounded objective evidence to the normal
+post-tool model step: created/updated state, UTF-8 byte counts and a unified
+diff (or an explicit no-line-difference marker). The evidence covers `write_file`, `append_file`,
+`replace_between` and `replace_text`, is explicitly marked when truncated, and
+only describes the resulting bytes; it never claims that the user's broader
+request is complete. `replace_text` is the exact, unambiguous option: it refuses
+absent or repeated old text without modifying the file, while whole-file and
+section replacement remain available for deliberately broad work. Tool
+arguments are validated against the same schema sent to the model, so a missing
+required field produces a precise corrective result before Python dispatch.
+
+Mutation requests stream from the first inference even while a tentative text
+answer is hidden pending a successful changing tool. A separate progress
+callback observes reasoning, answer and tool-argument chunks without displaying
+their content, so the transient indicator can show an approximate live rate
+during tool selection too. Ollama's exact generated-token count remains a
+request-final metric and is used for the final rate.
+
 Generation metrics are only comparable when context, prompt and tools are
 equivalent too. A short benchmark at `num_ctx=4096` does not represent the cost
 of an agent session at `num_ctx=32768` with history and tool schemas: beyond

@@ -625,6 +625,18 @@ check("tok/s" in out.getvalue()
       and "do not show this reasoning" not in out.getvalue(),
       "thinking updates tok/s without revealing the reasoning")
 
+out = io.StringIO()
+cli._working_visible = False
+with redirect_stdout(out):
+    cli._show_working()
+    cli._show_working()
+    cli._first_token_at = time.monotonic() - 1
+    cli._generation_progress('{"path":"page.html","content":"generated"}')
+rendered = out.getvalue()
+check(rendered.count("\n") == 1 and "tok/s" in rendered
+      and 'page.html' not in rendered and 'generated' not in rendered,
+      "consecutive model steps reuse one live status line and tool arguments update it privately")
+
 # While the agent works there is no prompt reading stdin. Arrows and scrolling
 # must not be echoed, but Ctrl+C has to keep being a signal.
 master_fd, slave_fd = pty.openpty()
@@ -702,13 +714,20 @@ check(app._asks_for_mutation("vamos começar a criar um design.md")
       and app._changing_tool_call("write_file", {})
       and not app._changing_tool_call("list_dir", {})
       and not app._changing_tool_call("run_command", {"cmd": "find . -name README.md"})
-      and app._changing_tool_call("run_command", {"cmd": "mkdir site"}),
+      and app._changing_tool_call("run_command", {"cmd": "mkdir site"})
+      and app._changing_tool_succeeded("write_file", {}, "OK: wrote 1 byte")
+      and not app._changing_tool_succeeded("write_file", {}, "ERROR: disk full")
+      and app._changing_tool_succeeded(
+          "run_command", {}, "$ mkdir site\n(exit code: 0)")
+      and not app._changing_tool_succeeded(
+          "run_command", {}, "$ mkdir site\n(exit code: 1)"),
       "mutation intent and changing tools stay distinct from read-only exploration")
 
 try:
     cli.ensure_ollama = lambda warn=False: "test"
     app.agent.run = lambda *_a, **_kw: {
-        "final": "", "calls": [], "usage": {"eval_count": 3},
+        "final": "", "calls": [("write_file", {}, "ERROR: missing path", "native")],
+        "usage": {"eval_count": 3},
     }
     out = io.StringIO()
     with redirect_stdout(out):
@@ -717,8 +736,7 @@ finally:
     app.agent.run = original_agent_run
     cli.ensure_ollama = original_ensure
 check(empty_answer_code == 1 and "no visible answer" in out.getvalue(),
-      "the CLI reports a truly empty answer instead of showing only metrics")
-
+      "the CLI reports an empty answer after a tool attempt instead of returning success")
 
 def denied_agent(*_a, on_tool=None, **_kw):
     result = ("$ rm x\nDENIED BY USER: the command was not authorized.\n"

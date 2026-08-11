@@ -4,6 +4,7 @@ Files are confined to SANDBOX_ROOT. Web reading accepts only public HTTP(S),
 with no cookies, credentials, proxies or access to the local network.
 """
 import ipaddress
+import difflib
 import json
 import os
 import re
@@ -18,6 +19,8 @@ from pathlib import Path
 # project instead of the test sandbox. It stays confined, only the root changes.
 SANDBOX_ROOT = Path(os.environ.get("ISAACLI_ROOT", Path(__file__).parent / "sandbox"))
 MAX_WEB_BYTES = 80_000
+MAX_MUTATION_DIFF_LINES = 80
+MAX_MUTATION_DIFF_BYTES = 6_000
 
 
 def _safe(path: str) -> Path:
@@ -37,10 +40,15 @@ def read_file(path: str) -> str:
 
 def write_file(path: str, content: str) -> str:
     p = _safe(path)
+    existed = p.is_file()
+    before = p.read_text() if existed else ""
     p.parent.mkdir(parents=True, exist_ok=True)
     text = _unescape(content)
     p.write_text(text)
-    return f"OK: wrote {len(text)} bytes to {path}"
+    return _mutation_result(
+        f"OK: wrote {_byte_len(text)} bytes to {path}", path, before, text,
+        existed_before=existed,
+    )
 
 
 def list_dir(path: str = ".") -> str:
@@ -60,13 +68,18 @@ def append_file(path: str, content: str) -> str:
     model.
     """
     p = _safe(path)
+    existed = p.is_file()
+    before = p.read_text() if existed else ""
     p.parent.mkdir(parents=True, exist_ok=True)
     text = _unescape(content)
     if not text.endswith("\n"):
         text += "\n"
     with p.open("a") as f:
         f.write(text)
-    return f"OK: appended {len(text)} bytes to the end of {path}"
+    return _mutation_result(
+        f"OK: appended {_byte_len(text)} bytes to the end of {path}",
+        path, before, before + text, existed_before=existed,
+    )
 
 
 def replace_between(path: str, start_marker: str, end_marker: str, content: str) -> str:
@@ -125,9 +138,71 @@ def replace_between(path: str, start_marker: str, end_marker: str, content: str)
         body = body + "\n"
     updated = text[:content_start] + body + text[content_end:]
     p.write_text(updated)
-    return (
-        f"OK: replaced {len(section)} bytes between {start_marker} and "
+    summary = (
+        f"OK: replaced {_byte_len(section)} bytes between {start_marker} and "
         f"{end_marker} in {path}")
+    return _mutation_result(summary, path, text, updated, existed_before=True)
+
+
+def replace_text(path: str, old_text: str, new_text: str) -> str:
+    """Replace one unambiguous exact string and preserve everything else."""
+    p = _safe(path)
+    if not p.is_file():
+        return f"ERROR: file does not exist: {path}"
+    old = _unescape(old_text)
+    new = _unescape(new_text)
+    if not old:
+        return "ERROR: old_text must not be empty"
+    text = p.read_text()
+    count = text.count(old)
+    if count == 0:
+        return "ERROR: old_text was not found; the file was not modified"
+    if count > 1:
+        return (
+            f"ERROR: old_text appears {count} times; the file was not modified. "
+            "Provide a longer unique old_text"
+        )
+    if old == new:
+        return "ERROR: old_text and new_text are identical; the file was not modified"
+    updated = text.replace(old, new, 1)
+    p.write_text(updated)
+    return _mutation_result(
+        f"OK: replaced one exact occurrence in {path}", path, text, updated,
+        existed_before=True,
+    )
+
+
+def _byte_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _mutation_result(summary: str, path: str, before: str, after: str,
+                     existed_before: bool) -> str:
+    """Attach bounded factual evidence for the model's post-tool review."""
+    lines = list(difflib.unified_diff(
+        before.splitlines(), after.splitlines(),
+        fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
+    ))
+    truncated = len(lines) > MAX_MUTATION_DIFF_LINES
+    lines = lines[:MAX_MUTATION_DIFF_LINES]
+    diff = "\n".join(lines)
+    encoded = diff.encode("utf-8")
+    if len(encoded) > MAX_MUTATION_DIFF_BYTES:
+        truncated = True
+    if truncated:
+        marker = "\n... DIFF TRUNCATED BY ISAACLI LIMITS ..."
+        budget = MAX_MUTATION_DIFF_BYTES - len(marker.encode("utf-8"))
+        diff = encoded[:max(0, budget)].decode("utf-8", errors="ignore") + marker
+    if not diff:
+        diff = "(no line-level textual difference)"
+    state = "updated existing file" if existed_before else "created new file"
+    return (
+        f"{summary}\n\n"
+        "CHANGE EVIDENCE (objective result; does not prove task completion):\n"
+        f"State: {state}; before={_byte_len(before)} bytes; "
+        f"after={_byte_len(after)} bytes\n"
+        f"{diff}"
+    )
 
 
 def _normalize_marker(marker: str) -> str:
@@ -277,6 +352,7 @@ IMPLS = {
     "list_dir": list_dir,
     "append_file": append_file,
     "replace_between": replace_between,
+    "replace_text": replace_text,
     "fetch_url": fetch_url,
     "run_command": run_command,
 }
@@ -354,6 +430,26 @@ SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "replace_text",
+            "description": (
+                "Replace one exact, unique old string with new text while preserving "
+                "everything else. It refuses to modify the file if the old text is "
+                "absent or appears more than once."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "relative path of the file"},
+                    "old_text": {"type": "string", "description": "exact unique text to replace"},
+                    "new_text": {"type": "string", "description": "replacement text"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "General tool for reading textual content from a public HTTP(S) URL: "
@@ -411,6 +507,33 @@ def filtered_schema(names):
     return [s for s in SCHEMA if s["function"]["name"] in allowed]
 
 
+def _function_schema(name):
+    for item in SCHEMA:
+        if item["function"]["name"] == name:
+            return item["function"].get("parameters") or {}
+    return {}
+
+
+def _argument_error(name, args):
+    """Return a precise schema error before Python dispatch obscures the fix."""
+    schema = _function_schema(name)
+    required = schema.get("required") or []
+    missing = [key for key in required if key not in args]
+    if missing:
+        return (
+            f"ERROR: wrong arguments for {name}: missing required argument(s): "
+            f"{', '.join(missing)}. Required arguments: {', '.join(required)}"
+        )
+    allowed = set((schema.get("properties") or {}).keys())
+    unexpected = [key for key in args if key not in allowed]
+    if unexpected:
+        return (
+            f"ERROR: wrong arguments for {name}: unexpected argument(s): "
+            f"{', '.join(unexpected)}. Allowed arguments: {', '.join(sorted(allowed))}"
+        )
+    return None
+
+
 def execute(name: str, args_json: str) -> str:
     """Run the tool the model asked for and return the result as text."""
     if name not in IMPLS:
@@ -419,6 +542,11 @@ def execute(name: str, args_json: str) -> str:
         args = json.loads(args_json) if isinstance(args_json, str) else (args_json or {})
     except json.JSONDecodeError as e:
         return f"ERROR: arguments are not valid JSON ({e}): {args_json}"
+    if not isinstance(args, dict):
+        return f"ERROR: wrong arguments for {name}: expected a JSON object"
+    error = _argument_error(name, args)
+    if error:
+        return error
     try:
         return IMPLS[name](**args)
     except TypeError as e:

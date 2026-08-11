@@ -22,7 +22,7 @@ security remain part of the protection model.
 | --- | --- | --- |
 | Configuration | `~/.config/isaacli/config.json` or `XDG_CONFIG_HOME` | Atomically written with mode `0600`; contains profiles, endpoints, credential identifiers and permissions, not API-key values |
 | API keys | Adjacent `secrets.json` | Plain JSON, atomically written with mode `0600`; no application-level encryption or OS keyring yet |
-| Sessions | `tool_harness/cli_sessions/*.jsonl` | Plain JSONL; contains prompts, answers, commands, tool arguments/results, paths and errors; directory/file modes currently follow the process umask |
+| Sessions | `tool_harness/cli_sessions/*.jsonl` | Plain JSONL; contains prompts, answers, commands, tool arguments/results, paths, errors and bounded diffs returned by file mutations; directory/file modes currently follow the process umask |
 | Feedback | `tool_harness/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask |
 | Runtime coordination | `XDG_RUNTIME_DIR/isaacli` or `/tmp/isaacli-<uid>` | Process identities and managed-Ollama state, not conversation content; the application requests a `0700` directory |
 | Ollama models | Ollama-managed paths | Model weights and Ollama data; outside isaacli's secret store |
@@ -31,6 +31,10 @@ Git ignores sessions, feedback and secrets, but `.gitignore` is not access
 control, encryption or a backup exclusion. Copying the clone can copy ignored
 conversation files. Tests that construct sessions must redirect all private
 state to temporary directories rather than relying only on an isolated config.
+Mutation diffs are capped before entering the model conversation and session
+log, but they can still repeat sensitive file content. They therefore have the
+same private-data status as prompts and tool arguments, not a weaker telemetry
+classification.
 
 ## API keys
 

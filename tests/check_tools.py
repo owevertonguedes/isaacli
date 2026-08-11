@@ -44,6 +44,40 @@ with tempfile.TemporaryDirectory() as tmp:
     tools.write_file("kept.txt", "real\nbackslash \\n stays")
     check("\\n" in tools.read_file("kept.txt"),
           "write_file keeps a backslash when the text already has a real line break")
+    out = tools.write_file("unicode.txt", "ação")
+    check("wrote 6 bytes" in out and "after=6 bytes" in out,
+          "mutation results report UTF-8 bytes rather than Python characters")
+    out = tools.write_file("empty.txt", "")
+    check("created new file; before=0 bytes; after=0 bytes" in out
+          and "no line-level textual difference" in out,
+          "an empty new file has explicit objective evidence instead of a blank diff")
+
+    # --- exact replacement and bounded mutation evidence ------------------
+    tools.write_file("exact.txt", "before\ntarget\nafter\n")
+    out = tools.replace_text("exact.txt", "target", "replacement")
+    check(out.startswith("OK:") and "CHANGE EVIDENCE" in out
+          and "-target" in out and "+replacement" in out,
+          "replace_text returns objective evidence of the exact change")
+    check(tools.read_file("exact.txt") == "before\nreplacement\nafter\n",
+          "replace_text preserves every surrounding byte")
+
+    snapshot = tools.read_file("exact.txt")
+    out = tools.replace_text("exact.txt", "absent", "x")
+    check(out.startswith("ERROR:") and tools.read_file("exact.txt") == snapshot,
+          "replace_text leaves the file untouched when old_text is absent")
+    tools.write_file("ambiguous.txt", "same\nmiddle\nsame\n")
+    snapshot = tools.read_file("ambiguous.txt")
+    out = tools.replace_text("ambiguous.txt", "same", "changed")
+    check("appears 2 times" in out and tools.read_file("ambiguous.txt") == snapshot,
+          "replace_text refuses ambiguity without modifying the file")
+
+    large = "\n".join(f"old-{i}" for i in range(200))
+    out = tools.write_file("large.txt", large)
+    out = tools.write_file("large.txt", large.replace("old-", "new-"))
+    evidence = out.split("CHANGE EVIDENCE", 1)[1]
+    check("DIFF TRUNCATED BY ISAACLI LIMITS" in evidence
+          and len(evidence.encode("utf-8")) < tools.MAX_MUTATION_DIFF_BYTES + 200,
+          "large mutation evidence is bounded and explicitly marked as truncated")
 
     # --- replace_between ---------------------------------------------------
     document = (
@@ -106,6 +140,10 @@ with tempfile.TemporaryDirectory() as tmp:
           "execute reports invalid JSON")
     check(tools.execute("read_file", '{"wrong": 1}').startswith("ERROR: wrong arguments"),
           "execute reports the wrong argument names")
+    missing = tools.execute("write_file", {"content": "draft"})
+    check("missing required argument(s): path" in missing
+          and "Required arguments: path, content" in missing,
+          "execute reports the exact missing schema arguments to the model")
 
     names = {s["function"]["name"] for s in tools.SCHEMA}
     check(names == set(tools.IMPLS),

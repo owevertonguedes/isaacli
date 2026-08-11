@@ -332,7 +332,9 @@ original_call = agent.call
 original_execute = agent.tools.execute
 try:
     agent.call = mutation_call
-    agent.tools.execute = lambda name, _args: "pages/" if name == "list_dir" else "OK"
+    agent.tools.execute = lambda name, _args: (
+        "pages/" if name == "list_dir" else "OK: wrote design.md"
+    )
     mutation_result = agent.run(
         "create design.md", "weak-local-model", verbose=False,
         history=mutation_history, require_change=True,
@@ -343,6 +345,7 @@ finally:
     agent.tools.execute = original_execute
 assert mutation_result["final"] == "Saved design.md"
 assert mutation_result["changing_calls"] == 1
+assert mutation_result["successful_changes"] == 1
 assert [call[0] for call in mutation_result["calls"]] == ["list_dir", "write_file"]
 assert any(message.get("content") == agent.MUTATION_RETRY
            for message in mutation_messages[2])
@@ -371,6 +374,76 @@ assert visible_correction == ["Which filename should I use?"]
 assert not clarification_responses, "the corrective attempt must happen exactly once"
 print("AGENT MUTATION CLARIFICATION OK: one failed correction stays visible and does not loop")
 
+# Read-only results carry a language-independent reminder inside the model
+# conversation. This catches uncommon phrasing without growing parallel verb
+# lists in every supported UI language.
+read_note_messages = []
+read_note_responses = [
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "read2", "type": "function",
+        "function": {"name": "list_dir", "arguments": "{}"},
+    }]},
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "write3", "type": "function",
+        "function": {"name": "write_file", "arguments": json.dumps({
+            "path": "design.md", "content": "# Updated design\n",
+        })},
+    }]},
+    {"role": "assistant", "content": "Saved the requested change."},
+]
+
+
+def read_note_call(_model, messages, **_kwargs):
+    read_note_messages.append(json.loads(json.dumps(messages)))
+    return read_note_responses.pop(0)
+
+
+original_call = agent.call
+original_execute = agent.tools.execute
+try:
+    agent.call = read_note_call
+    agent.tools.execute = lambda name, _args: (
+        "design.md" if name == "list_dir" else "OK: wrote design.md"
+    )
+    read_note_result = agent.run(
+        "uncommon wording that names design.md", "weak-local-model", verbose=False,
+    )
+finally:
+    agent.call = original_call
+    agent.tools.execute = original_execute
+assert any(agent.READ_ONLY_RESULT_NOTE in message.get("content", "")
+           for message in read_note_messages[1])
+assert [call[0] for call in read_note_result["calls"]] == ["list_dir", "write_file"]
+assert read_note_result["successful_changes"] == 1
+print("AGENT READ-ONLY REMINDER OK: uncommon mutation wording gets a generic safeguard")
+
+# A changing call counts as a confirmed mutation only after its result says it
+# succeeded; a failed write receives an explicit correction instead.
+failed_change_responses = [
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "write2", "type": "function",
+        "function": {"name": "write_file", "arguments": "{}"},
+    }]},
+    {"role": "assistant", "content": "Saved despite the error."},
+    {"role": "assistant", "content": "The write failed."},
+]
+original_call = agent.call
+original_execute = agent.tools.execute
+try:
+    agent.call = lambda *_args, **_kwargs: failed_change_responses.pop(0)
+    agent.tools.execute = lambda *_args: "ERROR: disk full"
+    failed_change_result = agent.run(
+        "change the file", "weak-local-model", verbose=False,
+        require_change=True,
+    )
+finally:
+    agent.call = original_call
+    agent.tools.execute = original_execute
+assert failed_change_result["changing_calls"] == 1
+assert failed_change_result["successful_changes"] == 0
+assert not failed_change_responses
+print("AGENT FAILED MUTATION OK: an attempted write is not mistaken for a saved change")
+
 # Ollama sends the reasoning in message.thinking. It only feeds the progress
 # indicator: it must not leak into the visible answer or into the history.
 def urlopen_ollama_stream(req, timeout=0):
@@ -395,6 +468,31 @@ assert thoughts == ["hidden step"]
 assert visible == ["answer"] and msg["content"] == "answer"
 assert "hidden step" not in json.dumps(msg, ensure_ascii=False)
 print("AGENT THINKING OK: hidden progress kept separate from the answer")
+
+# Streaming progress includes hidden reasoning, visible text and tool arguments,
+# while only visible answer text reaches on_token.
+def urlopen_ollama_tool_progress(req, timeout=0):
+    return Response(
+        b'{"message":{"role":"assistant","thinking":"plan"}}\n'
+        b'{"message":{"role":"assistant","tool_calls":[{"index":0,"function":{"name":"write_file","arguments":{"path":"x","content":"body"}}}]}}\n'
+        b'{"done":true,"eval_count":4,"eval_duration":100000000}\n'
+    )
+
+
+original = agent.urllib.request.urlopen
+try:
+    agent.urllib.request.urlopen = urlopen_ollama_tool_progress
+    progress, visible = [], []
+    msg = agent.call_stream(
+        "model", [{"role": "user", "content": "write"}],
+        on_token=visible.append, on_progress=progress.append,
+    )
+finally:
+    agent.urllib.request.urlopen = original
+assert visible == []
+assert progress[0] == "plan" and "write_file" in progress[1] and '"path": "x"' in progress[1]
+assert msg["tool_calls"][0]["function"]["arguments"] == json.dumps({"path": "x", "content": "body"})
+print("AGENT LIVE PROGRESS OK: tool generation updates progress without leaking content")
 
 
 # Some Qwen models end the turn with the whole answer in thinking and content

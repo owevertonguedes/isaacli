@@ -334,7 +334,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
 
 def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                     on_token=None, tools_schema=None, thinking=None,
-                    api_key=None, base_url=None):
+                    api_key=None, base_url=None, on_progress=None):
     if not api_key:
         raise RuntimeError("API key missing; use /setup")
     if not base_url:
@@ -389,6 +389,8 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
             chunk = delta.get("content")
             if chunk:
                 content.append(chunk)
+                if on_progress:
+                    on_progress(chunk)
                 if on_token:
                     on_token(chunk)
             for tc in delta.get("tool_calls") or []:
@@ -398,6 +400,12 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                 if tc.get("id"):
                     acc["id"] = tc["id"]
                 f = tc.get("function") or {}
+                raw_args = f.get("arguments")
+                progress = (f.get("name") or "") + (
+                    raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
+                )
+                if progress and on_progress:
+                    on_progress(progress)
                 acc["function"]["name"] += f.get("name") or ""
                 acc["function"]["arguments"] += f.get("arguments") or ""
     _remember_rate_limit_usage(payload, base_url, {
@@ -437,7 +445,8 @@ def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
 
 
 def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
-                tools_schema=None, thinking=None, on_thinking=None, num_ctx=None):
+                tools_schema=None, thinking=None, on_thinking=None, num_ctx=None,
+                on_progress=None):
     """Like call(), but streaming: on_token(chunk) is called for every token.
 
     Returns the same assembled message call() would return, so the caller does
@@ -473,6 +482,8 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
             thought = delta.get("thinking")
             if thought:
                 thoughts.append(thought)
+                if on_progress:
+                    on_progress(thought)
                 if on_thinking:
                     # Normally the reasoning stays hidden and only serves to
                     # update the indicator while there is no visible text yet.
@@ -480,6 +491,8 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
             chunk = delta.get("content")
             if chunk:
                 content.append(chunk)
+                if on_progress:
+                    on_progress(chunk)
                 if on_token:
                     on_token(chunk)
             for tc in delta.get("tool_calls") or []:
@@ -489,6 +502,12 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
                 if tc.get("id"):
                     acc["id"] = tc["id"]
                 f = tc.get("function") or {}
+                args = f.get("arguments")
+                progress = (f.get("name") or "") + (
+                    args if isinstance(args, str) else json.dumps(args or {})
+                )
+                if progress and on_progress:
+                    on_progress(progress)
                 if f.get("name"):
                     acc["function"]["name"] = f["name"]
                 if f.get("arguments"):
@@ -522,20 +541,24 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
 # the problem is the model, not the parser.
 
 
-MUTATION_RETRY = """The user asked for a change, but your previous response called no changing tool, so it changed nothing. If the task has enough information, call exactly one appropriate tool now and continue from its result. Do not present file contents as saved unless a tool saved them. If essential information is missing, ask one concise clarification question instead."""
-CHANGING_TOOLS = {"write_file", "append_file", "replace_between"}
+MUTATION_RETRY = """The user asked for a change, but no changing tool has succeeded, so no change is confirmed. If the task has enough information, call exactly one appropriate tool now and continue from its result. Do not present file contents as saved unless a tool saved them. If essential information is missing, ask one concise clarification question instead."""
+READ_ONLY_RESULT_NOTE = """NOTE: This tool only inspected state and changed nothing. Re-read the user's request before answering. If the requested outcome requires any persistent change, call an appropriate changing tool first; never describe an unsaved draft or a read result as a completed change."""
+FAILED_CHANGE_NOTE = """NOTE: This changing tool did not succeed, so no change from this call is confirmed. Do not claim completion. Correct the call or explain the failure."""
+CHANGING_TOOLS = {"write_file", "append_file", "replace_between", "replace_text"}
 
 
 def run(request, model, max_steps=8, use_tools=True, verbose=True,
         on_token=None, on_tool=None, on_tool_before=None, history=None,
         tools_schema=None, thinking=None, on_working=None, provider=None,
         on_thinking=None, num_ctx=None, require_change=False,
-        is_changing_tool=None):
+        is_changing_tool=None, changing_tool_succeeded=None, on_progress=None):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
       commands before they reach the executor).
     on_tool(name, args, result, via): afterwards, with the result.
+    changing_tool_succeeded(name, args, result): confirms that a changing call
+      completed successfully instead of merely being attempted.
     All optional."""
     if history is not None:
         msgs = history
@@ -552,6 +575,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                    "total_duration": 0, "eval_duration": 0}
     thinking_adjusted = False
     changing_calls = 0
+    successful_changes = 0
     correction_pending = False
     correction_sent = False
     for step in range(max_steps):
@@ -560,17 +584,18 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         provider_kind = (provider or {}).get("provider", "ollama")
         active_schema = tools_schema or tools.SCHEMA
 
-        stream_response = bool(
-            on_token and (not require_change or changing_calls or correction_sent)
-        )
+        visible_stream = not require_change or successful_changes or correction_sent
+        stream_response = bool(on_progress or (on_token and visible_stream))
+        visible_token = on_token if visible_stream else None
 
         def query(schema):
             if provider_kind == "openai_compatible" and stream_response:
                 return call_stream_api(
-                    model, msgs, use_tools=use_tools, on_token=on_token,
+                    model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
                     api_key=(provider or {}).get("api_key"),
-                    base_url=(provider or {}).get("base_url"))
+                    base_url=(provider or {}).get("base_url"),
+                    on_progress=on_progress)
             if provider_kind == "openai_compatible":
                 return call_api(
                     model, msgs, use_tools=use_tools, tools_schema=schema,
@@ -578,9 +603,10 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                     base_url=(provider or {}).get("base_url"))
             if stream_response:
                 return call_stream(
-                    model, msgs, use_tools=use_tools, on_token=on_token,
+                    model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
-                    on_thinking=on_thinking, num_ctx=num_ctx)
+                    on_thinking=on_thinking, num_ctx=num_ctx,
+                    on_progress=on_progress)
             return call(model, msgs, use_tools=use_tools,
                         tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
 
@@ -598,7 +624,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             thinking_adjusted = True
 
         if not tc:
-            if require_change and not changing_calls and not correction_sent:
+            if require_change and not successful_changes and not correction_sent:
                 correction_pending = True
                 continue
             msgs.append(msg)
@@ -608,7 +634,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                 print(f"[step {step}] FINAL ANSWER:\n{msg.get('content')}")
             return {"final": msg.get("content"), "calls": calls, "steps": step,
                     "usage": total_usage, "thinking_adjusted": thinking_adjusted,
-                    "changing_calls": changing_calls}
+                    "changing_calls": changing_calls,
+                    "successful_changes": successful_changes}
 
         msgs.append(msg)
 
@@ -629,12 +656,26 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                 changing_calls += 1
             if on_tool:
                 on_tool(name, args, result, "native")
-            msgs.append({"role": "tool", "tool_call_id": c.get("id", name), "content": result})
+            succeeded = False
+            if changing:
+                succeeded = (
+                    changing_tool_succeeded(name, args, result)
+                    if changing_tool_succeeded
+                    else name in CHANGING_TOOLS and result.startswith("OK:")
+                )
+                if succeeded:
+                    successful_changes += 1
+            note = ("" if changing and succeeded else
+                    FAILED_CHANGE_NOTE if changing else READ_ONLY_RESULT_NOTE)
+            model_result = result if not note else f"{result}\n\n{note}"
+            msgs.append({"role": "tool", "tool_call_id": c.get("id", name),
+                         "content": model_result})
 
     return {"final": "(step limit reached)", "calls": calls,
             "steps": max_steps, "usage": total_usage,
             "thinking_adjusted": thinking_adjusted,
-            "changing_calls": changing_calls}
+            "changing_calls": changing_calls,
+            "successful_changes": successful_changes}
 
 
 if __name__ == "__main__":
