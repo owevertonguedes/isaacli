@@ -661,6 +661,57 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             self.ask(text)
 
 
+_COMMAND_SUBCOMMANDS = {"setup", "install", "uninstall"}
+
+
+def _color_command(command):
+    """Colour a literal invocation like "isaacli uninstall --purge" the same
+    way argparse colours "positional arguments:"/"options:" entries: the
+    subcommand word like a positional argument, each flag like an option."""
+    words = []
+    for word in command.split(" "):
+        if word in _COMMAND_SUBCOMMANDS:
+            words.append(_color(word, "help_positional"))
+        elif word.startswith("--"):
+            words.append(_color(word, "help_flag"))
+        else:
+            words.append(word)
+    return " ".join(words)
+
+
+def _commands_epilog():
+    """Build the --help epilog so the hidden setup/install/uninstall commands
+    get the same coloured, aligned-column look argparse gives "options:",
+    instead of reading as flat, unstyled text next to it."""
+    header = _color(t("cli.args.commands_header"), "help_header")
+    rows = [row.split("|", 1) for row in t("cli.args.commands").split("\n")]
+    width = max(len(command) for command, _ in rows) + 3
+    lines = [
+        f"  {_color_command(command)}{' ' * (width - len(command))}{description}"
+        for command, description in rows
+    ]
+    return "\n".join([t("cli.args.epilog"), "", header, *lines])
+
+
+class _IsaacArgumentParser(argparse.ArgumentParser):
+    """A mistyped command (e.g. "--uninstall" instead of "uninstall") should
+    not just say "unrecognized arguments" and leave the user guessing; show
+    the same command list --help shows, so the typo is obvious next to it."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(file=sys.stderr)
+        print(_commands_epilog(), file=sys.stderr)
+        print(file=sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}\n")
+
+
+def _print_commands_help(usage_message):
+    print(usage_message)
+    print()
+    print(_commands_epilog())
+
+
 def main(argv=None):
     _install_signals()
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -673,23 +724,23 @@ def main(argv=None):
     )
     if setup_requested:
         if len(arguments) > 1:
-            print(t("cli.setup.usage"))
+            _print_commands_help(t("cli.setup.usage"))
             return 2
         arguments = []
     elif install_requested:
         if len(arguments) > 1:
-            print(t("cli.install.usage"))
+            _print_commands_help(t("cli.install.usage"))
             return 2
         arguments = []
     elif uninstall_requested:
         if len(arguments) > 1 and not (purge_requested or ollama_purge_requested):
-            print(t("cli.uninstall.usage"))
+            _print_commands_help(t("cli.uninstall.usage"))
             return 2
         arguments = []
 
-    ap = argparse.ArgumentParser(
+    ap = _IsaacArgumentParser(
         prog="isaacli",
-        epilog=t("cli.args.epilog"),
+        epilog=_commands_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--version", action="version", version=f"Isaac CLI v{APP_VERSION}")
@@ -731,8 +782,7 @@ def main(argv=None):
             except (EOFError, KeyboardInterrupt):
                 print("\n" + t("cli.uninstall.cancelled"))
                 return 130
-            expected = "uninstall ollama" if ollama_purge_requested else "uninstall"
-            if confirmation.strip() != expected:
+            if confirmation.strip().lower() != t("cli.uninstall.confirm_yes"):
                 print(t("cli.uninstall.cancelled"))
                 return 130
         if ollama_purge_requested:

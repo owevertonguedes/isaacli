@@ -163,17 +163,15 @@ try:
         lambda: (ollama_uninstall_calls.append(True),
                  uninstall_order.append("ollama"), 0)[-1]
     )
-    builtins.input = lambda _prompt: "keep everything"
+    builtins.input = lambda _prompt: "n"
     with redirect_stdout(io.StringIO()):
         cancelled_purge = app.main(["uninstall", "--purge"])
-    builtins.input = lambda _prompt: "uninstall"
+    builtins.input = lambda _prompt: ""
+    with redirect_stdout(io.StringIO()):
+        cancelled_empty_purge = app.main(["uninstall", "--purge", "--ollama"])
+    builtins.input = lambda _prompt: "y"
     with redirect_stdout(io.StringIO()):
         confirmed_purge = app.main(["uninstall", "--purge"])
-        weak_ollama_confirmation = app.main(
-            ["uninstall", "--purge", "--ollama"],
-        )
-    builtins.input = lambda _prompt: "uninstall ollama"
-    with redirect_stdout(io.StringIO()):
         confirmed_ollama_purge = app.main(
             ["uninstall", "--purge", "--ollama"],
         )
@@ -181,12 +179,12 @@ finally:
     app._uninstall_launcher = original_uninstall
     app._uninstall_official_ollama = original_ollama_uninstall
     builtins.input = original_input
-check(cancelled_purge == 130 and confirmed_purge == 0
-      and weak_ollama_confirmation == 130 and confirmed_ollama_purge == 0
+check(cancelled_purge == 130 and cancelled_empty_purge == 130
+      and confirmed_purge == 0 and confirmed_ollama_purge == 0
       and uninstall_calls == [(True, False), (True, True), (True, False)]
       and ollama_uninstall_calls == [True]
       and uninstall_order[-3:] == ["check", "ollama", "isaac"],
-      "strong uninstall confirms, validates, removes Ollama, then local data")
+      "a plain y/N confirmation, empty input stays a cancel, blocks a mistyped Enter")
 
 original_interactive = terminal_ui.interactive
 terminal_ui.interactive = lambda _input_fn=input: True

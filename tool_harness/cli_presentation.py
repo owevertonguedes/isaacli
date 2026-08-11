@@ -23,7 +23,14 @@ ANSI = {
     "warn": "\033[1;33m",
     "bad": "\033[1;31m",
     "dim": "\033[2m",
+    "bold": "\033[1m",
     "reset": "\033[0m",
+    # Match argparse's own Python 3.13+ --help colours (captured from a real
+    # isaacli --help run) so the "commands" epilog reads as one section with
+    # "options:"/"positional arguments:", not flat text next to styled text.
+    "help_header": "\033[1;34m",
+    "help_positional": "\033[1;32m",
+    "help_flag": "\033[1;36m",
 }
 
 
