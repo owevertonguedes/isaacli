@@ -249,7 +249,7 @@
   "cli.ollama.start_failed": "Could not start ollama serve: {error}",
   "cli.resume.hint": "Resume this session with:",
   "cli.resume.no_request": "use --resume without a request on the same line",
-  "cli.args.epilog": "first run: isaacli setup",
+  "cli.args.epilog": "first run: isaacli setup\n\ncommands (not options, run without other flags):\n  isaacli setup                        interactive first-run configuration\n  isaacli install                      install the per-user launcher (./isaacli install)\n  isaacli uninstall                    remove the launcher only; config, sessions, Ollama and models are kept\n  isaacli uninstall --purge            also delete isaacli config, API keys, sessions and feedback; Ollama and its models are preserved\n  isaacli uninstall --purge --ollama   DANGER: also removes Ollama itself and every downloaded model (~/.ollama)",
   "cli.args.request": "single request; without it the REPL opens",
   "cli.args.resume": "resume a saved session",
   "ui.more_above": "↑ {count} more above",

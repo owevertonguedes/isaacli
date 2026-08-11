@@ -690,6 +690,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="isaacli",
         epilog=t("cli.args.epilog"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--version", action="version", version=f"Isaac CLI v{APP_VERSION}")
     ap.add_argument("request", nargs="*", help=t("cli.args.request"))
