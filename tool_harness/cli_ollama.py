@@ -28,6 +28,12 @@ from cli_i18n import t
 from cli_presentation import _color
 
 
+# Seconds to wait for an autostarted local server to answer. Generous on
+# purpose: the cost of waiting is a slow first turn, the cost of giving up too
+# early is a turn that fails against a server that was about to be ready.
+AUTOSTART_TIMEOUT = 180.0
+
+
 def _runtime_ollama_dir():
     base = os.environ.get("ISAACLI_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR")
     if base:
@@ -147,8 +153,15 @@ def _probe_health(url, timeout=2):
     try:
         with urllib.request.urlopen(url, timeout=timeout):
             return "ok"
-    except urllib.error.HTTPError:
-        # Reachable and answering, even if this route itself 4xx/5xx's.
+    except urllib.error.HTTPError as e:
+        # Answering at all proves it is reachable, so a 404 on this particular
+        # route still counts as up. The gateway codes are the exception: 503 is
+        # exactly how llama-server says "still loading the model", and treating
+        # that as ready hands the user's first request to a server that then
+        # refuses it.
+        if e.code in (502, 503, 504):
+            debug.swallowed("cli_ollama._probe_health not ready")
+            return None
         return "ok"
     except Exception:
         debug.swallowed("cli_ollama._probe_health")
@@ -306,7 +319,13 @@ class OllamaMixin:
 
             self._log("meta", event="autostart", key=key,
                       pid=self.autostart_proc.pid)
-            for _ in range(40):
+            # Ollama's 10s budget does not transfer: its daemon answers at once
+            # and loads the model on demand, while llama-server and friends read
+            # the whole model file before they answer anything. Measured here: a
+            # 2 GB model takes well past 10s. The profile can raise it further
+            # for a large model on slow storage.
+            budget = float(autostart.get("timeout") or AUTOSTART_TIMEOUT)
+            for _ in range(int(budget / 0.25)):
                 time.sleep(0.25)
                 version = _probe_health(health_url, timeout=1)
                 if version:

@@ -538,5 +538,31 @@ finally:
 assert len(schemas_seen) == 1, "an empty answer must not trigger a hidden second attempt"
 assert not result["final"], "an empty answer surfaces as-is, with no invented text"
 assert result["usage"]["eval_count"] == 80
+# A server the user runs has no key to demand. Requiring one here made the whole
+# local-first path fail at request time, after setup had already accepted it.
+# Tested by effect: the local call must fail for a different reason (nothing is
+# listening on port 9), never for a missing key.
+try:
+    agent.call_api("m", [{"role": "user", "content": "x"}],
+                   api_key="", base_url="http://127.0.0.1:9/v1")
+    local_key_error = False
+except RuntimeError as e:
+    local_key_error = "API key missing" in str(e)
+try:
+    agent.call_api("m", [{"role": "user", "content": "x"}],
+                   api_key="", base_url="https://api.example.com/v1")
+    remote_key_error = False
+except RuntimeError as e:
+    remote_key_error = "API key missing" in str(e)
+assert not local_key_error, "a keyless loopback endpoint must not be refused for the key"
+assert remote_key_error, "a keyless remote endpoint must still be refused"
+
+# An empty Authorization header is worse than none: some servers reject the
+# malformed value outright.
+assert not agent._api_request({}, "", "http://127.0.0.1:8080/v1").has_header("Authorization")
+assert agent._api_request({}, "k", "https://api.example.com/v1").has_header("Authorization")
+print("AGENT LOCAL KEY OK: loopback needs no API key, remote still does, no empty bearer")
+
+
 print("AGENT NO HIDDEN FALLBACK OK: an empty answer surfaces as a real error, "
       "with no hidden retry")

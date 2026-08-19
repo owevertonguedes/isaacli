@@ -18,6 +18,7 @@ import time
 import urllib.request
 import urllib.error
 
+import config
 import debug
 import tools
 
@@ -105,11 +106,16 @@ def _messages_for_openai(messages):
 
 
 def _api_request(payload, api_key, base_url):
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+    # A server the user runs has no key to validate. Sending "Bearer " with an
+    # empty value is worse than sending nothing: some servers reject the
+    # malformed header outright.
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     return urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}",
-                 "User-Agent": USER_AGENT},
+        headers=headers,
     )
 
 
@@ -295,10 +301,10 @@ def _reasoning_effort_rejected(error_text):
 
 def call_api(model, messages, use_tools=True, temperature=0.0,
              tools_schema=None, thinking=None, api_key=None, base_url=None):
-    if not api_key:
-        raise RuntimeError("API key missing; use /setup")
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
+    if not api_key and not config.is_local_endpoint(base_url):
+        raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": False}
     if use_tools:
@@ -337,10 +343,10 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
 def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                     on_token=None, tools_schema=None, thinking=None,
                     api_key=None, base_url=None, on_progress=None):
-    if not api_key:
-        raise RuntimeError("API key missing; use /setup")
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
+    if not api_key and not config.is_local_endpoint(base_url):
+        raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": True,
                "stream_options": {"include_usage": True}}

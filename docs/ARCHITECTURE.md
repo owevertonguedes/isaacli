@@ -148,9 +148,24 @@ The same lifecycle is available to any local OpenAI-compatible server. An
 sessions and stops it with the last one, exactly as it does for Ollama. Each
 server gets its own lock and state file, keyed by profile, so two managed
 servers can never read each other's client list and stop a process that still
-has users. The health probe for these servers treats any HTTP answer as
+has users. The health probe for these servers treats an HTTP answer as
 reachable, including a 4xx: they do not share Ollama's `/api/version` shape, and
-`GET /models` answering at all is the proof that matters.
+`GET /models` answering at all is the proof that matters. The gateway codes are
+the exception. A llama-server that is still reading its model file answers 503,
+and counting that as ready hands the user's first turn to a server that then
+refuses it, so 502, 503 and 504 mean not ready rather than up.
+
+The startup budget does not carry over from Ollama either. Ollama's daemon
+answers immediately and loads the model on demand, while these servers read the
+whole model before answering anything; a 2 GB model measurably takes longer than
+Ollama's ten seconds. The budget is `AUTOSTART_TIMEOUT`, and a profile can raise
+it for a large model on slow storage.
+
+A key is required for a remote endpoint and optional for a loopback one, in the
+request path as well as in setup. Enforcing it only at setup left the local path
+accepted at configuration time and refused at request time. With no key, no
+`Authorization` header is sent at all: an empty bearer value is worse than none,
+because some servers reject the malformed header outright.
 
 The guided setup only offers autostart for a loopback endpoint, because there
 is nothing to start on a machine that is not this one. For the same reason a

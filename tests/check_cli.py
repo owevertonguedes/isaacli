@@ -1120,6 +1120,34 @@ check(local_no_key.ensure_ollama() == "Local"
       and remote_no_key.ensure_ollama() is None,
       "a keyless local endpoint is usable while a keyless remote one is not")
 
+# llama-server answers 503 while it is still reading the model file. Treating
+# that as ready handed the user's first turn to a server that then refused it,
+# with "API: Loading model". Tested by effect: the probe result itself changes.
+import urllib.error as _urlerr
+
+
+def _raise_http(code):
+    def fake(url, timeout=0):
+        raise _urlerr.HTTPError(url, code, "x", None, None)
+    return fake
+
+
+original_urlopen = cli_ollama.urllib.request.urlopen
+try:
+    cli_ollama.urllib.request.urlopen = _raise_http(503)
+    loading = cli_ollama._probe_health("http://127.0.0.1:8080/v1/models", timeout=1)
+    cli_ollama.urllib.request.urlopen = _raise_http(404)
+    answering = cli_ollama._probe_health("http://127.0.0.1:8080/v1/models", timeout=1)
+finally:
+    cli_ollama.urllib.request.urlopen = original_urlopen
+check(loading is None and answering == "ok",
+      "a server still loading its model is not ready, while a 404 route still proves it is up")
+
+# The Ollama budget does not transfer: its daemon answers at once and loads the
+# model on demand, while llama-server reads the whole file before answering.
+check(cli_ollama.AUTOSTART_TIMEOUT >= 60,
+      "the autostart budget allows for a model that takes real time to load")
+
 # A server that failed to start is not a missing credential. Sending the user
 # to /setup to repair something that is not broken is worse than no message.
 failed_autostart = app.IsaacCLI(
