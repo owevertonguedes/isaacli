@@ -587,7 +587,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         # reach the first message of the conversation, not the shell that ran the
         # launcher.
         terminal_ui.clear()
-        _print_welcome(self.model, self._engine_label(), self.workspace)
+        _print_welcome(self.model, self._engine_label(), self.workspace,
+                       self.session_id)
         print()
 
         if self.resume_transcript:

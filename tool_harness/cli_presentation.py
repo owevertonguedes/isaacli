@@ -209,7 +209,7 @@ def _short_context(value):
     return str(value)
 
 
-def _welcome_lines(model, engine, workspace, width=None):
+def _welcome_lines(model, engine, workspace, session=None, width=None):
     """Build the opening panel without ANSI so the alignment stays predictable."""
     columns = width if width is not None else shutil.get_terminal_size((100, 24)).columns - 2
     width = max(36, min(columns, 112))
@@ -262,18 +262,23 @@ def _welcome_lines(model, engine, workspace, width=None):
         lines.append("├" + "─" * inner + "┤")
 
     value_width = inner - 13
-    for label, content in (
+    rows = [
         (t("cli.welcome.label.model"), model),
         (t("cli.welcome.label.engine"), engine),
         (t("cli.welcome.label.workspace"), _friendly_path(workspace)),
-    ):
+    ]
+    # The session id is what --resume takes, so it belongs where the user can
+    # copy it before the conversation scrolls it away.
+    if session:
+        rows.append((t("cli.welcome.label.session"), session))
+    for label, content in rows:
         body(f"{label:<10} {_shorten(content, value_width)}")
     lines.append("╰" + "─" * inner + "╯")
     return lines
 
 
-def _print_welcome(model, engine, workspace):
-    for index, line in enumerate(_welcome_lines(model, engine, workspace)):
+def _print_welcome(model, engine, workspace, session=None):
+    for index, line in enumerate(_welcome_lines(model, engine, workspace, session)):
         if index == 0 or line.startswith(("├", "╰")):
             print(_color(line, "assistant"))
             continue

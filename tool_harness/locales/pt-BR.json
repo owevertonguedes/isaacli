@@ -273,5 +273,6 @@
   "api.autostart.explain": "Este endpoint está na sua máquina. O isaacli pode iniciá-lo quando você abre uma sessão e derrubá-lo quando a última sessão fecha, do mesmo jeito que já faz com o Ollama. Escreva o comando completo que sobe o seu servidor, por exemplo: llama-server -m /caminho/modelo.gguf -c 8192. Deixe vazio para continuar subindo à mão.",
   "api.autostart.prompt": "Comando (Enter para pular): ",
   "api.autostart.invalid": "Não consegui ler esse comando ({error}); ele não foi salvo.",
-  "cli.error.local_server_unavailable": "ERRO: {name} não subiu. O endpoint está configurado; quem não responde é o servidor por trás dele. Rode com --debug para ver o motivo."
+  "cli.error.local_server_unavailable": "ERRO: {name} não subiu. O endpoint está configurado; quem não responde é o servidor por trás dele. Rode com --debug para ver o motivo.",
+  "cli.welcome.label.session": "sessão"
 }

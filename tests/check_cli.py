@@ -1148,6 +1148,15 @@ check(loading is None and answering == "ok",
 check(cli_ollama.AUTOSTART_TIMEOUT >= 60,
       "the autostart budget allows for a model that takes real time to load")
 
+# --resume takes the session id, so it belongs on the opening panel, where it
+# can still be copied before the conversation scrolls it away.
+panel = app._welcome_lines("m", "Engine", "/tmp/w", "abc-123", width=100)
+panel_without = app._welcome_lines("m", "Engine", "/tmp/w", width=100)
+check(any("abc-123" in line for line in panel)
+      and not any("abc-123" in line for line in panel_without)
+      and len(panel) == len(panel_without) + 1,
+      "the welcome panel shows the session id, and omits the row when there is none")
+
 # A server that failed to start is not a missing credential. Sending the user
 # to /setup to repair something that is not broken is worse than no message.
 failed_autostart = app.IsaacCLI(
