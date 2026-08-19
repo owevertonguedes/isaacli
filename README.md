@@ -62,8 +62,9 @@ Local sessions and feedback may contain prompts, answers, paths, commands and to
 
 ## Honest limits
 
-- A small model remains a small model: the harness improves reliability and tool use, not the model's underlying knowledge or reasoning capacity.
-- Ollama is the recommended engine because it is a single installer with a model catalog, not because it was measured as the fastest. Running a llama-server directly is supported and may be faster on some hardware, but no throughput comparison has been measured on this project's own hardware, so none is claimed here.
+- A small model remains a small model: the harness improves reliability and tool use, not the model's underlying knowledge or reasoning capacity. Measured on this project's own hardware in August 2026, a 3B coder model served over an OpenAI-compatible endpoint returned its tool calls as a fenced JSON block instead of the native format its own chat template declares, so it could describe the file it meant to write but never wrote one. The harness reported that no change had been confirmed, which is the correct behaviour and not a substitute for a model that can call tools.
+- Ollama is the recommended engine because it is a single installer with a model catalog, not because it was measured as the fastest. Running a llama-server directly is supported. Throughput has been measured here for llama.cpp alone (36.2 tok/s for a 3B model at Q4_K_M on a GTX 1650 through the Vulkan backend), but the two engines have never been measured against each other on this hardware, so no comparison between them is claimed.
+- Speculative decoding is available through llama.cpp and was measured here rather than assumed. On the same card and model it produced no gain with n-gram drafting and was 45% slower with a 0.5B draft model. The technique is designed for a large target with a tiny draft, which is not the configuration a 4 GB card can hold, so treat any published speedup as belonging to other hardware until you measure your own.
 - The project targets file and terminal work through a compact tool set; it is not a full IDE or a general browser-automation framework.
 - Sandboxing reduces accidental damage and workspace escape, but no local agent should be treated as a boundary against a compromised host or account.
 

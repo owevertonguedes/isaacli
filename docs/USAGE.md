@@ -111,6 +111,14 @@ offered as an alternative, not as a promise of more speed: the two have not been
 measured against each other on this project's hardware, and published
 comparisons disagree with each other.
 
+Two things measured here in August 2026 are worth knowing before you pick a
+model for this path. A 3B coder model reached 36.2 tok/s at Q4_K_M on a GTX 1650
+through llama.cpp's Vulkan backend, and it did not emit native tool calls at
+all: it returned them as a fenced JSON block, so the harness had nothing to
+execute. Speculative decoding on the same setup gave no gain with n-gram
+drafting and was 45% slower with a 0.5B draft model. Both numbers belong to that
+card and that build; measure your own before relying on either.
+
 ### Debugging
 
 `isaacli --debug` prints the traceback for exceptions the normal flow absorbs on
