@@ -120,6 +120,7 @@ from pathlib import Path
 
 # Not named `seccomp`: that is the module name the system `python3-seccomp`
 # package installs, and shadowing it would depend on sys.path ordering.
+import debug
 import seccomp_filter
 
 TIMEOUT_SECONDS = 60        # ceiling per command
@@ -200,6 +201,7 @@ def _git_global_config(key):
             capture_output=True, text=True, timeout=3, check=False,
         )
     except Exception:
+        debug.swallowed("execution._git_global_config")
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 

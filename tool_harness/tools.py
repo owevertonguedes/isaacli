@@ -12,6 +12,8 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import debug
+from itertools import islice
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -21,6 +23,17 @@ SANDBOX_ROOT = Path(os.environ.get("ISAACLI_ROOT", Path(__file__).parent / "sand
 MAX_WEB_BYTES = 80_000
 MAX_MUTATION_DIFF_LINES = 80
 MAX_MUTATION_DIFF_BYTES = 6_000
+# The diff output is bounded, but bounding only the output still costs the
+# memory of building it: two full line lists plus difflib's quadratic matcher.
+# On a large file that peaks at several times the file size on the user's
+# machine, to produce evidence that gets truncated anyway. So the *input* is
+# bounded too, and past this size the byte counts alone are the evidence.
+MAX_DIFF_INPUT_BYTES = 1_000_000
+# read_file exists to put content in front of a model whose context is far
+# smaller than this. Reading more only spends the user's memory and fills the
+# session log; the cut is explicit so nobody mistakes a partial read for a
+# whole file.
+MAX_READ_BYTES = 200_000
 
 
 def _safe(path: str) -> Path:
@@ -35,19 +48,30 @@ def read_file(path: str) -> str:
     p = _safe(path)
     if not p.is_file():
         return f"ERROR: file does not exist: {path}"
-    return p.read_text()
+    size = p.stat().st_size
+    if size <= MAX_READ_BYTES:
+        return p.read_text()
+    with p.open("rb") as f:
+        head = f.read(MAX_READ_BYTES)
+    return (head.decode("utf-8", errors="ignore")
+            + f"\n\n... FILE TRUNCATED BY ISAACLI LIMITS: showing the first "
+              f"{MAX_READ_BYTES} of {size} bytes ...")
 
 
 def write_file(path: str, content: str) -> str:
     p = _safe(path)
     existed = p.is_file()
-    before = p.read_text() if existed else ""
+    before_bytes = p.stat().st_size if existed else 0
+    # Do not read the old content at all when it is too large to diff: reading
+    # it would spend the memory this limit exists to protect. None means
+    # "not read", which is not the same as a file that was empty or absent.
+    before = _readable_before(p, existed, before_bytes)
     p.parent.mkdir(parents=True, exist_ok=True)
     text = _unescape(content)
     p.write_text(text)
     return _mutation_result(
         f"OK: wrote {_byte_len(text)} bytes to {path}", path, before, text,
-        existed_before=existed,
+        existed_before=existed, before_bytes=before_bytes,
     )
 
 
@@ -69,16 +93,22 @@ def append_file(path: str, content: str) -> str:
     """
     p = _safe(path)
     existed = p.is_file()
-    before = p.read_text() if existed else ""
+    before_bytes = p.stat().st_size if existed else 0
+    diffable = before_bytes <= MAX_DIFF_INPUT_BYTES
+    before = _readable_before(p, existed, before_bytes)
     p.parent.mkdir(parents=True, exist_ok=True)
     text = _unescape(content)
     if not text.endswith("\n"):
         text += "\n"
     with p.open("a") as f:
         f.write(text)
+    # `before + text` is a whole extra copy of the file. Only pay for it when
+    # the file is small enough for that copy to be worth a diff.
+    after = (before or "") + text if diffable else None
     return _mutation_result(
         f"OK: appended {_byte_len(text)} bytes to the end of {path}",
-        path, before, before + text, existed_before=existed,
+        path, before, after, existed_before=existed,
+        before_bytes=before_bytes, after_bytes=before_bytes + _byte_len(text),
     )
 
 
@@ -176,13 +206,42 @@ def _byte_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
-def _mutation_result(summary: str, path: str, before: str, after: str,
-                     existed_before: bool) -> str:
-    """Attach bounded factual evidence for the model's post-tool review."""
-    lines = list(difflib.unified_diff(
+def _readable_before(p: Path, existed: bool, before_bytes: int):
+    """The previous content, or None when it is too large to hold in memory.
+
+    An absent file is "" (there was nothing, and that is knowable), never None
+    (there is something, and we chose not to read it)."""
+    if not existed:
+        return ""
+    return p.read_text() if before_bytes <= MAX_DIFF_INPUT_BYTES else None
+
+
+def _mutation_result(summary: str, path: str, before, after,
+                     existed_before: bool, before_bytes=None,
+                     after_bytes=None) -> str:
+    """Attach bounded factual evidence for the model's post-tool review.
+
+    `before`/`after` are None when the file was too large to hold in memory for
+    a diff. The byte counts are still exact, so the evidence stays truthful; it
+    just says less.
+    """
+    if before_bytes is None:
+        before_bytes = _byte_len(before or "")
+    if after_bytes is None:
+        after_bytes = _byte_len(after or "")
+    oversized = (before is None or after is None
+                 or max(before_bytes, after_bytes) > MAX_DIFF_INPUT_BYTES)
+    if oversized:
+        diff = ("(file too large for a line-level diff; the byte counts above "
+                "are the evidence for this change)")
+        return _mutation_evidence(summary, diff, existed_before,
+                                  before_bytes, after_bytes)
+    # islice, not list: a bounded read of the generator never materialises the
+    # whole diff. One extra line is enough to know it was cut.
+    lines = list(islice(difflib.unified_diff(
         before.splitlines(), after.splitlines(),
         fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
-    ))
+    ), MAX_MUTATION_DIFF_LINES + 1))
     truncated = len(lines) > MAX_MUTATION_DIFF_LINES
     lines = lines[:MAX_MUTATION_DIFF_LINES]
     diff = "\n".join(lines)
@@ -195,12 +254,18 @@ def _mutation_result(summary: str, path: str, before: str, after: str,
         diff = encoded[:max(0, budget)].decode("utf-8", errors="ignore") + marker
     if not diff:
         diff = "(no line-level textual difference)"
+    return _mutation_evidence(summary, diff, existed_before,
+                              before_bytes, after_bytes)
+
+
+def _mutation_evidence(summary, diff, existed_before, before_bytes,
+                       after_bytes) -> str:
     state = "updated existing file" if existed_before else "created new file"
     return (
         f"{summary}\n\n"
         "CHANGE EVIDENCE (objective result; does not prove task completion):\n"
-        f"State: {state}; before={_byte_len(before)} bytes; "
-        f"after={_byte_len(after)} bytes\n"
+        f"State: {state}; before={before_bytes} bytes; "
+        f"after={after_bytes} bytes\n"
         f"{diff}"
     )
 
@@ -552,4 +617,5 @@ def execute(name: str, args_json: str) -> str:
     except TypeError as e:
         return f"ERROR: wrong arguments for {name}: {e}"
     except Exception as e:
+        debug.swallowed(f"tools.execute({name})")
         return f"ERROR while running {name}: {e}"

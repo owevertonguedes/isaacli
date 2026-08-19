@@ -31,6 +31,11 @@ Git ignores sessions, feedback and secrets, but `.gitignore` is not access
 control, encryption or a backup exclusion. Copying the clone can copy ignored
 conversation files. Tests that construct sessions must redirect all private
 state to temporary directories rather than relying only on an isolated config.
+File reads and mutation diffs are bounded before anything is built, not after:
+past the limit the old content is never loaded and the diff is never computed,
+because producing evidence that gets truncated anyway must not cost the user's
+memory. The byte counts stay exact, so the evidence stays truthful.
+
 Mutation diffs are capped before entering the model conversation and session
 log, but they can still repeat sensitive file content. They therefore have the
 same private-data status as prompts and tool arguments, not a weaker telemetry

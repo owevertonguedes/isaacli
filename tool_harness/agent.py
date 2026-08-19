@@ -18,6 +18,7 @@ import time
 import urllib.request
 import urllib.error
 
+import debug
 import tools
 
 # APIs behind Cloudflare (e.g. Groq) block urllib's default User-Agent
@@ -119,6 +120,7 @@ def _api_body(e):
         try:
             body = e.read().decode("utf-8", errors="replace")
         except Exception:
+            debug.swallowed("agent._api_body")
             body = ""
         try:
             e._isaac_body = body

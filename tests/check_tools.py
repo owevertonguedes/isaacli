@@ -79,6 +79,82 @@ with tempfile.TemporaryDirectory() as tmp:
           and len(evidence.encode("utf-8")) < tools.MAX_MUTATION_DIFF_BYTES + 200,
           "large mutation evidence is bounded and explicitly marked as truncated")
 
+    # --- memory bounds -----------------------------------------------------
+    # Tested by effect, not by message: difflib is replaced with something that
+    # raises, so any attempt to diff an oversized file fails the test loudly
+    # instead of quietly costing the user gigabytes of RAM.
+    import difflib
+
+    def exploding_diff(*_args, **_kwargs):
+        raise AssertionError("diffed a file that is too large to diff")
+
+    original_diff = difflib.unified_diff
+    original_input_cap = tools.MAX_DIFF_INPUT_BYTES
+    original_read_cap = tools.MAX_READ_BYTES
+    try:
+        tools.MAX_DIFF_INPUT_BYTES = 500
+        oversized = "x" * 4000
+        tools.write_file("huge.txt", oversized)
+        difflib.unified_diff = exploding_diff
+        appended = tools.append_file("huge.txt", "one more line")
+        overwritten = tools.write_file("huge.txt", "small now")
+    finally:
+        difflib.unified_diff = original_diff
+        tools.MAX_DIFF_INPUT_BYTES = original_input_cap
+
+    check("too large for a line-level diff" in appended
+          and "before=4000 bytes" in appended
+          and "after=4014 bytes" in appended,
+          "appending to an oversized file reports exact bytes without building a diff")
+    check("too large for a line-level diff" in overwritten
+          and "before=4014 bytes" in overwritten,
+          "overwriting an oversized file never reads or diffs the old content")
+    check(tools.read_file("huge.txt") == "small now",
+          "the oversized path still wrote the real bytes to disk")
+
+    try:
+        tools.MAX_READ_BYTES = 100
+        tools.write_file("long.txt", "y" * 900)
+        partial = tools.read_file("long.txt")
+    finally:
+        tools.MAX_READ_BYTES = original_read_cap
+    check(partial.startswith("y" * 100) and "y" * 101 not in partial
+          and "FILE TRUNCATED BY ISAACLI LIMITS" in partial
+          and "of 900 bytes" in partial,
+          "read_file stops at the cap and says so instead of loading the whole file")
+
+    # --- --debug surfaces what the normal flow absorbs ---------------------
+    # By effect: the same call is made twice and only the stderr differs. A
+    # test that read the refusal string would pass even if debug did nothing.
+    import io
+    import debug as debug_module
+
+    def exploding_impl(**_kwargs):
+        raise RuntimeError("the real cause, normally hidden")
+
+    original_impl = tools.IMPLS["list_dir"]
+    original_stderr = sys.stderr
+    try:
+        tools.IMPLS["list_dir"] = exploding_impl
+        debug_module.enable(False)
+        sys.stderr = quiet_err = io.StringIO()
+        quiet = tools.execute("list_dir", {})
+        debug_module.enable(True)
+        sys.stderr = loud_err = io.StringIO()
+        loud = tools.execute("list_dir", {})
+    finally:
+        sys.stderr = original_stderr
+        tools.IMPLS["list_dir"] = original_impl
+        debug_module.enable(False)
+
+    check(quiet_err.getvalue() == "" and quiet.startswith("ERROR while running"),
+          "without --debug an absorbed exception stays absorbed and silent")
+    check(loud == quiet
+          and "Traceback" in loud_err.getvalue()
+          and "the real cause, normally hidden" in loud_err.getvalue()
+          and "tools.execute(list_dir)" in loud_err.getvalue(),
+          "--debug prints the traceback and the site without changing the result")
+
     # --- replace_between ---------------------------------------------------
     document = (
         "<html>\n"
