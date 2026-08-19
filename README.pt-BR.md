@@ -27,6 +27,8 @@ A instalação adiciona um link do usuário em `~/.local/bin`; não precisa de `
 
 O setup escolhe idioma da interface, motor, modelo, contexto e esforço de raciocínio. Ele pode usar um modelo local no Ollama com chamada de ferramenta nativa ou um endpoint configurável compatível com OpenAI. Chaves de API ficam fora do workspace em um arquivo de segredos com modo `0600`.
 
+Endpoint em `localhost` não pede chave de API, porque um servidor que você mesmo roda não tem chave a exigir. Para esses, o setup também se oferece para subir o servidor por você: informe o comando que o inicia (por exemplo `llama-server -m /caminho/modelo.gguf -c 8192`) e o isaacli sobe ele quando uma sessão abre, compartilha entre sessões simultâneas e derruba quando a última fecha. Deixe o comando vazio para continuar subindo à mão. É assim que você aponta o isaacli para qualquer peso que tenha baixado, do Hugging Face ou de onde for: o modelo fica inteiramente na sua máquina.
+
 Pontos de entrada úteis:
 
 ```bash
@@ -46,6 +48,7 @@ Veja [Instalação](docs/INSTALLATION.md) para detalhes de Flatpak, recuperaçã
 - Seleção de modelo, contexto e raciocínio sem criar modelos duplicados no Ollama.
 - Sessões JSONL retomáveis, histórico de saída dos comandos e avaliação de tarefas.
 - Perfis remotos compatíveis com OpenAI, endpoint configurável e ID exato do modelo.
+- Gerência opcional do ciclo de vida de um servidor local compatível com OpenAI, para que um llama-server ou equivalente suba junto com a sua sessão e caia com a última.
 
 Dentro do REPL, digite `/` para abrir a paleta ou `/help` para listar todos os comandos. [Uso](docs/USAGE.md) explica setup, permissões, sessões, comportamento do terminal e a referência completa de comandos.
 
@@ -60,6 +63,7 @@ Sessões e avaliações locais podem conter prompts, respostas, caminhos, comand
 ## Limites honestos
 
 - Um modelo pequeno continua sendo um modelo pequeno: o harness melhora confiabilidade e uso de ferramentas, não o conhecimento ou a capacidade de raciocínio do modelo.
+- O Ollama é o motor recomendado por ser um instalador único com catálogo de modelos, não por ter sido medido como o mais rápido. Rodar um llama-server direto é suportado e pode ser mais rápido em certo hardware, mas nenhuma comparação de velocidade foi medida no hardware deste projeto, então nenhuma é afirmada aqui.
 - O projeto tem como alvo trabalho com arquivos e terminal por meio de um conjunto compacto de ferramentas; não é uma IDE completa nem um framework genérico de automação de navegador.
 - O sandbox reduz dano acidental e escape do workspace, mas nenhum agente local deve ser tratado como barreira contra uma máquina ou conta comprometida.
 

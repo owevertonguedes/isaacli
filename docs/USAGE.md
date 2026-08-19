@@ -77,6 +77,49 @@ treats the provider's own HTTP 400 rejection as the source of truth: it retries
 without the parameter, tells you, and saves the correction to the profile so the
 extra round trip does not repeat.
 
+### Local servers you run yourself
+
+A base endpoint on `localhost`, `127.0.0.1` or `::1` needs no API key: a server
+running on your own machine has none to demand. Press Enter at the key prompt.
+
+For those endpoints setup also offers to manage the server's lifecycle. Give it
+the command that starts your server and isaacli starts it when you open a
+session, shares one server across simultaneous sessions and stops it when the
+last session closes, exactly as it already does for Ollama:
+
+```
+Command (Enter to skip): llama-server -m /models/qwen2.5-coder-7b-q4.gguf -c 8192
+```
+
+Leave it empty to keep starting the server yourself; isaacli will then only
+check whether the endpoint is already up. A server that was already running when
+isaacli started belongs to you and is never stopped by isaacli.
+
+The stored profile carries the command as a plain list, so you can also write or
+edit it directly in `~/.config/isaacli/config.json`:
+
+```json
+"autostart": {
+  "cmd": ["llama-server", "-m", "/models/qwen2.5-coder-7b-q4.gguf", "-c", "8192"],
+  "health_url": "http://127.0.0.1:8080/v1/models"
+}
+```
+
+Ollama remains the recommended engine, because it is one installer with a model
+catalog and it already manages its own lifecycle. A direct llama-server is
+offered as an alternative, not as a promise of more speed: the two have not been
+measured against each other on this project's hardware, and published
+comparisons disagree with each other.
+
+### Debugging
+
+`isaacli --debug` prints the traceback for exceptions the normal flow absorbs on
+purpose, such as probing a server that is not up yet or reading an error body
+that turned out to be unreadable. It changes nothing about what runs or what is
+returned; it only stops those causes from being invisible. `ISAACLI_DEBUG=1`
+does the same for the paths that run before arguments are parsed. Each site
+reports once per run.
+
 ### Advanced: build-model.sh
 
 The `build-model.sh` flow remains available for automation. It reads

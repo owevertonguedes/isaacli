@@ -4,6 +4,7 @@ import getpass
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import agent
 import config
+import debug
 import terminal_ui
 from i18n import SUPPORTED_LANGUAGES, Translator
 
@@ -146,7 +148,7 @@ def _ensure_server(client, ollama_exe, tr=None):
     try:
         return client.version(), None
     except Exception:
-        pass
+        debug.swallowed("setup_ollama._ensure_server probe")
     proc = subprocess.Popen([ollama_exe, "serve"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(40):
@@ -317,6 +319,29 @@ def _api_profile_name(provider_name, model):
     return f"{slug}-{re.sub(r'[^a-z0-9]+', '-', model.lower()).strip('-')}"
 
 
+def _ask_autostart(base_url, input_fn, tr):
+    """Offer to manage a server the user runs themselves (llama-server or any
+    other compatible one), the way isaacli already manages Ollama.
+
+    Only offered for a local endpoint: there is nothing to start on a machine
+    that is not this one. An empty answer keeps the previous behaviour, where
+    the user starts the server before opening isaacli."""
+    print(_title(tr, tr.t("api.autostart.title"), tr.t("api.autostart.explain")))
+    raw = input_fn(tr.t("api.autostart.prompt")).strip()
+    if not raw:
+        return None
+    try:
+        cmd = shlex.split(raw)
+    except ValueError as e:
+        print(tr.t("api.autostart.invalid", error=e))
+        return None
+    if not cmd:
+        return None
+    # /models is the route every OpenAI-compatible server has to answer, and
+    # the probe counts any HTTP answer as up, so even a 404 proves reachability.
+    return {"cmd": cmd, "health_url": base_url.rstrip("/") + "/models"}
+
+
 def _setup_api(language, input_fn, config_file, tr):
     field_error = None
     while True:
@@ -337,9 +362,12 @@ def _setup_api(language, input_fn, config_file, tr):
         except RuntimeError as e:
             field_error = tr.t("api.validation.failed", error=e)
             continue
-        key = (getpass.getpass(tr.t("api.key.prompt")) if input_fn is input
-                 else input_fn(tr.t("api.key.prompt"))).strip()
-        if not key:
+        local_endpoint = config.is_local_endpoint(base_url)
+        prompt_key = ("api.key.prompt.local" if local_endpoint
+                      else "api.key.prompt")
+        key = (getpass.getpass(tr.t(prompt_key)) if input_fn is input
+                 else input_fn(tr.t(prompt_key))).strip()
+        if not key and not local_endpoint:
             field_error = tr.t("api.key.missing")
             continue
         print(tr.t("api.validating"))
@@ -364,6 +392,7 @@ def _setup_api(language, input_fn, config_file, tr):
         tr.t("thinking.api.explain"), initial=2,
     )
     thinking = [None, "low", "medium", "high"][index]
+    autostart = _ask_autostart(base_url, input_fn, tr) if local_endpoint else None
     profile_name = _api_profile_name(name, model)
     credential = f"api:{profile_name}"
     secret_path = (Path(config_file).with_name("secrets.json")
@@ -376,6 +405,8 @@ def _setup_api(language, input_fn, config_file, tr):
         "base_url": base_url, "model": model, "thinking": thinking,
         "credential": credential, "temperature": 0,
     }
+    if autostart:
+        data["profiles"][profile_name]["autostart"] = autostart
     data["default_profile"] = profile_name
     config.save(data, config_file)
     return 0

@@ -142,9 +142,30 @@ An Ollama started by isaacli is shared between isaacli sessions. The last
 registered session stops only the server isaacli itself started. A pre-existing
 server belongs to the user and must not be terminated by the app.
 
+The same lifecycle is available to any local OpenAI-compatible server. An
+`openai_compatible` profile may carry `"autostart": {"cmd": [...], "health_url":
+"..."}`; when present, isaacli starts that server on demand, shares it across
+sessions and stops it with the last one, exactly as it does for Ollama. Each
+server gets its own lock and state file, keyed by profile, so two managed
+servers can never read each other's client list and stop a process that still
+has users. The health probe for these servers treats any HTTP answer as
+reachable, including a 4xx: they do not share Ollama's `/api/version` shape, and
+`GET /models` answering at all is the proof that matters.
+
+The guided setup only offers autostart for a loopback endpoint, because there
+is nothing to start on a machine that is not this one. For the same reason a
+loopback endpoint does not require an API key: a server the user runs has no
+key to demand, and requiring one closed the local-first path entirely. Anything
+reachable over the network still requires one.
+
 ## Model contracts
 
 - Ollama: native chat API, tools required, `options.num_ctx` per call.
+- Local OpenAI-compatible server (llama-server and equivalents): same contract
+  as a remote API, optionally with a lifecycle managed by isaacli. Ollama
+  remains the recommended path, because it is a single installer with a model
+  catalog; the alternative is offered, not advertised as faster. No throughput
+  claim is made in the interface without a measurement on the user's hardware.
 - Remote API: OpenAI-compatible Chat Completions with streaming and function
   calling. `reasoning_effort` is optional and can be turned off.
 - Providers with their own incompatible native formats will need explicit

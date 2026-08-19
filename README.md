@@ -27,6 +27,8 @@ Installation adds a per-user link in `~/.local/bin`; it needs no `sudo` and does
 
 Setup selects the interface language, engine, model, context and reasoning effort. It can use a local Ollama model with native tool calling or a configurable OpenAI-compatible endpoint. API keys are stored outside the workspace in a `0600` secrets file.
 
+An endpoint on `localhost` needs no API key, since a server you run yourself has none to demand. For those, setup also offers to run the server for you: give it the command that starts it (for example `llama-server -m /path/model.gguf -c 8192`) and isaacli starts it when a session opens, shares it across simultaneous sessions and stops it when the last one closes. Leave the command empty to keep starting it yourself. This is how you point isaacli at any weights you downloaded yourself, from Hugging Face or anywhere else: the model stays entirely on your machine.
+
 Useful entry points:
 
 ```bash
@@ -46,6 +48,7 @@ See [Installation](docs/INSTALLATION.md) for Flatpak details, recovery and the e
 - Model, context and reasoning selection without creating duplicate Ollama models.
 - Resumable JSONL sessions, command output history and task feedback.
 - OpenAI-compatible remote profiles with a configurable endpoint and exact model ID.
+- Optional lifecycle management for a local OpenAI-compatible server, so a llama-server or equivalent starts with your session and stops with the last one.
 
 Inside the REPL, type `/` to open the command palette or `/help` to list every command. [Usage](docs/USAGE.md) covers setup, permissions, sessions, terminal behaviour and the full command reference.
 
@@ -60,6 +63,7 @@ Local sessions and feedback may contain prompts, answers, paths, commands and to
 ## Honest limits
 
 - A small model remains a small model: the harness improves reliability and tool use, not the model's underlying knowledge or reasoning capacity.
+- Ollama is the recommended engine because it is a single installer with a model catalog, not because it was measured as the fastest. Running a llama-server directly is supported and may be faster on some hardware, but no throughput comparison has been measured on this project's own hardware, so none is claimed here.
 - The project targets file and terminal work through a compact tool set; it is not a full IDE or a general browser-automation framework.
 - Sandboxing reduces accidental damage and workspace escape, but no local agent should be treated as a boundary against a compromised host or account.
 

@@ -1010,6 +1010,130 @@ finally:
     cli_ollama._same_process = original_same
     app.os.kill = original_kill
 
+
+# The same lifecycle for a generic local server (llama-server or anything else
+# speaking the compatible API) declared with "autostart" in the profile. Tested
+# by effect: a fake process really goes up and down, and the assertions read the
+# server state, never a message.
+original_runtime = os.environ.get("ISAACLI_RUNTIME_DIR")
+original_probe = cli_ollama._probe_health
+original_popen = app.subprocess.Popen
+original_identity = cli_ollama._pid_identity
+original_same = cli_ollama._same_process
+original_kill = app.os.kill
+local_server = {"active": False}
+local_identities = {303: "client-c", 404: "client-d"}
+local_kills = []
+launched = []
+
+AUTOSTART_PROFILE = {
+    "provider": "openai_compatible",
+    "provider_name": "Llama Server",
+    "base_url": "http://127.0.0.1:8080/v1",
+    "autostart": {"cmd": ["llama-server", "-m", "model.gguf"],
+                  "health_url": "http://127.0.0.1:8080/health"},
+}
+
+
+class FakeLocalServerProcess:
+    pid = 888
+    returncode = None
+
+    def __init__(self, cmd, *_a, **kwargs):
+        launched.append(cmd)
+        check(kwargs.get("start_new_session") is True,
+              "the managed local server is born outside the terminal's group")
+        local_server["active"] = True
+        local_identities[self.pid] = "local-server"
+
+    def poll(self):
+        return None if local_server["active"] else 0
+
+    def terminate(self):
+        local_server["active"] = False
+
+    def wait(self, timeout=None):
+        return 0
+
+
+try:
+    os.environ["ISAACLI_RUNTIME_DIR"] = str(root / "runtime-local")
+    cli_ollama._probe_health = (
+        lambda url, timeout=2: "ok" if local_server["active"] else None)
+    app.subprocess.Popen = FakeLocalServerProcess
+    cli_ollama._pid_identity = lambda pid: local_identities.get(int(pid))
+    cli_ollama._same_process = (
+        lambda pid, start: local_identities.get(int(pid or -1)) == start)
+
+    def fake_local_kill(pid, signal_number):
+        local_kills.append((pid, signal_number))
+        if pid == 888:
+            local_server["active"] = False
+            local_identities.pop(888, None)
+
+    app.os.kill = fake_local_kill
+    cli_c = app.IsaacCLI("model", sub, 2, config_file=root / "cfg-c.json",
+                         provider=dict(AUTOSTART_PROFILE))
+    cli_d = app.IsaacCLI("model", sub, 2, config_file=root / "cfg-d.json",
+                         provider=dict(AUTOSTART_PROFILE))
+    cli_c._runtime_pid, cli_c._runtime_start = 303, "client-c"
+    cli_d._runtime_pid, cli_d._runtime_start = 404, "client-d"
+    check(cli_c.ensure_ollama() == "ok" and launched == [AUTOSTART_PROFILE["autostart"]["cmd"]],
+          "the first session starts the configured local server, with its own command")
+    check(cli_d.ensure_ollama() == "ok" and len(launched) == 1,
+          "the second session shares the local server instead of starting another")
+    cli_c.close()
+    check(local_server["active"] and not local_kills,
+          "closing one session preserves the local server another one is using")
+    cli_d.close()
+    check(not local_server["active"] and local_kills[-1][0] == 888,
+          "the last session shuts the managed local server down")
+
+    # A collision here would make one server's shutdown read the other's
+    # clients and kill a process that still has users.
+    runtime_files = {p.name for p in (root / "runtime-local" / "isaacli").iterdir()}
+    check(any(name.startswith("autostart-llama-server") for name in runtime_files)
+          and not any(name.startswith("ollama.") for name in runtime_files),
+          "an autostart profile keeps its own lock and state, never Ollama's")
+finally:
+    if original_runtime is None:
+        os.environ.pop("ISAACLI_RUNTIME_DIR", None)
+    else:
+        os.environ["ISAACLI_RUNTIME_DIR"] = original_runtime
+    cli_ollama._probe_health = original_probe
+    app.subprocess.Popen = original_popen
+    cli_ollama._pid_identity = original_identity
+    cli_ollama._same_process = original_same
+    app.os.kill = original_kill
+
+# A server on the user's own machine has no key to demand. Requiring one there
+# blocked the whole local-first path through the guided setup.
+local_no_key = app.IsaacCLI(
+    "model", sub, 2, config_file=root / "cfg-e.json",
+    provider={"provider": "openai_compatible", "provider_name": "Local",
+              "base_url": "http://127.0.0.1:8080/v1", "api_key": ""})
+remote_no_key = app.IsaacCLI(
+    "model", sub, 2, config_file=root / "cfg-f.json",
+    provider={"provider": "openai_compatible", "provider_name": "Groq",
+              "base_url": "https://api.groq.com/openai/v1", "api_key": ""})
+check(local_no_key.ensure_ollama() == "Local"
+      and remote_no_key.ensure_ollama() is None,
+      "a keyless local endpoint is usable while a keyless remote one is not")
+
+# A server that failed to start is not a missing credential. Sending the user
+# to /setup to repair something that is not broken is worse than no message.
+failed_autostart = app.IsaacCLI(
+    "model", sub, 2, config_file=root / "cfg-g.json",
+    provider=dict(AUTOSTART_PROFILE))
+failed_autostart.ensure_ollama = lambda warn=False: None
+out = io.StringIO()
+with redirect_stdout(out):
+    code = failed_autostart.ask("anything")
+message = out.getvalue()
+check(code == 1 and "Llama Server" in message and "--debug" in message
+      and "/setup" not in message,
+      "a local server that did not come up is reported as such, not as a bad credential")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

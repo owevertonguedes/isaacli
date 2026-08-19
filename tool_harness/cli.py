@@ -37,6 +37,7 @@ if str(HERE) not in sys.path:
 
 import agent
 import config
+import debug
 import terminal_ui
 import tools
 from cli_i18n import set_language, t
@@ -462,6 +463,13 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             if self.provider.get("provider") == "ollama":
                 print(t("cli.error.ollama_unavailable"))
                 error = "ollama_unavailable"
+            elif self.provider.get("autostart"):
+                # Blaming the credential here sends the user to /setup to fix
+                # something that is not broken. The endpoint is configured; the
+                # server it points at did not come up.
+                print(t("cli.error.local_server_unavailable",
+                        name=self.provider.get("provider_name") or "the local server"))
+                error = "local_server_unavailable"
             else:
                 print(t("cli.error.api_unavailable"))
                 error = "api_unavailable"
@@ -749,7 +757,9 @@ def main(argv=None):
     ap.add_argument("--resume", metavar="ID", help=t("cli.args.resume"))
     ap.add_argument("--workspace", "--dir", default=os.getcwd())
     ap.add_argument("--max-steps", type=int, default=12, help=argparse.SUPPRESS)
+    ap.add_argument("--debug", action="store_true", help=t("cli.args.debug"))
     args = ap.parse_args(arguments)
+    debug.enable(args.debug or debug.enabled_from_environment())
 
     resumed = None
     if args.resume:

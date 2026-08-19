@@ -1,21 +1,29 @@
-"""Ollama server lifecycle: autostart, autostop, and sharing one server across
-several isaacli sessions.
+"""Local model server lifecycle: autostart, autostop, and sharing one server
+across several isaacli sessions.
 
-Invariant that must not break: an Ollama started by isaacli is shared between
+Covers Ollama, and any openai_compatible profile that carries an "autostart"
+command (llama-server, or another server speaking the same API). Both use the
+same locking primitive under their own key, so two servers never share state.
+
+Invariant that must not break: a server started by isaacli is shared between
 sessions, and the last session only stops the server isaacli itself started.
 A server that already existed belongs to the user and is never touched.
-tests/check_cli.py covers this.
+tests/check_cli.py covers this for both paths.
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+import config
+import debug
 from cli_i18n import t
 from cli_presentation import _color
 
@@ -25,6 +33,14 @@ def _runtime_ollama_dir():
     if base:
         return Path(base) / "isaacli"
     return Path("/tmp") / f"isaacli-{os.getuid()}"
+
+
+def _autostart_key(provider):
+    """Filesystem-safe key so two autostart profiles never share a lock or a
+    state file with each other, or with Ollama's own "ollama" key."""
+    base = provider.get("provider_name") or provider.get("base_url") or "local"
+    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "local"
+    return f"autostart-{slug}"
 
 
 def _pid_identity(pid):
@@ -41,14 +57,15 @@ def _same_process(pid, identity):
 
 
 @contextmanager
-def _shared_ollama_state():
-    """Serialise autostart/autostop across several Isaac sessions."""
+def _shared_local_state(key="ollama"):
+    """Serialise autostart/autostop across several Isaac sessions, keyed per
+    server so Ollama and an autostart profile never share state."""
     import fcntl
 
     folder = _runtime_ollama_dir()
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock_path = folder / "ollama.lock"
-    state_path = folder / "ollama.json"
+    lock_path = folder / f"{key}.lock"
+    state_path = folder / f"{key}.json"
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
@@ -62,6 +79,12 @@ def _shared_ollama_state():
             os.replace(tmp, state_path)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _shared_ollama_state():
+    """The historical entry point cli.py imports by name; equivalent to
+    _shared_local_state("ollama")."""
+    return _shared_local_state("ollama")
 
 
 def _install_signals():
@@ -112,15 +135,41 @@ def _ollama_ok(timeout=2):
         with urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=timeout) as r:
             return json.load(r).get("version") or "ok"
     except Exception:
+        debug.swallowed("cli_ollama._ollama_ok")
+        return None
+
+
+def _probe_health(url, timeout=2):
+    """Health probe for a non-Ollama server: any answer that is not a
+    connection error counts as up. Unlike _ollama_ok it assumes nothing about
+    the body, because llama-server and friends do not share Ollama's
+    /api/version shape."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):
+            return "ok"
+    except urllib.error.HTTPError:
+        # Reachable and answering, even if this route itself 4xx/5xx's.
+        return "ok"
+    except Exception:
+        debug.swallowed("cli_ollama._probe_health")
         return None
 
 
 class OllamaMixin:
     def ensure_ollama(self, warn=False):
         if self.provider.get("provider") != "ollama":
-            return ((self.provider.get("provider_name") or "API")
-                    if self.provider.get("api_key") and self.provider.get("base_url") else None)
-        with _shared_ollama_state() as state:
+            autostart = self.provider.get("autostart")
+            if autostart and autostart.get("cmd") and autostart.get("health_url"):
+                return self._ensure_autostart_provider(autostart, warn=warn)
+            base_url = self.provider.get("base_url")
+            if not base_url:
+                return None
+            # A server on the user's own machine has no key to demand, so the
+            # absence of one is not the absence of a provider.
+            if not (self.provider.get("api_key") or config.is_local_endpoint(base_url)):
+                return None
+            return self.provider.get("provider_name") or "API"
+        with _shared_local_state("ollama") as state:
             version = _ollama_ok()
             server_valid = (
                 state.get("managed")
@@ -201,10 +250,126 @@ class OllamaMixin:
                 self.ollama_proc.wait(timeout=3)
             return None
 
+    def _ensure_autostart_provider(self, autostart, warn=False):
+        """The generic twin of the Ollama branch above, for an
+        openai_compatible profile carrying an "autostart" command. Same
+        shared-state and locking, under its own key.
+
+        Deliberately a parallel path rather than an attempt to merge the two:
+        the Ollama branch is the one covered by tests and proven in use, and
+        rewriting it to serve both was the larger risk."""
+        if not hasattr(self, "autostart_proc"):
+            self.autostart_proc = None
+            self._autostart_registered = False
+        key = _autostart_key(self.provider)
+        health_url = autostart["health_url"]
+        name = self.provider.get("provider_name") or "the local server"
+        with _shared_local_state(key) as state:
+            version = _probe_health(health_url)
+            server_valid = (
+                state.get("managed")
+                and _same_process(state.get("server_pid"), state.get("server_start"))
+            )
+            clients = [
+                item for item in state.get("clients", [])
+                if _same_process(item.get("pid"), item.get("start"))
+            ]
+            if not server_valid:
+                state.clear()
+                clients = []
+            if version:
+                if server_valid:
+                    current = {"pid": self._runtime_pid, "start": self._runtime_start}
+                    clients = [c for c in clients if c.get("pid") != self._runtime_pid]
+                    clients.append(current)
+                    state["clients"] = clients
+                    self._autostart_registered = True
+                # Without valid state the server belongs to the user, exactly
+                # as with a pre-existing Ollama, and is never touched.
+                return version
+            if not self.autostart_ollama:
+                return None
+            if warn:
+                print(_color(t("cli.local_server.starting", name=name), "warn"))
+            try:
+                self.autostart_proc = subprocess.Popen(
+                    autostart["cmd"], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                self._log("error", error=f"autostart: {e}")
+                if warn:
+                    print(_color(t("cli.local_server.start_failed",
+                                   name=name, error=e), "bad"))
+                return None
+
+            self._log("meta", event="autostart", key=key,
+                      pid=self.autostart_proc.pid)
+            for _ in range(40):
+                time.sleep(0.25)
+                version = _probe_health(health_url, timeout=1)
+                if version:
+                    state.update({
+                        "managed": True,
+                        "server_pid": self.autostart_proc.pid,
+                        "server_start": _pid_identity(self.autostart_proc.pid),
+                        "clients": [{"pid": self._runtime_pid,
+                                     "start": self._runtime_start}],
+                    })
+                    self._autostart_registered = True
+                    return version
+                if self.autostart_proc.poll() is not None:
+                    reason = f"exited with code {self.autostart_proc.returncode}"
+                    self._log("error", error=f"autostart {key} {reason}")
+                    if warn:
+                        print(_color(t("cli.local_server.start_failed",
+                                       name=name, error=reason), "bad"))
+                    return None
+            if self.autostart_proc.poll() is None:
+                self.autostart_proc.terminate()
+                self.autostart_proc.wait(timeout=3)
+            return None
+
+    def _close_autostart_provider(self):
+        if not getattr(self, "_autostart_registered", False):
+            return
+        with _shared_local_state(_autostart_key(self.provider)) as state:
+            clients = [
+                item for item in state.get("clients", [])
+                if item.get("pid") != self._runtime_pid
+                and _same_process(item.get("pid"), item.get("start"))
+            ]
+            state["clients"] = clients
+            server_pid = state.get("server_pid")
+            server_valid = (
+                state.get("managed")
+                and _same_process(server_pid, state.get("server_start"))
+            )
+            if clients or not server_valid:
+                if not server_valid:
+                    state.clear()
+                self._autostart_registered = False
+                return
+            try:
+                os.kill(int(server_pid), signal.SIGTERM)
+                deadline = time.monotonic() + 3
+                while _same_process(server_pid, state.get("server_start")):
+                    if time.monotonic() >= deadline:
+                        os.kill(int(server_pid), signal.SIGKILL)
+                        break
+                    time.sleep(0.05)
+            except (ProcessLookupError, PermissionError, ValueError, TypeError):
+                pass
+            state.clear()
+            self._autostart_registered = False
+            self._log("meta", event="autostart_stop", pid=server_pid)
+
     def close(self):
+        self._close_autostart_provider()
         if not self._ollama_registered:
             return
-        with _shared_ollama_state() as state:
+        with _shared_local_state("ollama") as state:
             clients = [
                 item for item in state.get("clients", [])
                 if item.get("pid") != self._runtime_pid

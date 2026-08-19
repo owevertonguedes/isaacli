@@ -254,6 +254,7 @@
   "cli.args.commands_header": "comandos (não são opções, rodam sem outras flags):",
   "cli.args.commands": "isaacli setup|configuração interativa do primeiro uso\nisaacli install|instala o launcher do usuário (./isaacli install)\nisaacli uninstall|remove só o launcher; config, sessões, Ollama e modelos ficam intactos\nisaacli uninstall --purge|também apaga config do isaacli, chaves de API, sessões e feedback; Ollama e seus modelos são preservados\nisaacli uninstall --purge --ollama|PERIGO: também remove o Ollama inteiro e todo modelo baixado (~/.ollama)",
   "cli.args.request": "pedido único; sem ele o REPL abre",
+  "cli.args.debug": "Mostra o traceback de exceções que o fluxo normal absorve",
   "cli.args.resume": "retoma uma sessão salva",
   "ui.more_above": "↑ {count} acima",
   "ui.more_below": "↓ {count} abaixo",
@@ -264,5 +265,13 @@
   "api.models.invalid_json": "o endpoint /models não retornou JSON válido",
   "api.model.unavailable": "o modelo “{model}” não está disponível para esta chave{suggestion}",
   "api.model.suggestion": "; opções parecidas: {options}",
-  "setup.incomplete": "Setup não concluído. Execute /setup para tentar de novo."
+  "setup.incomplete": "Setup não concluído. Execute /setup para tentar de novo.",
+  "cli.local_server.starting": "Iniciando {name}...",
+  "cli.local_server.start_failed": "Não consegui iniciar {name}: {error}",
+  "api.key.prompt.local": "Chave de API (Enter para pular: este endpoint é local): ",
+  "api.autostart.title": "Iniciar este servidor automaticamente?",
+  "api.autostart.explain": "Este endpoint está na sua máquina. O isaacli pode iniciá-lo quando você abre uma sessão e derrubá-lo quando a última sessão fecha, do mesmo jeito que já faz com o Ollama. Escreva o comando completo que sobe o seu servidor, por exemplo: llama-server -m /caminho/modelo.gguf -c 8192. Deixe vazio para continuar subindo à mão.",
+  "api.autostart.prompt": "Comando (Enter para pular): ",
+  "api.autostart.invalid": "Não consegui ler esse comando ({error}); ele não foi salvo.",
+  "cli.error.local_server_unavailable": "ERRO: {name} não subiu. O endpoint está configurado; quem não responde é o servidor por trás dele. Rode com --debug para ver o motivo."
 }

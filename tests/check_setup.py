@@ -285,6 +285,32 @@ finally:
     setup_ollama._validate_api = original_validate_api
 
 
+# A local endpoint is the only one isaacli can start, and the only one where a
+# missing key is normal rather than a mistake.
+check(config.is_local_endpoint("http://127.0.0.1:8080/v1")
+      and config.is_local_endpoint("http://localhost:11434/v1")
+      and config.is_local_endpoint("http://[::1]:8080/v1")
+      and not config.is_local_endpoint("https://api.groq.com/openai/v1")
+      and not config.is_local_endpoint("https://127.0.0.1.evil.example/v1")
+      and not config.is_local_endpoint(""),
+      "only a real loopback host counts as local, including a lookalike domain")
+
+tr = setup_ollama.Translator("en")
+with redirect_stdout(io.StringIO()):
+    autostart = setup_ollama._ask_autostart(
+        "http://127.0.0.1:8080/v1",
+        lambda _prompt: 'llama-server -m "/models/a b.gguf" -c 8192', tr)
+    skipped = setup_ollama._ask_autostart(
+        "http://127.0.0.1:8080/v1", lambda _prompt: "   ", tr)
+    unbalanced = setup_ollama._ask_autostart(
+        "http://127.0.0.1:8080/v1", lambda _prompt: 'llama-server -m "unclosed', tr)
+
+check(autostart == {"cmd": ["llama-server", "-m", "/models/a b.gguf", "-c", "8192"],
+                    "health_url": "http://127.0.0.1:8080/v1/models"},
+      "the autostart command is split like a shell would, quoted paths included")
+check(skipped is None and unbalanced is None,
+      "an empty or unparsable command saves nothing instead of saving something broken")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

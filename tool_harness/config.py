@@ -2,10 +2,22 @@
 import json
 import os
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 
 CONFIG_VERSION = 1
+
+# A server the user runs on their own machine (llama-server, Ollama's own
+# compatible endpoint, anything else) normally has no authentication to
+# demand. Requiring a key there would block the local-first path this project
+# exists for. It stays required for anything reachable over the network.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"}
+
+
+def is_local_endpoint(base_url) -> bool:
+    host = urllib.parse.urlsplit(str(base_url or "")).hostname
+    return (host or "").lower() in {h.strip("[]") for h in LOCAL_HOSTS}
 
 
 def config_path() -> Path:

@@ -18,12 +18,19 @@ class ProvidersMixin:
             return {"provider": "ollama"}
         secret_path = (Path(self.config_file).with_name("secrets.json")
                        if self.config_file else None)
-        return {
+        provider = {
             "provider": "openai_compatible",
             "provider_name": item.get("provider_name") or "API",
             "base_url": item.get("base_url"),
             "api_key": config.load_secret(item.get("credential"), secret_path),
         }
+        # Optional {"cmd": [...], "health_url": "..."}: lets isaacli start and
+        # stop this server the way it already does for Ollama, instead of only
+        # checking whether the endpoint happens to be up already.
+        autostart = item.get("autostart")
+        if autostart:
+            provider["autostart"] = autostart
+        return provider
 
     def _persist_adjusted_thinking(self):
         """Write thinking=None to the active profile after the provider rejected
