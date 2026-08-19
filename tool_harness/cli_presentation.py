@@ -10,7 +10,7 @@ from pathlib import Path
 
 from cli_i18n import t
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 WORDMARK_ISAAC = tuple(line.ljust(23) for line in (
     "╻  ┏━╸  ┏━┓  ┏━┓  ┏━╸",
     "┃  ┗━┓  ┣━┫  ┣━┫  ┃",
