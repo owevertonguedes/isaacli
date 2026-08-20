@@ -79,7 +79,7 @@ deletion to guessed or environment-derived paths.
 Never exercise purge against the developer's real HOME, clone or Ollama. Run:
 
 ```bash
-scripts/test-install-lifecycle.sh
+tests/integration/test-install-lifecycle.sh
 ```
 
 The script builds a Fedora container from `git archive HEAD` plus the candidate

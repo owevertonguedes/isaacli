@@ -47,6 +47,11 @@ assertions at import time, which is why they are `check_*` and not
 
 ## Running the tests
 
+Everything that is a test lives under `tests/`: the fast checks at the top
+level, and the ones that need a container or a real model under
+`tests/integration/`. `scripts/` holds development utilities that are not
+tests.
+
 ```bash
 python3 tests/check_cli.py
 python3 tests/check_agent_config.py
@@ -54,11 +59,17 @@ python3 tests/check_setup.py
 python3 tests/check_tools.py
 python3 tests/check_sandbox.py
 python3 tests/check_execution.py
+python3 tests/check_hardware.py
 ```
 
 Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create
 its own loopback interface, which fails inside another sandboxed
 environment (for example, inside a container without that capability).
+
+Two checks are not part of that pass because they need more than Python:
+`tests/check_commit_workflow.py` calls a real model through `isaacli`, and
+`tests/integration/test-install-lifecycle.sh` builds a disposable systemd
+container to exercise install and purge without touching your own HOME.
 
 ## Ground rules
 

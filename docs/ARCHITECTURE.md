@@ -297,8 +297,17 @@ python3 tests/check_setup.py
 python3 tests/check_tools.py
 python3 tests/check_sandbox.py
 python3 tests/check_execution.py
+python3 tests/check_hardware.py
 git diff --check
 ```
+
+Everything that is a test lives under `tests/`: the fast checks above at the top
+level, and the ones that need a container or a real model under
+`tests/integration/`. `scripts/` holds development utilities that are not tests.
+The two checks outside the pass above are `tests/check_commit_workflow.py`,
+which calls a real model through `isaacli`, and
+`tests/integration/test-install-lifecycle.sh`, which builds a disposable systemd
+container to exercise install and purge without touching the developer's HOME.
 
 The checks are standalone scripts, not pytest modules: they run their assertions
 at import time. That is why they are named `check_*` and not `test_*`: pytest

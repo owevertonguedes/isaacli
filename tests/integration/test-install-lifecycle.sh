@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+repo_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 engine=${CONTAINER_ENGINE:-podman}
 command -v "$engine" >/dev/null 2>&1 || {
     echo "Container engine not found: $engine" >&2
@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkdir -p "$context/tests/integration" "$context/scripts"
+mkdir -p "$context/tests/integration"
 git -C "$repo_dir" archive HEAD | tar -x -C "$context"
 # Apply tracked working-tree changes to the archive so the command validates the
 # exact candidate being reviewed without ever mounting the real checkout.
