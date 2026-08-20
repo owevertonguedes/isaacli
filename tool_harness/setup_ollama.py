@@ -738,29 +738,26 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
             })
             models.append(report)
     models = model_discovery.order_for_task(models, onboarding_task)
-    print(model_discovery.text("model.discovery.section"))
-    for index, item in enumerate(models, 1):
-        print(
-            f"  {index}. {item['name']} | {item['model_bytes'] / 1024 ** 3:.2f} GiB | "
-            f"{item['machine_label']} | {item.get('benchmark') or model_discovery.NO_PUBLIC_SCORE}"
-        )
-        print(f"     {item['source']}")
-        if item.get("benchmark_source"):
-            print(
-                f"     {item['benchmark_source']} "
-                f"({model_discovery.text('model.discovery.scope')})"
-            )
-    other_number = len(models) + 1
-    print(f"  {other_number}. {model_discovery.text('model.discovery.exact')}")
-    answer = input_fn(model_discovery.text("model.discovery.kaggle_prompt")).strip()
-    try:
-        selected = int(answer) - 1
-    except ValueError:
-        selected = -1
-    if 0 <= selected < len(models):
+    # The ruler belongs on the screen whose order it decided. Announcing it in
+    # setup and then drawing a differently ordered list without it leaves the
+    # order looking arbitrary.
+    explanation = [model_discovery.text("cli.kaggle.models.title")]
+    if onboarding_task:
+        explanation.append(model_discovery.text(
+            f"onboarding.task.ruler.{onboarding_task}"))
+    selected = cli_kaggle._choose(
+        "\n\n".join([
+            model_discovery.text("cli.kaggle.models.section"), *explanation]),
+        [
+            *[cli_kaggle.model_entry(item, model_discovery.NO_PUBLIC_SCORE)
+              for item in models],
+            model_discovery.text("model.discovery.exact"),
+        ],
+        input_fn,
+    )
+    if selected < len(models):
+        cli_kaggle.print_model_evidence(models[selected])
         return models[selected]
-    if selected != len(models):
-        raise RuntimeError(model_discovery.text("model.discovery.invalid"))
     reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
     try:
         repo, selected_file = model_discovery.parse_hf_reference(reference)

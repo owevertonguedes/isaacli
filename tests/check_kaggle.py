@@ -293,6 +293,29 @@ check(authenticated_first != authenticated_second
       and all(ref.startswith("authenticated-two/") for ref in authenticated_second),
       "changing kaggle config view changes the datasets in rendered kernel metadata")
 
+# The model screen is the one the user reaches last and complained about first:
+# three printed lines per candidate turned six models into a wall. What is
+# pinned is the effect, not a string. The selector is replaced by a recorder, so
+# a screen that goes back to print plus input never reaches it and this stays
+# empty. Each option also has to be a single line, because that is what the
+# selector draws and what its capacity arithmetic assumes.
+drawn = []
+original_select = cli_kaggle.terminal_ui.select
+try:
+    cli_kaggle.terminal_ui.select = lambda title, options, **kwargs: (
+        drawn.append((title, options)) or 0)
+    with redirect_stdout(io.StringIO()) as chosen_output:
+        chosen_model = cli_kaggle._select_model(lambda _prompt: "1")
+finally:
+    cli_kaggle.terminal_ui.select = original_select
+check(len(drawn) == 1 and len(drawn[0][1]) == len(cli_kaggle.prepared_models())
+      and all("\n" not in option for option in drawn[0][1])
+      and chosen_model["name"] in drawn[0][1][0],
+      "the Kaggle model screen is drawn by the shared selector, one line per model")
+check(chosen_model["benchmark_source"] in chosen_output.getvalue()
+      and chosen_model["source"] in chosen_output.getvalue(),
+      "the evidence behind the chosen model is still shown, without the wall")
+
 p100_models = cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
 t4_models = cli_kaggle.models_for_accelerator("NvidiaTeslaT4")
 p100_aliases = {model["alias"] for model in p100_models}
@@ -410,13 +433,28 @@ def dead_run(command, check=False, capture_output=False, text=False, **kwargs):
     dead_commands.append([str(part) for part in command])
     joined = " ".join(map(str, command))
     if " quota" in joined:
-        return SimpleNamespace(returncode=0, stdout="GPU quota", stderr="")
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
     if "kernels list" in joined:
         return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
     if "config view" in joined:
         return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+
+REAL_QUOTA_TABLE = (
+    "resource  used    remaining  total   refreshAt            \n"
+    "--------  ------  ---------  ------  -------------------  \n"
+    "GPU       17.82h  12.18h     30.00h  2026-08-22T00:00:00  \n"
+    "TPU       0.00h   20.00h     20.00h  2026-08-22T00:00:00"
+)
+
+# Kaggle already writes the unit onto every figure in that table. Appending
+# another one produced "12.18h h restantes de 30.00h h" on the real account,
+# which is what the person actually reads before deciding whether to spend the
+# hours. Pinning the exact rendering is what catches a unit being added back.
+summary = cli_kaggle._quota_summary(REAL_QUOTA_TABLE)
+check(summary == "GPU 12.18h left of 30.00h",
+      "the quota summary carries Kaggle's own figures with one unit each")
 
 dead_answers = iter(["1", "1", "n", "n"])
 dead_output = io.StringIO()
@@ -429,6 +467,10 @@ check(dead_code == 130 and config.load(dead_file)["default_profile"] == "other"
       and "user/dead" in dead_output.getvalue()
       and not any("kernels push" in " ".join(command) for command in dead_commands),
       "a dead kernel is reported and its broken profile is not reactivated")
+check("12.18h" in dead_output.getvalue()
+      and "refreshAt" not in dead_output.getvalue()
+      and "--------" not in dead_output.getvalue(),
+      "the run shows the hours left, not the raw quota table a second time")
 
 accounts_file = root / "accounts" / "config.json"
 add_account(accounts_file, "first-account", "first-key")

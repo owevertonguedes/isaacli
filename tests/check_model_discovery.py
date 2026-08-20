@@ -239,6 +239,33 @@ try:
           and f'MODEL_FILE = "{kaggle_model["file"]}"' in generated,
           "the dynamic Kaggle kernel is self-contained and uses the exact HF file URL")
 
+    # The Kaggle screen is the same screen as the local one and has to be drawn
+    # the same way. Replacing the selector with a recorder is what proves it: a
+    # screen that goes back to print plus input never reaches it. The declared
+    # task decided this order, so the ruler it used belongs on it, and a list
+    # ordered by an unstated rule reads as an arbitrary one.
+    import cli_kaggle
+
+    drawn = []
+    original_select = cli_kaggle.terminal_ui.select
+    try:
+        cli_kaggle.terminal_ui.select = lambda title, options, **kwargs: (
+            drawn.append((title, options)) or 0)
+        with redirect_stdout(io.StringIO()):
+            task_model = setup_ollama._dynamic_kaggle_selector(
+                lambda _prompt="": "1", catalog, fake_urlopen,
+                onboarding_task="fix_bug",
+            )
+    finally:
+        cli_kaggle.terminal_ui.select = original_select
+    ruler = model_discovery.text("onboarding.task.ruler.fix_bug")
+    check(len(drawn) == 1 and all("\n" not in option for option in drawn[0][1])
+          and task_model["name"] in drawn[0][1][0]
+          and drawn[0][1][-1] == model_discovery.text("model.discovery.exact"),
+          "the Kaggle discovery screen is drawn by the shared selector too")
+    check(ruler in drawn[0][0],
+          "the screen names the public ruler that decided the order it shows")
+
     huge_answers = iter([
         "5",
         "https://huggingface.co/test/Huge-GGUF/blob/main/huge-Q4_K_M.gguf",

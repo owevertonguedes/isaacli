@@ -678,25 +678,39 @@ def recommended_models(catalog_path=MODEL_CATALOG_PATH):
     return selected
 
 
+def model_entry(model, no_score=""):
+    """One model on one line, because a selection screen draws one line each.
+
+    Three printed lines per model turned six candidates into a wall the user
+    could not read. The evidence behind the chosen row is not dropped, it is
+    printed once for the row that was actually chosen.
+    """
+    return t(
+        "cli.kaggle.models.entry", name=model["name"],
+        size=f"{model['model_bytes'] / 1024 ** 3:.2f}",
+        machine=model.get("machine_label", ""),
+        benchmark=model.get("benchmark") or no_score,
+    )
+
+
+def print_model_evidence(model):
+    """The sources behind the row that was chosen, which do not fit on it."""
+    if model.get("source"):
+        print(model["source"])
+    if model.get("benchmark_source"):
+        print(f"{model['benchmark_source']} ({t('model.discovery.scope')})")
+
+
 def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH):
     models = prepared_models(catalog_path)
     if not models:
         raise RuntimeError(t("cli.kaggle.models.none"))
-    print(t("cli.kaggle.models.title"))
-    for index, model in enumerate(models, 1):
-        size_gib = model["model_bytes"] / 1024 ** 3
-        print(t(
-            "cli.kaggle.models.option", index=index, name=model["name"],
-            size=f"{size_gib:.1f}", machine=model["machine_label"],
-            benchmark=model["benchmark"],
-        ))
-        print(f"     {model['source']}")
-        print(f"     {model['benchmark_source']}")
-    answer = input_fn(t("cli.kaggle.models.prompt")).strip()
-    try:
-        return models[int(answer) - 1]
-    except (ValueError, IndexError):
-        raise RuntimeError(t("cli.kaggle.models.invalid"))
+    index = _choose(
+        "\n\n".join((t("cli.kaggle.models.section"), t("cli.kaggle.models.title"))),
+        [model_entry(model) for model in models], input_fn)
+    model = models[index]
+    print_model_evidence(model)
+    return model
 
 
 def _asset_refs(username, model):
@@ -1033,7 +1047,11 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         account, environment = _select_account(
             executable, input_fn, run_fn, config_file)
         quota = _quota(executable, run_fn, environment)
-        print(t("cli.kaggle.quota", quota=quota))
+        # The raw answer is a four line table of headers and dashes. Only the
+        # remaining GPU hours change a decision here, and the account picker
+        # already shows that same figure the same way.
+        debug.note("cli_kaggle.run_kaggle quota", quota)
+        print(t("cli.kaggle.quota", quota=_quota_summary(quota)))
         username = _authenticated_username(executable, run_fn, environment)
         live = live_kernels(executable, run_fn, environment)
     except RuntimeError as error:
