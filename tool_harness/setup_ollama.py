@@ -432,8 +432,16 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
         )
     except model_discovery.DiscoveryError as error:
         discovered, errors = [], [str(error)]
+    # Printing the causes here and then drawing a screen put them on the page the
+    # alternate screen replaces, so on a real terminal nobody ever read them.
+    # A candidate that failed explains why the list is shorter and belongs in
+    # --debug; a discovery that returned nothing at all is the answer to what the
+    # user just asked for, so its cause goes on the screen they are looking at.
     for error in errors:
-        print(model_discovery.text("model.discovery.failed", error=error))
+        debug.note("setup_ollama._choose_other_ollama discovery", error)
+    explanation = None if discovered else "\n".join(
+        model_discovery.text("model.discovery.failed", error=error)
+        for error in errors) or None
     entries = [*discovered, "__exact__", "__back__"]
     options = [
         *[
@@ -446,6 +454,7 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     ]
     index = _select(
         tr, model_discovery.text("model.discovery.section"), options, input_fn,
+        explanation,
     )
     chosen = entries[index]
     if chosen == "__back__":

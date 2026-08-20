@@ -200,16 +200,42 @@ def offline(_request, timeout=None):
     raise urllib.error.URLError("network disabled by test")
 
 
-offline_out = io.StringIO()
-offline_answers = iter(["2"])
-with redirect_stdout(offline_out):
-    result = setup_ollama._choose_other_ollama(
-        lambda _prompt="": next(offline_answers),
-        setup_ollama.Translator("en"), catalog, offline,
-    )
-check(result is None and "network disabled by test" in offline_out.getvalue()
+# A cause printed just before a screen is drawn lands on the page the alternate
+# screen replaces, so it has to arrive on the screen itself. The recorder keeps
+# the title the selector was handed, which is the only thing the user reads.
+screens = []
+original_ui_select = setup_ollama.terminal_ui.select
+try:
+    setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
+        screens.append((title, options)) or len(options) - 1)
+    offline_out = io.StringIO()
+    with redirect_stdout(offline_out):
+        result = setup_ollama._choose_other_ollama(
+            lambda _prompt="": "", setup_ollama.Translator("en"), catalog, offline,
+        )
+    offline_title = screens[-1][0]
+
+    # A single candidate that fails explains a shorter list and nothing else, so
+    # it goes to --debug rather than onto a screen about choosing a model.
+    original_discover_noise = model_discovery.discover_models
+    try:
+        model_discovery.discover_models = lambda *_a, **_k: (
+            [{"name": "Something", "benchmark": "none", "model_bytes": GB}],
+            ["test/Repo-GGUF: no Q4_K_M file was found"])
+        with redirect_stdout(io.StringIO()) as quiet_out:
+            setup_ollama._choose_other_ollama(
+                lambda _prompt="": "", setup_ollama.Translator("en"), catalog, offline)
+    finally:
+        model_discovery.discover_models = original_discover_noise
+finally:
+    setup_ollama.terminal_ui.select = original_ui_select
+
+check(result is None and "network disabled by test" in offline_title
       and len(setup_ollama._recommended_catalog()) == 5,
-      "offline discovery shows the cause while the versioned catalog still responds")
+      "discovery that returned nothing puts the cause on the screen, not behind it")
+check("Q4_K_M" not in screens[-1][0] and "Q4_K_M" not in quiet_out.getvalue()
+      and len(screens[-1][1]) == 3,
+      "one failed candidate explains a shorter list in --debug, not on the screen")
 
 
 original_discover = model_discovery.discover_models
