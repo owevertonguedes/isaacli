@@ -75,9 +75,25 @@ if model_path is None:
     model_path = Path(SCRATCH) / MODEL_FILE
     run(["curl", "-fL", "-o", str(model_path),
          f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
+def library_path(root):
+    """Every directory of the prepared runtime that holds a shared object.
+
+    llama.cpp keeps its own shared libraries next to the binary in bin/, while
+    the CUDA runtime lands in lib/, and the RPATH baked into the binary names
+    the directory it was compiled in, which does not exist in this session. A
+    runtime that arrived as a prepared input is therefore only loadable if the
+    search path is derived from the tree that actually arrived: naming lib/
+    alone left llama-server unable to open libllama-server-impl.so, after the
+    weights had already been downloaded.
+    """
+    return os.pathsep.join(sorted(
+        {str(path.parent) for path in root.rglob("*.so*")}))
+
+
 server_env = dict(os.environ)
-server_env["LD_LIBRARY_PATH"] = (
-    str(runtime_root / "lib") + ":" + server_env.get("LD_LIBRARY_PATH", ""))
+server_env["LD_LIBRARY_PATH"] = os.pathsep.join(
+    part for part in (library_path(runtime_root),
+                      server_env.get("LD_LIBRARY_PATH", "")) if part)
 server_command = [
     str(server_binary),
     "-m", str(model_path), "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",

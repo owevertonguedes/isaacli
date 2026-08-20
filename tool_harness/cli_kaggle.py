@@ -209,14 +209,25 @@ def _account_environment(username, config_file=None):
     # an empty token file reads as no token at all and hands the decision
     # straight back to the ambient account.
     kaggle_dir = account_dir / ".kaggle"
-    if credential.get("token"):
-        token_path = kaggle_dir / "access_token"
-        token_path.write_text(str(credential["token"]).strip() + "\n", encoding="utf-8")
-        token_path.chmod(0o600)
-        config.save({"username": username}, kaggle_dir / "kaggle.json")
-    else:
+    # The same value is offered to both mechanisms, and the CLI decides which
+    # one it is. Read from the 2.2.4 source: `authenticate` tries the access
+    # token first, and `_authenticate_with_access_token` introspects it against
+    # Kaggle and returns False for one that does not check out, which falls
+    # through to the legacy key. So a credential issued as an access token works
+    # even when it arrives inside a kaggle.json, where only the legacy field
+    # exists, and a real legacy key is not disturbed by being offered first.
+    # This is not a guess about the credential's shape: guessing is what broke
+    # it, because what Kaggle hands out at kaggle.com/settings today is an
+    # access token and the legacy field cannot carry it.
+    secret = str(credential.get("token") or credential.get("key")).strip()
+    token_path = kaggle_dir / "access_token"
+    token_path.write_text(secret + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    if credential.get("key"):
         config.save({"username": username, "key": credential["key"]},
                     kaggle_dir / "kaggle.json")
+    else:
+        config.save({"username": username}, kaggle_dir / "kaggle.json")
     return environment
 
 
@@ -273,26 +284,53 @@ def login_account(executable, config_file=None, run_fn=subprocess.run,
     return username
 
 
-def register_api_key_file(source, config_file=None):
-    """Register an account from the kaggle.json the user downloaded.
+def register_api_key_file(source, config_file=None, executable=None,
+                          run_fn=subprocess.run):
+    """Register an account from whatever kaggle.com/settings handed the user.
 
-    That file already carries the username, so nothing has to be typed and
-    nothing has to be guessed.
+    That is either the kaggle.json file, which carries the username with it, or
+    a bare access token, which does not have to: the CLI introspects the token
+    against Kaggle and answers with the account it belongs to, so the name is
+    read back rather than typed, exactly as it is after a browser sign-in.
     """
-    text = source
-    path = Path(str(source).strip()).expanduser()
+    text = str(source).strip()
+    path = Path(text).expanduser()
     try:
         if path.is_file():
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8").strip()
     except OSError:
         debug.swallowed("cli_kaggle.register_api_key_file read")
     try:
         payload = json.loads(text)
-        username = payload["username"]
-        key = payload["key"]
+        return register_account(
+            payload["username"], {"key": payload["key"]}, config_file)
     except (TypeError, ValueError, KeyError) as error:
-        raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid")) from error
-    return register_account(username, {"key": key}, config_file)
+        debug.note("cli_kaggle.register_api_key_file not a kaggle.json", error)
+    if not text or any(character.isspace() for character in text):
+        raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid"))
+    if executable is None:
+        raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid"))
+    return _register_bare_token(text, executable, config_file, run_fn)
+
+
+def _register_bare_token(token, executable, config_file=None,
+                         run_fn=subprocess.run):
+    """Ask the CLI who a token belongs to, then file it under that account."""
+    root = _accounts_root(config_file)
+    root.mkdir(parents=True, exist_ok=True)
+    pending = Path(tempfile.mkdtemp(prefix="pending-", dir=str(root)))
+    pending.chmod(0o700)
+    environment = _isolated_environment(pending)
+    token_path = pending / ".kaggle" / "access_token"
+    token_path.write_text(token + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    try:
+        username = _authenticated_username(executable, run_fn, environment)
+    except RuntimeError:
+        raise RuntimeError(t("cli.kaggle.accounts.token_rejected"))
+    finally:
+        shutil.rmtree(pending, ignore_errors=True)
+    return register_account(username, {"token": token}, config_file)
 
 
 def forget_account(username, config_file=None, executable=None,
@@ -341,7 +379,7 @@ def _register_account_interactive(input_fn, config_file=None, executable=None,
     if index == 1:
         print(t("cli.kaggle.accounts.api_key_explain"))
         source = input_fn(t("cli.kaggle.accounts.api_key_prompt")).strip()
-        return register_api_key_file(source, config_file)
+        return register_api_key_file(source, config_file, executable, run_fn)
     if executable is None:
         raise RuntimeError(t("cli.kaggle.accounts.login_unavailable"))
     return login_account(executable, config_file, run_fn)
@@ -1223,8 +1261,16 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             return 1
         missing = [kind for kind in ("binary", "model") if kind not in available]
         if missing:
+            # What this costs depends on which input is missing, and the
+            # difference is the whole point of having prepared them. Announcing
+            # a 34 minute compile to an account that already owns the compiled
+            # runtime overstates the price of the launch being consented to.
             print(t("cli.kaggle.assets.missing", username=username))
-            print(t("cli.kaggle.assets.measured_cost"))
+            if "binary" in missing:
+                print(t("cli.kaggle.assets.cost_build"))
+            if "model" in missing:
+                print(t("cli.kaggle.assets.cost_download",
+                        size=f"{model['model_bytes'] / 1024 ** 3:.1f}"))
             if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() == t(
                     "cli.kaggle.confirm_yes"):
                 try:

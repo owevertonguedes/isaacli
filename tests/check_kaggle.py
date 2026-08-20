@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Kaggle lifecycle checks with isolated local state and no network."""
 import io
+import ast
 import builtins
 import inspect
 import json
@@ -172,9 +173,13 @@ check(bool(pushes) and all(
     "-t" in c and c[c.index("-t") + 1].isdigit() and int(c[c.index("-t") + 1]) > 0
     for c in pushes),
       "every push carries a session ceiling so an unattended kernel cannot run on")
+# Nothing is prepared in this scenario, so both costs apply and both are named.
+# The 34 minute figure belongs to compiling, and quoting it at an account that
+# already owns the compiled runtime would overstate what it is consenting to.
 check("34 minutes" in timeout_output.getvalue()
-      and "self-contained" in timeout_output.getvalue(),
-      "missing assets announce the measured cost before the self-contained push")
+      and "GiB inside the GPU kernel" in timeout_output.getvalue()
+      and "produced inside this GPU kernel" in timeout_output.getvalue(),
+      "an unprepared account is told both costs before the self-contained push")
 
 profile_file = root / "profile" / "config.json"
 model = {"alias": "test-model"}
@@ -334,6 +339,33 @@ p100_source = next(path for path in p100_dir.iterdir()
                    if path.suffix == ".py").read_text(encoding="utf-8")
 check("sm75" not in p100_source and 'CUDA_ARCH = "60"' in p100_source,
       "a kernel rendered for one architecture never names another one")
+
+# A prepared runtime is copied out of the dataset into a directory that is not
+# the one it was compiled in, so the RPATH inside the binary points at nothing
+# and every directory holding a shared object has to be on the search path.
+# Measured on Kaggle: naming lib/ alone left llama-server unable to open
+# libllama-server-impl.so, which lives in bin/, after the weights had already
+# been downloaded. The function is lifted out of the rendered kernel and run
+# against a tree shaped like the published dataset, so this exercises the code
+# that ships rather than a copy of it.
+runtime_fixture = root / "runtime-fixture" / "llama-cuda-prepared"
+for relative in ("bin/llama-server", "bin/libllama-server-impl.so",
+                 "bin/libggml-cuda.so.0", "lib/libcudart.so.12",
+                 "cloudflared-linux-amd64"):
+    target = runtime_fixture / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"binary")
+rendered_tree = ast.parse(p100_source)
+library_path_node = next(
+    node for node in rendered_tree.body
+    if isinstance(node, ast.FunctionDef) and node.name == "library_path")
+library_namespace = {"os": os}
+exec(compile(ast.Module(body=[library_path_node], type_ignores=[]),
+             "<rendered kernel>", "exec"), library_namespace)
+searched = library_namespace["library_path"](runtime_fixture).split(os.pathsep)
+check(str(runtime_fixture / "bin") in searched
+      and str(runtime_fixture / "lib") in searched,
+      "the rendered kernel searches every directory of the runtime that holds a library")
 
 templates = {
     path.name: path.read_text(encoding="utf-8")
@@ -1049,6 +1081,66 @@ except RuntimeError:
     rejected = True
 check(rejected and "no-key" not in config.load(login_file)["kaggle"]["accounts"],
       "a file without a key is refused instead of registering half an account")
+
+# What kaggle.com/settings hands out is an access token, and the legacy field
+# of kaggle.json cannot carry it: measured against a real credential, that file
+# answered "Authentication required to call the Kaggle API" while the identical
+# value in access_token authenticated. Read from the CLI 2.2.4 source,
+# `authenticate` tries the access token first and ignores one that fails
+# introspection, falling through to the legacy key, so the same value is offered
+# to both mechanisms and the CLI decides which one it is.
+key_kaggle_dir = cli_kaggle._account_dir("key-user2", login_file) / ".kaggle"
+cli_kaggle.register_api_key_file(
+    json.dumps({"username": "key-user2", "key": "downloaded-key"}), login_file)
+cli_kaggle._account_environment("key-user2", login_file)
+check((key_kaggle_dir / "access_token").read_text(encoding="utf-8").strip()
+      == "downloaded-key"
+      and json.loads((key_kaggle_dir / "kaggle.json").read_text())
+      == {"username": "key-user2", "key": "downloaded-key"}
+      and (key_kaggle_dir / "access_token").stat().st_mode & 0o077 == 0,
+      "a credential from kaggle.json is offered to both mechanisms, and stays private")
+
+# A bare token carries no username, and it does not have to: the CLI introspects
+# it against Kaggle and answers with the account, which is the same rule the
+# browser sign-in follows. Typing a name would be inventing the one fact that
+# decides whose quota gets spent.
+token_commands = []
+
+
+def token_run(command, check=False, capture_output=False, text=False, env=None,
+              **kwargs):
+    parts = list(map(str, command))
+    token_commands.append((parts, dict(env or {})))
+    if parts[1:3] == ["config", "view"]:
+        token = (Path(env["KAGGLE_CONFIG_DIR"]) / "access_token").read_text().strip()
+        if token != "KGAT_real":
+            return SimpleNamespace(returncode=1, stdout="", stderr="not authenticated")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="- username: token-user\n- auth_method: ACCESS_TOKEN\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+registered_token = cli_kaggle.register_api_key_file(
+    "KGAT_real", login_file, Path("/fake/kaggle"), token_run)
+token_accounts = config.load(login_file)["kaggle"]["accounts"]
+check(registered_token == "token-user" and "token-user" in token_accounts
+      and json.loads(json.loads(secrets_file.read_text())[
+          "kaggle:token-user"])["token"] == "KGAT_real"
+      and "KGAT_real" not in login_file.read_text(),
+      "a pasted access token registers under the account Kaggle says it belongs to")
+
+token_refused = False
+try:
+    cli_kaggle.register_api_key_file(
+        "KGAT_wrong", login_file, Path("/fake/kaggle"), token_run)
+except RuntimeError:
+    token_refused = True
+pending_left = [path for path in cli_kaggle._accounts_root(login_file).iterdir()
+                if path.name.startswith("pending-")]
+check(token_refused and not pending_left
+      and len(config.load(login_file)["kaggle"]["accounts"]) == len(token_accounts),
+      "a token Kaggle does not recognise registers nothing and leaves no folder behind")
 
 # Signing out is local unless revoking was asked for. Revoking cannot be undone
 # from here, so it must never be the thing that happens by default.
