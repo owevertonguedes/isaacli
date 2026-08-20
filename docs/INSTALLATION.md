@@ -31,8 +31,15 @@ Flatpak environment, so it cannot loop.
 | `isaacli uninstall` | This checkout's link in `~/.local/bin` | Config, secrets, sessions, feedback, runtime state, Ollama, models and clone |
 | `isaacli uninstall --purge` | Link and isaacli-owned local data | Ollama, models and clone |
 | `isaacli uninstall --purge --ollama` | Everything above plus a recognised official-script Ollama installation | Clone |
+| `isaacli uninstall --purge --kaggle` | Everything in purge plus a Kaggle CLI installed by isaacli and known Kaggle authentication files | Existing third-party Kaggle installations, remote kernels and clone |
 
-Both purge forms require their exact confirmation phrase. A live registered
+## Kaggle CLI lifecycle
+
+`isaacli kaggle` first checks for an existing `kaggle` command. An existing command belongs to the user and is used without creating an ownership record. When the command is missing, isaacli shows one plan and, after confirmation, creates an isolated virtual environment at `~/.local/share/isaacli/kaggle-cli`, installs the Python package there and links `~/.local/bin/kaggle`. Only after `kaggle --version` succeeds does it write `~/.config/isaacli/kaggle-install.json` with mode `0600`.
+
+The strong Kaggle purge requires that record and fixed paths under the user's home. It refuses a package-managed executable, an altered launcher or authentication data unless the caller has passed through the explicit warning. It invokes no administrator command. The removal path must be tested with temporary `HOME` and `XDG_CONFIG_HOME`, never with the developer's real Kaggle installation or credentials.
+
+All purge forms require their exact confirmation phrase. A live registered
 isaacli session blocks purge before Ollama is touched. Repeating a completed
 removal is supported.
 

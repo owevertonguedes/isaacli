@@ -26,6 +26,7 @@ security remain part of the protection model.
 | Feedback | `tool_harness/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask |
 | Runtime coordination | `XDG_RUNTIME_DIR/isaacli` or `/tmp/isaacli-<uid>` | Process identities and managed-Ollama state, not conversation content; the application requests a `0700` directory |
 | Ollama models | Ollama-managed paths | Model weights and Ollama data; outside isaacli's secret store |
+| Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, the regular config and secrets files | Records only CLI ownership and uploaded kernel slugs in config. The generated tunnel API key stays in `secrets.json`. Kaggle refresh credentials remain under `~/.kaggle`. |
 
 Git ignores sessions, feedback and secrets, but `.gitignore` is not access
 control, encryption or a backup exclusion. Copying the clone can copy ignored
@@ -71,6 +72,8 @@ but tool results included in the conversation can be sent on the next model
 request. Users must treat the remote provider's privacy and retention policy as
 part of their own threat model.
 
+The Kaggle path sends the generated notebook and selected model identifiers to Kaggle, and later sends model conversations through a public Cloudflare tunnel protected by a generated API key. The kernel is private, but the temporary tunnel hostname is public. Kaggle quota, availability, account security and terms remain part of the user's threat model. No remote kernel starts without an explicit confirmation for that push.
+
 Session logs intentionally support resume and therefore contain substantially
 more sensitive material than metrics. They are not currently encrypted. On a
 multi-user machine, shared checkout or synchronised/unencrypted backup, users
@@ -82,7 +85,9 @@ or protect them accordingly.
 `uninstall` preserves all private data. `uninstall --purge` deletes config,
 secrets, sessions, feedback and stale runtime state after confirmation.
 `uninstall --purge --ollama` additionally removes a recognised official Ollama
-layout. The clone is always preserved. See [INSTALLATION.md](INSTALLATION.md)
+layout. `uninstall --purge --kaggle` removes only a recorded isaacli-managed
+Kaggle CLI and, after its explicit warning, the known Kaggle authentication
+files. The clone and remote kernels are always preserved. See [INSTALLATION.md](INSTALLATION.md)
 for exact ownership checks, partial-failure behaviour and isolated validation.
 
 Deletion is filesystem deletion, not guaranteed secure erasure: copy-on-write

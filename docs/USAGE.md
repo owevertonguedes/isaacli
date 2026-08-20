@@ -23,11 +23,30 @@ Removal has three deliberately separate levels:
 | `isaacli uninstall` | the per-user command | configuration, secrets, sessions, Ollama and the clone |
 | `isaacli uninstall --purge` | command, configuration, API keys, permissions, sessions, feedback and runtime state | Ollama, its models and the clone |
 | `isaacli uninstall --purge --ollama` | everything above plus a recognised official Linux Ollama installation, its service, models and user data | the clone |
+| `isaacli uninstall --purge --kaggle` | everything in purge plus a Kaggle CLI installed by isaacli and Kaggle authentication files | existing third-party Kaggle installations, remote kernels and the clone |
 
 The two purge forms require the exact confirmation displayed by the command.
 Purge refuses to run while another isaacli session is active. Ollama removal
 also refuses package-managed or otherwise unrecognised installations, which
 must be removed through the package manager that owns them.
+
+## Kaggle GPU
+
+Run `isaacli kaggle` when the model should run on Kaggle. The command:
+
+1. detects an existing Kaggle CLI or offers one isolated per-user installation;
+2. runs the official Kaggle login flow when the saved refresh credential is absent or invalid;
+3. reports the account's accelerator quota and every visible active kernel;
+4. refuses a push while another visible kernel is active;
+5. offers curated GGUF models that fit the two-GPU target, with links to their model cards;
+6. asks for explicit confirmation, pushes a private GPU kernel and follows `kaggle kernels logs -f` until the tunnel URL appears;
+7. stores the generated API key in `secrets.json` and a generic `openai_compatible` profile in `config.json`.
+
+Kaggle has no CLI command to stop a running kernel. The command prints the direct Kaggle page before and after URL discovery so the session can be stopped in the web interface. It uses a unique slug for every push so an older version cannot be hidden behind a newer version of the same slug.
+
+The versioned GPU notebook is [gpu-server.py.tmpl](../contrib/kaggle/gpu-server.py.tmpl). It requests GPU in generated Kaggle metadata and downloads only the readable llama.cpp source, the selected public weight and the published cloudflared binary. It is never started by opening an isaacli session.
+
+`isaacli kaggle --flow-validation-cpu` exists only to validate orchestration without using GPU quota. Its separate template starts a tiny OpenAI-compatible probe and exits after five minutes. It does not download, load or run a model, and it is never selected by the normal command.
 
 ## Setup
 

@@ -27,6 +27,7 @@ install or any removal path.
 isaacli (launcher)
   -> tool_harness/cli.py (arguments, REPL and session)
      -> setup_ollama.py (models, context, effort and API keys)
+     -> cli_kaggle.py (Kaggle CLI lifecycle, explicit kernel push and URL discovery)
      -> agent.py (loop: messages -> model -> tool calls -> model)
         -> tools.py (schemas and tools)
            -> execution.py (no-shell command, allowlist, approval and bwrap)
@@ -53,6 +54,7 @@ worked on.
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
 | `tool_harness/installation.py` | per-user launcher install, uninstall and explicitly confirmed purge | It never removes a launcher owned by another checkout or an unrecognised Ollama installation. |
+| `tool_harness/cli_kaggle.py` | installs a private Kaggle CLI, authenticates, checks quota and live kernels, pushes a generated kernel, discovers the tunnel and saves a profile | Kernel orchestration ends at a generic `openai_compatible` profile. The request adapter has no Kaggle branch. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
 | `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
 
@@ -108,6 +110,10 @@ the Ollama removal before deleting the launcher and Isaac data, so a refused or
 failed system teardown leaves a usable recovery route. Purge also refuses to
 start while a live Isaac session is
 registered, so it cannot remove the engine underneath another process.
+
+`uninstall --purge --kaggle` is the sibling strong purge. It removes Kaggle only when `kaggle-install.json` records that isaacli created the isolated per-user environment and launcher. A package-managed or changed executable is refused. Kaggle authentication files are removed only after the strong purge warning. Existing third-party Kaggle installations and remote kernels are preserved.
+
+The normal `isaacli kaggle` path always renders the GPU template in `contrib/kaggle/`. It never starts automatically and asks for confirmation immediately before each push. The separate `--flow-validation-cpu` switch renders a short CPU-only OpenAI-compatible probe for validating push, tunnel discovery, reachability and profile persistence without spending GPU quota. It cannot run a model and is never the default.
 
 The resume command uses `isaacli` when this installation is on `PATH`;
 otherwise it prints the absolute launcher that is actually executable.

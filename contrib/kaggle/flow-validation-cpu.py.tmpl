@@ -1,0 +1,59 @@
+"""CPU-only plumbing proof. This does not load or run a model."""
+import http.server
+import json
+import re
+import socketserver
+import subprocess
+import threading
+import time
+
+
+API_KEY = "__API_KEY__"
+PORT = 8080
+STARTED = time.time()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            body = json.dumps({"object": "list", "data": [{
+                "id": "isaacli-flow-probe", "object": "model",
+            }]}).encode()
+        else:
+            body = ("ISAACLI_KAGGLE_CPU_FLOW_OK uptime=%.1fs\n" %
+                    (time.time() - STARTED)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+threading.Thread(
+    target=lambda: Server(("127.0.0.1", PORT), Handler).serve_forever(), daemon=True,
+).start()
+cloudflared = "/kaggle/working/cloudflared"
+subprocess.run([
+    "curl", "-fL", "-o", cloudflared,
+    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
+], check=True)
+subprocess.run(["chmod", "+x", cloudflared], check=True)
+tunnel = subprocess.Popen(
+    [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+)
+for line in tunnel.stdout:
+    match = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", line)
+    if match:
+        print("TUNNEL_URL=" + match.group(0), flush=True)
+        break
+threading.Thread(target=lambda: list(tunnel.stdout), daemon=True).start()
+time.sleep(300)

@@ -1,0 +1,87 @@
+"""Kaggle GPU server for isaacli. Requires T4 x2 and internet access."""
+import re
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
+
+MODEL_REPO = "__MODEL_REPO__"
+MODEL_FILE = "__MODEL_FILE__"
+MODEL_ALIAS = "__MODEL_ALIAS__"
+API_KEY = "__API_KEY__"
+PORT = 8080
+
+
+def run(command):
+    subprocess.run(command, check=True)
+
+
+print("Building llama.cpp with CUDA", flush=True)
+run(["git", "clone", "--depth", "1", "--branch", "b10502",
+     "https://github.com/ggml-org/llama.cpp", "/kaggle/working/llama.cpp"])
+run(["cmake", "-S", "/kaggle/working/llama.cpp", "-B",
+     "/kaggle/working/llama.cpp/build", "-DGGML_CUDA=ON",
+     "-DCMAKE_CUDA_ARCHITECTURES=75"])
+run(["cmake", "--build", "/kaggle/working/llama.cpp/build", "--config",
+     "Release", "-j4", "--target", "llama-server"])
+
+print("Downloading the selected model weights", flush=True)
+model_path = "/kaggle/working/" + MODEL_FILE
+run(["curl", "-fL", "-o", model_path,
+     f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
+server = subprocess.Popen([
+    "/kaggle/working/llama.cpp/build/bin/llama-server",
+    "-m", model_path, "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
+    "--split-mode", "layer", "--host", "127.0.0.1", "--port", str(PORT),
+    "--jinja", "--api-key", API_KEY,
+])
+
+cloudflared = "/kaggle/working/cloudflared"
+run(["curl", "-fL", "-o", cloudflared,
+     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"])
+run(["chmod", "+x", cloudflared])
+tunnel = subprocess.Popen(
+    [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+)
+url = None
+for line in tunnel.stdout:
+    match = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", line)
+    if match:
+        url = match.group(0)
+        break
+if not url:
+    raise RuntimeError("cloudflared did not publish a tunnel URL")
+threading.Thread(target=lambda: list(tunnel.stdout), daemon=True).start()
+
+
+def serving():
+    """True once llama-server answers, which is not the same as being up."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/v1/models",
+        headers={"Authorization": "Bearer " + API_KEY})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as answer:
+            return answer.status == 200
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+# The URL is what isaacli turns into a ready profile, so it is published only
+# after the server answers. cloudflared publishes its URL in seconds while
+# loading tens of gigabytes of weights takes minutes, and announcing the tunnel
+# first would hand the user a profile whose first request fails.
+print("Waiting for the model server to answer before publishing the URL",
+      flush=True)
+deadline = time.monotonic() + 3600
+while not serving():
+    if server.poll() is not None:
+        raise RuntimeError("the model server exited before it answered")
+    if time.monotonic() > deadline:
+        raise RuntimeError("the model server did not answer within an hour")
+    time.sleep(10)
+print("TUNNEL_URL=" + url, flush=True)
+while server.poll() is None and tunnel.poll() is None:
+    time.sleep(30)
+raise RuntimeError("the model server or tunnel exited")

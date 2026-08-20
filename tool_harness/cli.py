@@ -65,6 +65,10 @@ from cli_ollama import (
     OllamaMixin, _close_without_interruption, _install_signals, _ollama_ok,
     _pid_identity, _shared_ollama_state,
 )
+from cli_kaggle import (
+    run_kaggle as _run_kaggle,
+    uninstall_managed_kaggle as _uninstall_managed_kaggle,
+)
 from cli_providers import ProvidersMixin
 from installation import (
     install_launcher as _install_launcher,
@@ -681,7 +685,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             self.ask(text)
 
 
-_COMMAND_SUBCOMMANDS = {"setup", "install", "uninstall"}
+_COMMAND_SUBCOMMANDS = {"setup", "install", "uninstall", "kaggle"}
 
 
 def _color_command(command):
@@ -738,9 +742,16 @@ def main(argv=None):
     setup_requested = bool(arguments and arguments[0] == "setup")
     install_requested = bool(arguments and arguments[0] == "install")
     uninstall_requested = bool(arguments and arguments[0] == "uninstall")
+    kaggle_requested = bool(arguments and arguments[0] == "kaggle")
+    kaggle_cpu_validation = (
+        kaggle_requested and arguments[1:] == ["--flow-validation-cpu"]
+    )
     purge_requested = uninstall_requested and arguments[1:] == ["--purge"]
     ollama_purge_requested = (
         uninstall_requested and arguments[1:] == ["--purge", "--ollama"]
+    )
+    kaggle_purge_requested = (
+        uninstall_requested and arguments[1:] == ["--purge", "--kaggle"]
     )
     if setup_requested:
         if len(arguments) > 1:
@@ -752,8 +763,15 @@ def main(argv=None):
             _print_commands_help(t("cli.install.usage"))
             return 2
         arguments = []
+    elif kaggle_requested:
+        if len(arguments) > 1 and not kaggle_cpu_validation:
+            _print_commands_help(t("cli.kaggle.usage"))
+            return 2
+        arguments = []
     elif uninstall_requested:
-        if len(arguments) > 1 and not (purge_requested or ollama_purge_requested):
+        if len(arguments) > 1 and not (
+            purge_requested or ollama_purge_requested or kaggle_purge_requested
+        ):
             _print_commands_help(t("cli.uninstall.usage"))
             return 2
         arguments = []
@@ -792,11 +810,14 @@ def main(argv=None):
     set_language(config_data.get("language"))
     if install_requested:
         return _install_launcher()
+    if kaggle_requested:
+        return _run_kaggle(validation_cpu=kaggle_cpu_validation)
     if uninstall_requested:
-        if purge_requested or ollama_purge_requested:
+        if purge_requested or ollama_purge_requested or kaggle_purge_requested:
             warning_key = (
-                "cli.uninstall.ollama.warning" if ollama_purge_requested
-                else "cli.uninstall.purge_warning"
+                "cli.uninstall.ollama.warning" if ollama_purge_requested else
+                "cli.uninstall.kaggle.warning" if kaggle_purge_requested else
+                "cli.uninstall.purge_warning"
             )
             print(t(warning_key))
             try:
@@ -817,8 +838,15 @@ def main(argv=None):
             ollama_code = _uninstall_official_ollama()
             if ollama_code != 0:
                 return ollama_code
+        if kaggle_purge_requested:
+            uninstall_code = _uninstall_launcher(purge=True, check_only=True)
+            if uninstall_code != 0:
+                return uninstall_code
+            kaggle_code = _uninstall_managed_kaggle(remove_credentials=True)
+            if kaggle_code != 0:
+                return kaggle_code
         return _uninstall_launcher(
-            purge=purge_requested or ollama_purge_requested,
+            purge=purge_requested or ollama_purge_requested or kaggle_purge_requested,
         )
     _profile_name, default_profile = config.profile(config_data)
     needs_setup = (

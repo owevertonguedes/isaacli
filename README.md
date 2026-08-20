@@ -20,12 +20,15 @@ cd isaacli
 ./isaacli install
 
 isaacli setup
+isaacli kaggle
 isaacli
 ```
 
 Installation adds a per-user link in `~/.local/bin`; it needs no `sudo` and does not overwrite an existing command. The launcher also works from Flatpak terminals such as VS Code from Flathub by running on the host, where Ollama and the sandbox dependencies live.
 
 Setup selects the interface language, engine, model, context and reasoning effort. It can use a local Ollama model with native tool calling or a configurable OpenAI-compatible endpoint. API keys are stored outside the workspace in a `0600` secrets file.
+
+`isaacli kaggle` covers the remote path from a fresh machine: it installs the Kaggle CLI in an isolated per-user environment when necessary, opens Kaggle login, reports accelerator quota, refuses a second visible live kernel, offers curated GPU models, pushes a private GPU kernel, discovers its tunnel URL from the live log and saves a regular `openai_compatible` profile. Every push requires confirmation at that moment. Kaggle is a third-party service whose sessions can stop, and its terms were not designed around notebooks as persistent API servers.
 
 An endpoint on `localhost` needs no API key, since a server you run yourself has none to demand. For those, setup also offers to run the server for you: give it the command that starts it (for example `llama-server -m /path/model.gguf -c 8192`) and isaacli starts it when a session opens, shares it across simultaneous sessions and stops it when the last one closes. Leave the command empty to keep starting it yourself. This is how you point isaacli at any weights you downloaded yourself, from Hugging Face or anywhere else: the model stays entirely on your machine.
 
