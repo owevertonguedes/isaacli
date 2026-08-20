@@ -15,7 +15,7 @@ Nada é enviado a um modelo remoto, a menos que você configure um. Leituras da 
 Requer [Ollama](https://ollama.com), Python 3.10+ e `bwrap` (`bubblewrap`).
 
 ```bash
-git clone https://github.com/owevertonguedes/isaacli.git
+git clone <url-do-repositorio>
 cd isaacli
 ./isaacli install
 
@@ -28,7 +28,7 @@ A instalação adiciona um link do usuário em `~/.local/bin`; não precisa de `
 
 O setup escolhe idioma da interface, motor, modelo, contexto e esforço de raciocínio. Ele pode usar um modelo local no Ollama com chamada de ferramenta nativa, um endpoint configurável compatível com OpenAI ou a integração guiada com GPU do Kaggle. Chaves de API ficam fora do workspace em um arquivo de segredos com modo `0600`.
 
-O Kaggle está disponível no setup, em `isaacli kaggle`, em `/kaggle` e no menu de provedores de `/model`. O fluxo compartilhado instala o CLI do Kaggle num ambiente isolado do usuário quando necessário, abre o login, informa a quota de acelerador, recusa um segundo kernel visível ativo, filtra modelos respaldados por benchmark pelos envelopes exatos de memória da P100 e da T4 x2, envia um kernel privado com GPU, descobre a URL do túnel pelo log ao vivo e grava um perfil normal `openai_compatible`. Cada envio exige confirmação naquele momento. O Kaggle é um serviço de terceiros cujas sessões podem cair, e seus termos não foram feitos pensando em notebooks como servidores persistentes de API.
+O Kaggle está disponível no setup, em `isaacli kaggle`, em `/kaggle` e no menu de provedores de `/model`. O fluxo compartilhado guarda qualquer quantidade de contas do Kaggle, mostra a quota restante de cada uma e deixa a seleção manual com o usuário. Os assets preparados são privados e pertencem à conta selecionada. Quando eles não existem, o fluxo anuncia o custo de arranque medido, oferece preparação somente em CPU e mantém disponível o lançamento autocontido. Cada envio com GPU exige confirmação naquele momento. O Kaggle é um serviço de terceiros cujas sessões podem cair, e seus termos não foram feitos pensando em notebooks como servidores persistentes de API.
 
 Endpoint em `localhost` não pede chave de API, porque um servidor que você mesmo roda não tem chave a exigir. Para esses, o setup também se oferece para subir o servidor por você: informe o comando que o inicia (por exemplo `llama-server -m /caminho/modelo.gguf -c 8192`) e o isaacli sobe ele quando uma sessão abre, compartilha entre sessões simultâneas e derruba quando a última fecha. Deixe o comando vazio para continuar subindo à mão. É assim que você aponta o isaacli para qualquer peso que tenha baixado, do Hugging Face ou de onde for: o modelo fica inteiramente na sua máquina.
 

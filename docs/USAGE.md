@@ -35,16 +35,17 @@ must be removed through the package manager that owns them.
 Run `isaacli kaggle` when the model should run on Kaggle. The command:
 
 1. detects an existing Kaggle CLI or offers one isolated per-user installation;
-2. runs the official Kaggle login flow when the saved refresh credential is absent or invalid;
-3. reports the account's accelerator quota and every visible active kernel;
+2. registers any number of Kaggle accounts, keeps each API credential in the isaacli secret store and asks which account to use;
+3. reports every registered account's remaining accelerator quota and every visible active kernel in the selected account;
 4. refuses a push while another visible kernel is active;
 5. offers curated GGUF models that fit the two-GPU target, with links to their model cards;
-6. asks for explicit confirmation, pushes a private GPU kernel and follows `kaggle kernels logs -f` until the tunnel URL appears;
-7. stores the generated API key in `secrets.json` and a generic `openai_compatible` profile in `config.json`.
+6. checks for reusable private assets owned by the selected account; when they are absent, it announces the measured 34 minute startup cost and offers one-time preparation without GPU quota;
+7. asks for explicit confirmation, pushes a private GPU kernel and follows `kaggle kernels logs -f` until the tunnel URL appears;
+8. stores the generated API key in `secrets.json` and a generic `openai_compatible` profile in `config.json`.
 
 Kaggle has no CLI command to stop a running kernel. The command prints the direct Kaggle page before and after URL discovery so the session can be stopped in the web interface. It uses a unique slug for every push so an older version cannot be hidden behind a newer version of the same slug.
 
-The versioned GPU notebook is [gpu-server.py.tmpl](../contrib/kaggle/gpu-server.py.tmpl). It requests GPU in generated Kaggle metadata and downloads only the readable llama.cpp source, the selected public weight and the published cloudflared binary. It is never started by opening an isaacli session.
+The versioned GPU notebook is [gpu-server.py.tmpl](../contrib/kaggle/gpu-server.py.tmpl). Prepared datasets are always derived from the authenticated Kaggle username and are private by default. If either input is absent, the same notebook remains self-contained and compiles or downloads the missing input after warning about the measured cost. It is never started by opening an isaacli session.
 
 `isaacli kaggle --flow-validation-cpu` exists only to validate orchestration without using GPU quota. Its separate template starts a tiny OpenAI-compatible probe and exits after five minutes. It does not download, load or run a model, and it is never selected by the normal command.
 

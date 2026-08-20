@@ -1,4 +1,4 @@
-"""Kaggle GPU server for isaacli. Requires attached binary and model inputs."""
+"""Kaggle GPU server for isaacli with optional reusable private inputs."""
 import os
 import re
 import shutil
@@ -33,13 +33,48 @@ def input_file(name):
     return matches[0]
 
 
-mounted_server = input_file("llama-server")
-mounted_root = mounted_server.parent.parent
 runtime_root = Path(SCRATCH) / "llama-cuda-sm75-b10502"
-shutil.copytree(mounted_root, runtime_root, dirs_exist_ok=True)
+
+
+def optional_input(name):
+    matches = list(Path("/kaggle/input").rglob(name))
+    return matches[0] if len(matches) == 1 else None
+
+
+archive = optional_input(f"llama-cuda-sm{CUDA_ARCH}-b10502.tar.gz")
+mounted_server = optional_input("llama-server")
+if archive:
+    run(["tar", "-xzf", str(archive), "-C", SCRATCH])
+elif mounted_server:
+    shutil.copytree(mounted_server.parent.parent, runtime_root, dirs_exist_ok=True)
+else:
+    source_dir = Path(SCRATCH) / "llama.cpp"
+    run(["git", "clone", "--depth", "1", "--branch", "b10502",
+         "https://github.com/ggml-org/llama.cpp", str(source_dir)])
+    cuda_driver_candidates = [
+        "/usr/local/nvidia/lib64/libcuda.so.1",
+        "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+        "/usr/local/cuda/lib64/stubs/libcuda.so",
+    ]
+    cuda_driver = next(
+        (path for path in cuda_driver_candidates if os.path.isfile(path)), None)
+    if not cuda_driver:
+        raise RuntimeError("CUDA driver library not found")
+    run(["cmake", "-S", str(source_dir), "-B", str(source_dir / "build"),
+         "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}",
+         f"-DCUDA_cuda_driver_LIBRARY={cuda_driver}"])
+    run(["cmake", "--build", str(source_dir / "build"), "--config",
+         "Release", "-j4", "--target", "llama-server"])
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir / "build" / "bin", runtime_root / "bin")
+
 server_binary = runtime_root / "bin" / "llama-server"
 server_binary.chmod(0o755)
-model_path = input_file(MODEL_FILE)
+model_path = optional_input(MODEL_FILE)
+if model_path is None:
+    model_path = Path(SCRATCH) / MODEL_FILE
+    run(["curl", "-fL", "-o", str(model_path),
+         f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
 server_env = dict(os.environ)
 server_env["LD_LIBRARY_PATH"] = (
     str(runtime_root / "lib") + ":" + server_env.get("LD_LIBRARY_PATH", ""))
@@ -54,7 +89,14 @@ if GPU_COUNT > 1:
 server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"
-shutil.copy2(input_file("cloudflared-linux-amd64"), cloudflared)
+mounted_cloudflared = optional_input("cloudflared-linux-amd64")
+if mounted_cloudflared:
+    shutil.copy2(mounted_cloudflared, cloudflared)
+elif (runtime_root / "cloudflared-linux-amd64").exists():
+    shutil.copy2(runtime_root / "cloudflared-linux-amd64", cloudflared)
+else:
+    run(["curl", "-fL", "-o", cloudflared,
+         "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"])
 run(["chmod", "+x", cloudflared])
 tunnel = subprocess.Popen(
     [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],

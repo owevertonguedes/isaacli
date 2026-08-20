@@ -26,7 +26,7 @@ security remain part of the protection model.
 | Feedback | `tool_harness/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask |
 | Runtime coordination | `XDG_RUNTIME_DIR/isaacli` or `/tmp/isaacli-<uid>` | Process identities and managed-Ollama state, not conversation content; the application requests a `0700` directory |
 | Ollama models | Ollama-managed paths | Model weights and Ollama data; outside isaacli's secret store |
-| Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, the regular config and secrets files | Records only CLI ownership and uploaded kernel slugs in config. The generated tunnel API key stays in `secrets.json`. Kaggle refresh credentials remain under `~/.kaggle`. |
+| Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, `kaggle-accounts/`, the regular config and secrets files | Account credentials and generated tunnel API keys stay in `secrets.json` with mode `0600`. A selected credential is materialized with mode `0600` under `kaggle-accounts/` and supplied only through `KAGGLE_CONFIG_DIR`. Kernel slugs record their owning account. Prepared datasets default to private. |
 
 Git ignores sessions, feedback and secrets, but `.gitignore` is not access
 control, encryption or a backup exclusion. Copying the clone can copy ignored

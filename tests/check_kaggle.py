@@ -516,6 +516,25 @@ check(not public_flag_hits,
 check(not private_flag_hits,
       "no Kaggle dataset or kernel is ever declared non-private")
 
+# Registering an account writes a real Kaggle credential to disk. It must not
+# land in the public config, and the file the CLI reads has to be unreadable by
+# anyone else on the machine. Checked by effect, on the bytes and the mode.
+credential_config = root / "credentials" / "config.json"
+config.save({"language": "en"}, credential_config)
+cli_kaggle.register_account(
+    "tester", {"key": "SECRET-UNDER-TEST"}, credential_config)
+account_env = cli_kaggle._account_environment("tester", credential_config)
+account_files = sorted(Path(account_env["KAGGLE_CONFIG_DIR"]).iterdir())
+carrying_secret = [
+    path for path in account_files
+    if "SECRET-UNDER-TEST" in path.read_text(encoding="utf-8", errors="ignore")
+]
+check(bool(carrying_secret)
+      and all((path.stat().st_mode & 0o777) == 0o600 for path in carrying_secret),
+      "the credential the Kaggle CLI reads is written unreadable by other users")
+check("SECRET-UNDER-TEST" not in credential_config.read_text(encoding="utf-8"),
+      "a Kaggle credential never reaches the config file that carries no secrets")
+
 # `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
 # it must call cli_kaggle.run_kaggle itself, the same function object imported
 # by the top-level `isaacli kaggle` command, rather than a copied flow.

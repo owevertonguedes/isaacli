@@ -1,0 +1,62 @@
+"""Build the reusable CUDA runtime in a Kaggle CPU session."""
+import os
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+CUDA_ARCH = "__CUDA_ARCH__"
+SCRATCH = Path(tempfile.gettempdir())
+CUDA_ROOT = SCRATCH / "cuda"
+SOURCE = SCRATCH / "llama.cpp"
+PACKAGE = SCRATCH / f"llama-cuda-sm{CUDA_ARCH}-b10502"
+OUTPUT = Path("/kaggle/working") / f"llama-cuda-sm{CUDA_ARCH}-b10502.tar.gz"
+
+
+def run(command, env=None):
+    subprocess.run(command, check=True, env=env)
+
+
+installer = SCRATCH / "cuda.run"
+run([
+    "curl", "-fL", "-o", str(installer),
+    "https://developer.download.nvidia.com/compute/cuda/12.8.1/local_installers/cuda_12.8.1_570.124.06_linux.run",
+])
+installer.chmod(0o755)
+run([
+    str(installer), "--silent", "--toolkit", "--override",
+    f"--toolkitpath={CUDA_ROOT}",
+])
+run([
+    "git", "clone", "--depth", "1", "--branch", "b10502",
+    "https://github.com/ggml-org/llama.cpp", str(SOURCE),
+])
+environment = dict(os.environ)
+environment["PATH"] = str(CUDA_ROOT / "bin") + ":" + environment.get("PATH", "")
+run([
+    "cmake", "-S", str(SOURCE), "-B", str(SOURCE / "build"),
+    "-DGGML_CUDA=ON", "-DGGML_NATIVE=OFF",
+    f"-DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}",
+    f"-DCMAKE_CUDA_COMPILER={CUDA_ROOT / 'bin/nvcc'}",
+    f"-DCUDAToolkit_ROOT={CUDA_ROOT}",
+    f"-DCUDA_cuda_driver_LIBRARY={CUDA_ROOT / 'lib64/stubs/libcuda.so'}",
+], environment)
+subprocess.run([
+    "cmake", "--build", str(SOURCE / "build"), "--config", "Release",
+    "-j4", "--target", "llama-server",
+], check=True, env=environment)
+shutil.copytree(SOURCE / "build" / "bin", PACKAGE / "bin")
+(PACKAGE / "lib").mkdir()
+for library in (CUDA_ROOT / "lib64").glob("libcudart.so*"):
+    if library.is_file():
+        shutil.copy2(library, PACKAGE / "lib" / library.name)
+cloudflared = PACKAGE / "cloudflared-linux-amd64"
+run([
+    "curl", "-fL", "-o", str(cloudflared),
+    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
+])
+with tarfile.open(OUTPUT, "w:gz") as archive:
+    archive.add(PACKAGE, arcname=PACKAGE.name)
+print(f"PREPARED_ASSET={OUTPUT}", flush=True)

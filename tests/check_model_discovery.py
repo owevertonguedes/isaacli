@@ -227,9 +227,10 @@ try:
           and kaggle_model["model_bytes"] == 18 * GB,
           "an exact Kaggle GGUF reaches the launch path with resolved values")
     check(metadata["machine_shape"] == "NvidiaTeslaT4"
-          and len(metadata["dataset_sources"]) == 1
-          and kaggle_model["file_url"] in generated,
-          "the dynamic Kaggle kernel uses the T4 binary and the exact HF file URL")
+          and metadata["dataset_sources"] == []
+          and f'MODEL_REPO = "{kaggle_model["repo"]}"' in generated
+          and f'MODEL_FILE = "{kaggle_model["file"]}"' in generated,
+          "the dynamic Kaggle kernel is self-contained and uses the exact HF file URL")
 
     huge_answers = iter([
         "5",

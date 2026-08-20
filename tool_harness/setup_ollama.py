@@ -599,70 +599,18 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
 
 def _render_dynamic_kaggle_kernel(folder, slug, model, api_key,
                                   validation_cpu=False):
-    """Use prepared inputs when present, otherwise download the selected GGUF."""
+    """Render the shared self-contained kernel for a discovered model."""
     import cli_kaggle
 
-    if validation_cpu or model["alias"] in cli_kaggle.MODEL_DATASETS:
-        return _ORIGINAL_KAGGLE_RENDER(
-            folder, slug, model, api_key, validation_cpu,
-        )
-    template = (cli_kaggle.TEMPLATE_DIR / "gpu-server.py.tmpl").read_text(
-        encoding="utf-8",
-    )
-    values = {
-        "__MODEL_REPO__": model["repo"],
-        "__MODEL_FILE__": model["file"],
-        "__MODEL_ALIAS__": model["alias"],
-        "__API_KEY__": api_key,
-        "__CUDA_ARCH__": model["cuda_arch"],
-        "__MACHINE_SHAPE__": model["machine_shape"],
-        "__GPU_COUNT__": str(model["gpu_count"]),
-    }
-    for marker, value in values.items():
-        template = template.replace(marker, value)
-    download_code = (
-        "model_path = Path(SCRATCH) / MODEL_FILE\n"
-        f"run([\"curl\", \"-fL\", \"-o\", str(model_path), {json.dumps(model['file_url'])}])"
-    )
-    expected = "model_path = input_file(MODEL_FILE)"
-    if expected not in template:
-        raise RuntimeError(model_discovery.text("model.discovery.template_changed"))
-    template = template.replace(expected, download_code)
-    code_name = f"{slug.rsplit('/', 1)[-1]}.py"
-    (folder / code_name).write_text(template, encoding="utf-8")
-    metadata = {
-        "id": slug,
-        "title": slug.rsplit("/", 1)[-1].replace("-", " "),
-        "code_file": code_name,
-        "language": "python",
-        "kernel_type": "script",
-        "is_private": True,
-        "enable_gpu": True,
-        "enable_tpu": False,
-        "enable_internet": True,
-        "keywords": [],
-        "dataset_sources": [cli_kaggle.CUDA_BINARY_DATASETS[model["cuda_arch"]]],
-        "kernel_sources": [],
-        "competition_sources": [],
-        "model_sources": [],
-        "machine_shape": model["machine_shape"],
-    }
-    (folder / "kernel-metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8",
-    )
-
-
-_ORIGINAL_KAGGLE_RENDER = None
+    return cli_kaggle._render_kernel(
+        folder, slug, model, api_key, validation_cpu, dataset_sources=[])
 
 
 def run_kaggle(**kwargs):
     """Run cli_kaggle through the shared dynamic selector without duplicating flow."""
     import cli_kaggle
 
-    global _ORIGINAL_KAGGLE_RENDER
     original_select = cli_kaggle._select_model
-    original_render = cli_kaggle._render_kernel
-    _ORIGINAL_KAGGLE_RENDER = original_render
     input_fn = kwargs.get("input_fn") or input
     urlopen_fn = kwargs.get("urlopen_fn", urllib.request.urlopen)
     cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH: (
@@ -670,13 +618,10 @@ def run_kaggle(**kwargs):
             _input, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
         )
     )
-    cli_kaggle._render_kernel = _render_dynamic_kaggle_kernel
     try:
         return cli_kaggle.run_kaggle(**kwargs)
     finally:
         cli_kaggle._select_model = original_select
-        cli_kaggle._render_kernel = original_render
-        _ORIGINAL_KAGGLE_RENDER = None
 
 
 def _run_setup(input_fn=input, config_file=None, initial_language=None,

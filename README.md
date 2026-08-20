@@ -15,7 +15,7 @@ Nothing is sent to a remote model unless you configure one. Web reads use explic
 Requires [Ollama](https://ollama.com), Python 3.10+ and `bwrap` (`bubblewrap`).
 
 ```bash
-git clone https://github.com/owevertonguedes/isaacli.git
+git clone <repository-url>
 cd isaacli
 ./isaacli install
 
@@ -28,7 +28,7 @@ Installation adds a per-user link in `~/.local/bin`; it needs no `sudo` and does
 
 Setup selects the interface language, engine, model, context and reasoning effort. It can use a local Ollama model with native tool calling, a configurable OpenAI-compatible endpoint, or the guided Kaggle GPU integration. API keys are stored outside the workspace in a `0600` secrets file.
 
-Kaggle is available from setup, `isaacli kaggle`, `/kaggle`, and the `/model` provider menu. The shared flow installs the Kaggle CLI in an isolated per-user environment when necessary, opens Kaggle login, reports accelerator quota, refuses a second visible live kernel, filters benchmark-backed models through the exact P100 and T4 x2 memory envelopes, pushes a private GPU kernel, discovers its tunnel URL from the live log and saves a regular `openai_compatible` profile. Every push requires confirmation at that moment. Kaggle is a third-party service whose sessions can stop, and its terms were not designed around notebooks as persistent API servers.
+Kaggle is available from setup, `isaacli kaggle`, `/kaggle`, and the `/model` provider menu. The shared flow stores any number of Kaggle accounts, shows each account's remaining quota and lets the user select one manually. Prepared assets are private and belong to the selected account. When they do not exist, the flow announces the measured startup cost, offers CPU-only preparation, and keeps the self-contained launch path available. Every GPU push requires confirmation at that moment. Kaggle is a third-party service whose sessions can stop, and its terms were not designed around notebooks as persistent API servers.
 
 An endpoint on `localhost` needs no API key, since a server you run yourself has none to demand. For those, setup also offers to run the server for you: give it the command that starts it (for example `llama-server -m /path/model.gguf -c 8192`) and isaacli starts it when a session opens, shares it across simultaneous sessions and stops it when the last one closes. Leave the command empty to keep starting it yourself. This is how you point isaacli at any weights you downloaded yourself, from Hugging Face or anywhere else: the model stays entirely on your machine.
 
