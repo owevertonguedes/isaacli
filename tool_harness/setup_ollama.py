@@ -16,6 +16,8 @@ from pathlib import Path
 import agent
 import config
 import debug
+import hardware
+import model_discovery
 import terminal_ui
 from i18n import SUPPORTED_LANGUAGES, Translator
 
@@ -198,6 +200,91 @@ def _model_label(item, installed, tr):
     state = ("model.installed" if _is_installed(base, installed)
               else "model.not_installed")
     return f"{base} [{tr.t(state)}]"
+
+
+def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
+    """Show exact fit inputs and require consent when the model does not fit."""
+    if vram_mb is None:
+        vram_mb, gpu_count = model_discovery.local_vram()
+        overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    report = model_discovery.fit_report(
+        model, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB,
+    )
+    print(model_discovery.format_fit(report))
+    print(model_discovery.benchmark_line(model))
+    if report["fits"]:
+        return report
+    answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
+    return report if answer == model_discovery.text("model.discovery.yes") else None
+
+
+def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
+                           urlopen_fn=urllib.request.urlopen):
+    """Resolve an Ollama reference before pull, or disclose what is unknown."""
+    if reference.startswith(("hf.co/", "https://huggingface.co/",
+                             "http://huggingface.co/")):
+        model = model_discovery.resolve_hf_model(
+            reference, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
+        )
+        report = _confirm_model_fit(model, input_fn)
+        if report is None:
+            return None
+        item = _model_item(reference)
+        item["resolved"] = report
+        return item
+    print(model_discovery.text(
+        "model.discovery.unresolved",
+        error=model_discovery.text("model.discovery.ollama_unresolved"),
+    ))
+    answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
+    return (_model_item(reference) if
+            answer == model_discovery.text("model.discovery.yes") else None)
+
+
+def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
+                         urlopen_fn=urllib.request.urlopen):
+    """One secondary screen for live discovery and exact Ollama references."""
+    try:
+        discovered, errors = model_discovery.discover_models(
+            catalog_path, urlopen_fn=urlopen_fn,
+        )
+    except model_discovery.DiscoveryError as error:
+        discovered, errors = [], [str(error)]
+    for error in errors:
+        print(model_discovery.text("model.discovery.failed", error=error))
+    entries = [*discovered, "__exact__", "__back__"]
+    options = [
+        *[
+            f"{item['name']} | {item['benchmark']} | "
+            f"{item['model_bytes'] / 1024 ** 3:.2f} GiB"
+            for item in discovered
+        ],
+        model_discovery.text("model.discovery.exact"),
+        model_discovery.text("model.discovery.back"),
+    ]
+    index = _select(
+        tr, model_discovery.text("model.discovery.section"), options, input_fn,
+    )
+    chosen = entries[index]
+    if chosen == "__back__":
+        return None
+    if chosen == "__exact__":
+        reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
+        if not reference:
+            return None
+        try:
+            return _resolve_custom_ollama(
+                reference, input_fn, catalog_path, urlopen_fn,
+            )
+        except model_discovery.DiscoveryError as error:
+            print(model_discovery.text("model.discovery.unresolved", error=error))
+            return None
+    report = _confirm_model_fit(chosen, input_fn)
+    if report is None:
+        return None
+    item = _model_item(model_discovery.ollama_reference(chosen))
+    item["resolved"] = report
+    return item
 
 
 def _choose_context(limit, input_fn, tr):
@@ -421,7 +508,175 @@ def _setup_kaggle(language, input_fn, config_file):
     data["language"] = language
     config.save(data, config_file)
     set_language(language)
-    return cli_kaggle.run_kaggle(input_fn=input_fn, config_file=config_file)
+    return run_kaggle(input_fn=input_fn, config_file=config_file)
+
+
+def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
+                             urlopen_fn=urllib.request.urlopen):
+    """Combine the offline seed with live GGUF discovery for Kaggle."""
+    import cli_kaggle
+
+    seeded = cli_kaggle._load_model_candidates(catalog_path)
+    try:
+        discovered, errors = model_discovery.discover_models(
+            catalog_path, urlopen_fn=urlopen_fn,
+        )
+    except model_discovery.DiscoveryError as error:
+        discovered, errors = [], [str(error)]
+    for error in errors:
+        print(model_discovery.text("model.discovery.failed", error=error))
+    merged = {}
+    for item in [*seeded, *discovered]:
+        merged[(item["repo"].casefold(), item["file"].casefold())] = item
+    accelerator = cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]
+    models = []
+    for item in merged.values():
+        report = model_discovery.fit_report(
+            item, accelerator["vram_mb"],
+            overhead_mb=accelerator["overhead_mb"],
+        )
+        if report["fits"]:
+            report.update({
+                "machine_shape": "NvidiaTeslaT4",
+                "machine_label": accelerator["label"],
+                "cuda_arch": accelerator["cuda_arch"],
+                "gpu_count": accelerator["gpu_count"],
+            })
+            models.append(report)
+    models.sort(key=lambda item: item["bytes_per_token"])
+    print(model_discovery.text("model.discovery.section"))
+    for index, item in enumerate(models, 1):
+        print(
+            f"  {index}. {item['name']} | {item['model_bytes'] / 1024 ** 3:.2f} GiB | "
+            f"{item['machine_label']} | {item.get('benchmark') or model_discovery.NO_PUBLIC_SCORE}"
+        )
+        print(f"     {item['source']}")
+        if item.get("benchmark_source"):
+            print(
+                f"     {item['benchmark_source']} "
+                f"({model_discovery.text('model.discovery.scope')})"
+            )
+    other_number = len(models) + 1
+    print(f"  {other_number}. {model_discovery.text('model.discovery.exact')}")
+    answer = input_fn(model_discovery.text("model.discovery.kaggle_prompt")).strip()
+    try:
+        selected = int(answer) - 1
+    except ValueError:
+        selected = -1
+    if 0 <= selected < len(models):
+        return models[selected]
+    if selected != len(models):
+        raise RuntimeError(model_discovery.text("model.discovery.invalid"))
+    reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
+    try:
+        repo, selected_file = model_discovery.parse_hf_reference(reference)
+        if selected_file is None:
+            selected_file = input_fn(
+                model_discovery.text("model.discovery.file_prompt")
+            ).strip()
+        model = model_discovery.resolve_hf_model(
+            repo, selected_file, catalog_path, urlopen_fn=urlopen_fn,
+        )
+    except model_discovery.DiscoveryError as error:
+        raise RuntimeError(str(error)) from error
+    report = model_discovery.fit_report(
+        model, accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
+    )
+    print(model_discovery.format_fit(report))
+    print(model_discovery.benchmark_line(model))
+    if not report["fits"]:
+        answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
+        if answer != model_discovery.text("model.discovery.yes"):
+            raise RuntimeError(model_discovery.text("model.discovery.not_selected"))
+    report.update({
+        "machine_shape": "NvidiaTeslaT4",
+        "machine_label": accelerator["label"],
+        "cuda_arch": accelerator["cuda_arch"],
+        "gpu_count": accelerator["gpu_count"],
+    })
+    return report
+
+
+def _render_dynamic_kaggle_kernel(folder, slug, model, api_key,
+                                  validation_cpu=False):
+    """Use prepared inputs when present, otherwise download the selected GGUF."""
+    import cli_kaggle
+
+    if validation_cpu or model["alias"] in cli_kaggle.MODEL_DATASETS:
+        return _ORIGINAL_KAGGLE_RENDER(
+            folder, slug, model, api_key, validation_cpu,
+        )
+    template = (cli_kaggle.TEMPLATE_DIR / "gpu-server.py.tmpl").read_text(
+        encoding="utf-8",
+    )
+    values = {
+        "__MODEL_REPO__": model["repo"],
+        "__MODEL_FILE__": model["file"],
+        "__MODEL_ALIAS__": model["alias"],
+        "__API_KEY__": api_key,
+        "__CUDA_ARCH__": model["cuda_arch"],
+        "__MACHINE_SHAPE__": model["machine_shape"],
+        "__GPU_COUNT__": str(model["gpu_count"]),
+    }
+    for marker, value in values.items():
+        template = template.replace(marker, value)
+    download_code = (
+        "model_path = Path(SCRATCH) / MODEL_FILE\n"
+        f"run([\"curl\", \"-fL\", \"-o\", str(model_path), {json.dumps(model['file_url'])}])"
+    )
+    expected = "model_path = input_file(MODEL_FILE)"
+    if expected not in template:
+        raise RuntimeError(model_discovery.text("model.discovery.template_changed"))
+    template = template.replace(expected, download_code)
+    code_name = f"{slug.rsplit('/', 1)[-1]}.py"
+    (folder / code_name).write_text(template, encoding="utf-8")
+    metadata = {
+        "id": slug,
+        "title": slug.rsplit("/", 1)[-1].replace("-", " "),
+        "code_file": code_name,
+        "language": "python",
+        "kernel_type": "script",
+        "is_private": True,
+        "enable_gpu": True,
+        "enable_tpu": False,
+        "enable_internet": True,
+        "keywords": [],
+        "dataset_sources": [cli_kaggle.CUDA_BINARY_DATASETS[model["cuda_arch"]]],
+        "kernel_sources": [],
+        "competition_sources": [],
+        "model_sources": [],
+        "machine_shape": model["machine_shape"],
+    }
+    (folder / "kernel-metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8",
+    )
+
+
+_ORIGINAL_KAGGLE_RENDER = None
+
+
+def run_kaggle(**kwargs):
+    """Run cli_kaggle through the shared dynamic selector without duplicating flow."""
+    import cli_kaggle
+
+    global _ORIGINAL_KAGGLE_RENDER
+    original_select = cli_kaggle._select_model
+    original_render = cli_kaggle._render_kernel
+    _ORIGINAL_KAGGLE_RENDER = original_render
+    input_fn = kwargs.get("input_fn") or input
+    urlopen_fn = kwargs.get("urlopen_fn", urllib.request.urlopen)
+    cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH: (
+        _dynamic_kaggle_selector(
+            _input, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
+        )
+    )
+    cli_kaggle._render_kernel = _render_dynamic_kaggle_kernel
+    try:
+        return cli_kaggle.run_kaggle(**kwargs)
+    finally:
+        cli_kaggle._select_model = original_select
+        cli_kaggle._render_kernel = original_render
+        _ORIGINAL_KAGGLE_RENDER = None
 
 
 def _run_setup(input_fn=input, config_file=None, initial_language=None,
@@ -489,13 +744,17 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                 and item["base_model"].removesuffix(":latest").casefold()
                 not in configured_derivatives
             ]
-            entries = [None, *recommended_items, None, *local_items, "__back__"]
+            entries = [
+                None, *recommended_items, None, *local_items,
+                "__back__", "__other__",
+            ]
             options = [
                 tr.t("model.section.recommended"),
                 *[_model_label(item, installed, tr) for item in recommended_items],
                 tr.t("model.section.installed", count=len(local_items)),
                 *[item["base_model"] for item in local_items],
                 tr.t("navigation.back"),
+                model_discovery.text("model.discovery.other"),
             ]
             headers = {0, len(recommended_items) + 1}
             _current_profile, current_item = config.profile(current_config)
@@ -524,6 +783,10 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                 if ollama_only:
                     return 130
                 return _run_setup(input_fn, config_file, initial_language=language)
+            if chosen == "__other__":
+                chosen = _choose_other_ollama(input_fn, tr)
+                if chosen is None:
+                    continue
             base = chosen["base_model"]
             if not _is_installed(base, installed):
                 index = _select(

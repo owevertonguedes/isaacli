@@ -1,4 +1,4 @@
-"""Kaggle GPU server for isaacli. Requires the selected GPU and internet."""
+"""Kaggle GPU server for isaacli. Requires attached binary and model inputs."""
 import os
 import re
 import shutil
@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 MODEL_REPO = "__MODEL_REPO__"
 MODEL_FILE = "__MODEL_FILE__"
@@ -17,10 +18,7 @@ CUDA_ARCH = "__CUDA_ARCH__"
 MACHINE_SHAPE = "__MACHINE_SHAPE__"
 GPU_COUNT = __GPU_COUNT__
 PORT = 8080
-# `/kaggle/working` is the persisted output directory and is capped well below
-# what this needs: the weights alone are around 18 GB and the CUDA build adds
-# several more. Kaggle mounts /tmp as writable session scratch, so ask Python
-# for that mounted temporary directory instead of inventing another path.
+# The attached inputs are read-only and already expanded by Kaggle.
 SCRATCH = tempfile.gettempdir()
 
 
@@ -28,60 +26,35 @@ def run(command):
     subprocess.run(command, check=True)
 
 
-# Fail here, with the real numbers, instead of dying half an hour into a CUDA
-# build that is already spending GPU quota.
-NEEDED_BYTES = 32 * 1024 ** 3
-free_bytes = shutil.disk_usage(SCRATCH).free
-print(f"Scratch directory {SCRATCH}: {free_bytes / 1024 ** 3:.1f} GiB free",
-      flush=True)
-if free_bytes < NEEDED_BYTES:
-    raise RuntimeError(
-        f"{SCRATCH} has {free_bytes / 1024 ** 3:.1f} GiB free and the build plus "
-        f"the weights need about {NEEDED_BYTES / 1024 ** 3:.0f} GiB")
+def input_file(name):
+    matches = list(Path("/kaggle/input").rglob(name))
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one attached {name}, found {len(matches)}")
+    return matches[0]
 
-print("Building llama.cpp with CUDA", flush=True)
-source_dir = f"{SCRATCH}/llama.cpp"
-run(["git", "clone", "--depth", "1", "--branch", "b10502",
-     "https://github.com/ggml-org/llama.cpp", source_dir])
 
-# nvcc and the runtime libraries come from the toolkit, while libcuda is
-# mounted by the NVIDIA container runtime outside it. Resolve the real driver
-# explicitly because CMake does not search every runtime mount. The toolkit
-# stub remains a last resort for images that expose the driver through ld.so.
-cuda_driver_candidates = [
-    "/usr/local/nvidia/lib64/libcuda.so.1",
-    "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
-    "/usr/local/cuda/lib64/stubs/libcuda.so",
-]
-cuda_driver = next(
-    (path for path in cuda_driver_candidates if os.path.isfile(path)), None)
-if not cuda_driver:
-    raise RuntimeError(
-        "CUDA driver library not found in: " + ", ".join(cuda_driver_candidates))
-print(f"CUDA driver library: {cuda_driver}", flush=True)
-run(["cmake", "-S", source_dir, "-B", f"{source_dir}/build",
-     "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}",
-     f"-DCUDA_cuda_driver_LIBRARY={cuda_driver}"])
-run(["cmake", "--build", f"{source_dir}/build", "--config",
-     "Release", "-j4", "--target", "llama-server"])
-
-print("Downloading the selected model weights", flush=True)
-model_path = f"{SCRATCH}/{MODEL_FILE}"
-run(["curl", "-fL", "-o", model_path,
-     f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
+mounted_server = input_file("llama-server")
+mounted_root = mounted_server.parent.parent
+runtime_root = Path(SCRATCH) / "llama-cuda-sm75-b10502"
+shutil.copytree(mounted_root, runtime_root, dirs_exist_ok=True)
+server_binary = runtime_root / "bin" / "llama-server"
+server_binary.chmod(0o755)
+model_path = input_file(MODEL_FILE)
+server_env = dict(os.environ)
+server_env["LD_LIBRARY_PATH"] = (
+    str(runtime_root / "lib") + ":" + server_env.get("LD_LIBRARY_PATH", ""))
 server_command = [
-    f"{source_dir}/build/bin/llama-server",
-    "-m", model_path, "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
+    str(server_binary),
+    "-m", str(model_path), "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
     "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
 ]
 if GPU_COUNT > 1:
     server_command.extend(["--split-mode", "layer"])
-server = subprocess.Popen(server_command)
+server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"
-run(["curl", "-fL", "-o", cloudflared,
-     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"])
+shutil.copy2(input_file("cloudflared-linux-amd64"), cloudflared)
 run(["chmod", "+x", cloudflared])
 tunnel = subprocess.Popen(
     [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],

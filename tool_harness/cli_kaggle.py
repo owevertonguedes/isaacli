@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import config
@@ -43,6 +45,12 @@ ACCELERATORS = {
     },
 }
 ACCELERATOR_PREFERENCE = ("NvidiaTeslaP100", "NvidiaTeslaT4")
+CUDA_BINARY_DATASETS = {
+    "75": "owevertonguedes/isaacli-llama-cuda-sm75-b10502",
+}
+MODEL_DATASETS = {
+    "qwen38-27b": "owevertonguedes/isaacli-qwen38-27b-ud-q4-k-m",
+}
 
 
 def _home(home_dir=None):
@@ -225,7 +233,7 @@ def _load_model_candidates(path=MODEL_CATALOG_PATH):
     required = {
         "name", "repo", "file", "alias", "source", "model_bytes",
         "n_layers", "n_kv_heads", "head_dim", "benchmark",
-        "benchmark_source",
+        "benchmark_source", "active_ratio",
     }
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -260,7 +268,16 @@ def models_for_accelerator(machine_shape, catalog_path=MODEL_CATALOG_PATH):
                 "kv_bytes": kv_bytes,
             })
             selected.append(model)
-    return selected
+    return sorted(selected, key=lambda item: (item["active_ratio"], item["model_bytes"]))
+
+
+def prepared_models(catalog_path=MODEL_CATALOG_PATH):
+    """Models whose exact weight and architecture binary are reusable inputs."""
+    return [
+        model for model in recommended_models(catalog_path)
+        if model["alias"] in MODEL_DATASETS
+        and model["cuda_arch"] in CUDA_BINARY_DATASETS
+    ]
 
 
 def recommended_models(catalog_path=MODEL_CATALOG_PATH):
@@ -279,7 +296,7 @@ def recommended_models(catalog_path=MODEL_CATALOG_PATH):
 
 
 def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH):
-    models = recommended_models(catalog_path)
+    models = prepared_models(catalog_path)
     if not models:
         raise RuntimeError(t("cli.kaggle.models.none"))
     print(t("cli.kaggle.models.title"))
@@ -333,17 +350,26 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False):
     }
     if not validation_cpu:
         metadata["machine_shape"] = model["machine_shape"]
+        try:
+            metadata["dataset_sources"] = [
+                CUDA_BINARY_DATASETS[model["cuda_arch"]],
+                MODEL_DATASETS[model["alias"]],
+            ]
+        except KeyError as error:
+            raise RuntimeError(
+                f"no reusable Kaggle asset is published for {error.args[0]}"
+            ) from error
     (folder / "kernel-metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8",
     )
 
 
-# The kernel builds llama.cpp with CUDA and downloads more than 15 GB before it
-# can serve anything, and it only publishes the URL once the server answers.
-# Measured on 2026-08-20 with Qwen3.8-27B on T4 x2: 34 minutes of GPU time from
-# push to first token. A shorter wait does not fail safely, because the kernel
-# keeps running and spending quota while the command has already given up.
-URL_DISCOVERY_TIMEOUT = 75 * 60
+# The reusable inputs remove the 34 minute build and download path. The same
+# model took 43.5 seconds to load in the measured T4 x2 run. A CPU probe with
+# the attached 15.33 GiB dataset took 11 minutes 26 seconds from push to status
+# check after completion, although its script ran in one second. Thirty minutes
+# covers input staging, scheduling, loading and tunnel startup.
+URL_DISCOVERY_TIMEOUT = 30 * 60
 
 
 def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
@@ -395,16 +421,62 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None):
     data["default_profile"] = profile_name
     state = data.setdefault("kaggle", {})
     kernels = state.setdefault("kernels", [])
-    kernels.append({"slug": slug, "url": url, "web_url": f"https://www.kaggle.com/code/{slug}"})
+    kernels.append({
+        "slug": slug, "url": url,
+        "web_url": f"https://www.kaggle.com/code/{slug}",
+        "profile": profile_name, "model": model["alias"],
+    })
     config.save(data, config_file)
     secret_path = Path(config_file).with_name("secrets.json") if config_file else None
     config.save_secret(credential, api_key, secret_path)
     return profile_name
 
 
+def _reactivate_live_profile(live, config_file=None,
+                             urlopen_fn=urllib.request.urlopen):
+    """Reactivate a saved profile only when its recorded kernel and API answer."""
+    data = config.load(config_file)
+    live_refs = {ref for ref, _state in live}
+    secret_path = Path(config_file).with_name("secrets.json") if config_file else None
+    for record in reversed((data.get("kaggle") or {}).get("kernels") or []):
+        if record.get("slug") not in live_refs:
+            continue
+        profile_name = record.get("profile")
+        if not profile_name and record.get("url"):
+            expected_url = record["url"].rstrip("/") + "/v1"
+            profile_name = next((
+                name for name, item in (data.get("profiles") or {}).items()
+                if item.get("base_url", "").rstrip("/") == expected_url
+            ), None)
+        profile = (data.get("profiles") or {}).get(profile_name)
+        if not profile or profile.get("model") == "isaacli-flow-probe":
+            continue
+        key = config.load_secret(profile.get("credential"), secret_path)
+        request = urllib.request.Request(
+            profile["base_url"].rstrip("/") + "/models",
+            headers={"Authorization": "Bearer " + key} if key else {},
+        )
+        try:
+            with urlopen_fn(request, timeout=10) as answer:
+                if answer.status != 200:
+                    debug.note(
+                        "cli_kaggle._reactivate_live_profile status",
+                        f"saved endpoint returned HTTP {answer.status}",
+                    )
+                    continue
+        except (urllib.error.URLError, OSError, TimeoutError):
+            debug.swallowed("cli_kaggle._reactivate_live_profile probe")
+            continue
+        data["default_profile"] = profile_name
+        config.save(data, config_file)
+        return profile_name, record
+    return None, None
+
+
 def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 popen_fn=subprocess.Popen, config_file=None, home_dir=None,
-                record_path=None, which_fn=shutil.which):
+                record_path=None, which_fn=shutil.which,
+                urlopen_fn=urllib.request.urlopen):
     """Run the user-confirmed Kaggle setup, push, discovery and profile cycle."""
     input_fn = input if input_fn is None else input_fn
     print(t("cli.kaggle.terms"))
@@ -426,8 +498,27 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         for ref, state in live:
             print(t("cli.kaggle.live", slug=ref, state=state,
                     url=f"https://www.kaggle.com/code/{ref}"))
+        if not validation_cpu:
+            profile, record = _reactivate_live_profile(
+                live, config_file, urlopen_fn=urlopen_fn,
+            )
+            if profile:
+                print(t("cli.kaggle.reused", profile=profile,
+                        url=record["url"] + "/v1"))
+                return 0
+            saved_refs = {
+                item.get("slug") for item in
+                (config.load(config_file).get("kaggle") or {}).get("kernels", [])
+            }
+            if any(ref in saved_refs for ref, _state in live):
+                print(t("cli.kaggle.unresponsive"))
+                return 1
         print(t("cli.kaggle.second_refused"))
         return 1
+    if not validation_cpu:
+        saved = (config.load(config_file).get("kaggle") or {}).get("kernels", [])
+        if saved:
+            print(t("cli.kaggle.dead", slug=saved[-1].get("slug", "?")))
     if validation_cpu:
         print(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}

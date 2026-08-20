@@ -818,7 +818,8 @@ def main(argv=None):
     if install_requested:
         return _install_launcher()
     if kaggle_requested:
-        return _run_kaggle(validation_cpu=kaggle_cpu_validation)
+        import setup_ollama
+        return setup_ollama.run_kaggle(validation_cpu=kaggle_cpu_validation)
     if uninstall_requested:
         if purge_requested or ollama_purge_requested or kaggle_purge_requested:
             warning_key = (

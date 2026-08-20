@@ -239,9 +239,9 @@ class CommandsMixin:
                 print(t("cli.model.set", model=self.model, source=source))
             return True
         if cmd == "/kaggle":
-            import cli_kaggle
+            import setup_ollama
 
-            code = cli_kaggle.run_kaggle(config_file=self.config_file)
+            code = setup_ollama.run_kaggle(config_file=self.config_file)
             if code == 0:
                 try:
                     data = config.load(self.config_file)

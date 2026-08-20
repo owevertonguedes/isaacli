@@ -169,17 +169,16 @@ module_source = (HERE.parent / "tool_harness" / "cli_kaggle.py").read_text(encod
 check('"sudo"' not in module_source and "'sudo'" not in module_source,
       "no Kaggle orchestration command can invoke sudo")
 
-# The kernel builds CUDA and downloads more than 15 GB before it can answer, and
-# it only publishes the URL once the server does. A five minute wait guarantees
-# the command gives up while the kernel keeps spending quota, which is exactly
-# how the first real attempt failed. Measured cost from push to first token was
-# 34 minutes, so the ceiling has to leave real room above that.
+# Attached inputs leave model loading as the long step. The measured T4 x2 load
+# took 43.5 seconds, while a real attached-weight CPU probe took 11 minutes 26
+# seconds wall clock despite one second of script time. The ceiling also has to
+# cover scheduling and tunnel startup without retaining the old 75 minutes.
 import inspect
 
 discovery_default = inspect.signature(
     cli_kaggle.discover_tunnel_url).parameters["timeout"].default
-check(discovery_default >= 45 * 60,
-      "waiting for the tunnel outlasts a real build, download and model load")
+check(20 * 60 <= discovery_default <= 40 * 60,
+      "the discovery ceiling fits attached-input startup with scheduling room")
 
 gpu_dir = root / "gpu-render"
 gpu_t4_dir = root / "gpu-t4-render"
@@ -188,15 +187,8 @@ gpu_dir.mkdir()
 gpu_t4_dir.mkdir()
 cpu_dir.mkdir()
 recommended = cli_kaggle.recommended_models()
-p100_model = next(
-    model for model in recommended
-    if model["machine_shape"] == "NvidiaTeslaP100"
-)
-t4_model = next(
-    model for model in recommended
-    if model["machine_shape"] == "NvidiaTeslaT4"
-)
-cli_kaggle._render_kernel(gpu_dir, "user/gpu", p100_model, "key", False)
+t4_model = cli_kaggle.prepared_models()[0]
+cli_kaggle._render_kernel(gpu_dir, "user/gpu", t4_model, "key", False)
 cli_kaggle._render_kernel(gpu_t4_dir, "user/gpu-t4", t4_model, "key", False)
 cli_kaggle._render_kernel(
     cpu_dir, "user/cpu", {"repo": "", "file": "", "alias": "probe"}, "key", True,
@@ -206,9 +198,13 @@ t4_metadata = json.loads((gpu_t4_dir / "kernel-metadata.json").read_text())
 cpu_metadata = json.loads((cpu_dir / "kernel-metadata.json").read_text())
 check(gpu_metadata["enable_gpu"] is True and cpu_metadata["enable_gpu"] is False,
       "the normal template always requests GPU and only flow validation requests CPU")
-check(gpu_metadata["machine_shape"] == "NvidiaTeslaP100"
+check(gpu_metadata["machine_shape"] == "NvidiaTeslaT4"
       and t4_metadata["machine_shape"] == "NvidiaTeslaT4",
       "kernel metadata requests the accelerator derived from the selected model")
+check(gpu_metadata["dataset_sources"] == [
+    cli_kaggle.CUDA_BINARY_DATASETS["75"],
+    cli_kaggle.MODEL_DATASETS[t4_model["alias"]],
+], "the normal kernel attaches the reusable CUDA binary and exact GGUF")
 
 p100_models = cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
 t4_models = cli_kaggle.models_for_accelerator("NvidiaTeslaT4")
@@ -230,15 +226,15 @@ gpu_code = next(path for path in gpu_dir.iterdir() if path.suffix == ".py")
 gpu_source = gpu_code.read_text(encoding="utf-8")
 t4_code = next(path for path in gpu_t4_dir.iterdir() if path.suffix == ".py")
 t4_source = t4_code.read_text(encoding="utf-8")
-check('CUDA_ARCH = "60"' in gpu_source and 'MACHINE_SHAPE = "NvidiaTeslaP100"' in gpu_source
+check('CUDA_ARCH = "75"' in gpu_source and 'MACHINE_SHAPE = "NvidiaTeslaT4"' in gpu_source
       and 'CUDA_ARCH = "75"' in t4_source
       and 'MACHINE_SHAPE = "NvidiaTeslaT4"' in t4_source,
       "the rendered CUDA architecture matches each requested machine shape")
-check("-DCUDA_cuda_driver_LIBRARY=" in gpu_source
-      and "/usr/local/nvidia/lib64/libcuda.so.1" in gpu_source,
-      "the GPU build passes the mounted CUDA driver library explicitly to CMake")
-check("/kaggle/temp" not in gpu_source and "tempfile.gettempdir()" in gpu_source,
-      "the GPU template uses Kaggle's writable temporary mount")
+check('"git", "clone"' not in gpu_source and '"curl"' not in gpu_source
+      and "huggingface.co" not in gpu_source
+      and "input_file(MODEL_FILE)" in gpu_source
+      and 'input_file("llama-server")' in gpu_source,
+      "the rendered GPU kernel neither clones llama.cpp nor downloads runtime assets")
 check("/v1/models" in gpu_source
       and gpu_source.index("/v1/models") < gpu_source.index('"TUNNEL_URL="'),
       "the GPU template probes the server before publishing the tunnel URL")
@@ -246,6 +242,100 @@ check(compile(gpu_source, str(gpu_code), "exec") is not None,
       "the rendered GPU kernel is valid Python before it ever reaches Kaggle")
 check(compile(t4_source, str(t4_code), "exec") is not None,
       "the rendered T4 kernel is valid Python before it ever reaches Kaggle")
+
+# A kernel recorded by isaacli is reused only after its authenticated endpoint
+# answers. This is pinned by the absence of a push, not by presentation text.
+reuse_file = root / "reuse" / "config.json"
+reuse_profile = "kaggle-existing"
+reuse_slug = "user/existing"
+config.save({
+    "language": "en", "default_profile": "other",
+    "profiles": {
+        reuse_profile: {
+            "provider": "openai_compatible", "provider_name": "Kaggle",
+            "base_url": "https://live.trycloudflare.com/v1",
+            "model": "qwen38-27b", "credential": "reuse-key",
+        },
+    },
+    "kaggle": {"kernels": [{
+        "slug": reuse_slug, "url": "https://live.trycloudflare.com",
+        "model": "qwen38-27b",
+    }]},
+}, reuse_file)
+config.save_secret("reuse-key", "secret", reuse_file.with_name("secrets.json"))
+reuse_commands = []
+
+
+def reuse_run(command, check=False, capture_output=False, text=False, **kwargs):
+    reuse_commands.append([str(part) for part in command])
+    joined = " ".join(map(str, command))
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout="GPU quota", stderr="")
+    if "kernels list" in joined:
+        return SimpleNamespace(returncode=0, stdout=f"ref,title\n{reuse_slug},Existing\n", stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+class HealthyAnswer:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+with redirect_stdout(io.StringIO()):
+    reuse_code = cli_kaggle.run_kaggle(
+        input_fn=lambda _prompt: (_ for _ in ()).throw(AssertionError("no prompt expected")),
+        run_fn=reuse_run, which_fn=lambda _name: "/fake/kaggle",
+        config_file=reuse_file, home_dir=home,
+        urlopen_fn=lambda _request, timeout=0: HealthyAnswer(),
+    )
+check(reuse_code == 0 and config.load(reuse_file)["default_profile"] == reuse_profile
+      and not any("kernels push" in " ".join(command) for command in reuse_commands),
+      "a live responsive isaacli kernel reactivates its profile without a push")
+
+dead_file = root / "dead" / "config.json"
+config.save({
+    "language": "en", "default_profile": "other",
+    "profiles": {"other": {"model": "local"}, reuse_profile: {
+        "provider": "openai_compatible", "provider_name": "Kaggle",
+        "base_url": "https://dead.trycloudflare.com/v1",
+        "model": "qwen38-27b", "credential": "dead-key",
+    }},
+    "kaggle": {"kernels": [{
+        "slug": "user/dead", "url": "https://dead.trycloudflare.com",
+        "profile": reuse_profile, "model": "qwen38-27b",
+    }]},
+}, dead_file)
+dead_commands = []
+
+
+def dead_run(command, check=False, capture_output=False, text=False, **kwargs):
+    dead_commands.append([str(part) for part in command])
+    joined = " ".join(map(str, command))
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout="GPU quota", stderr="")
+    if "kernels list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+dead_answers = iter(["1", "n"])
+dead_output = io.StringIO()
+with redirect_stdout(dead_output):
+    dead_code = cli_kaggle.run_kaggle(
+        input_fn=lambda _prompt: next(dead_answers), run_fn=dead_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=dead_file, home_dir=home,
+    )
+check(dead_code == 130 and config.load(dead_file)["default_profile"] == "other"
+      and "user/dead" in dead_output.getvalue()
+      and not any("kernels push" in " ".join(command) for command in dead_commands),
+      "a dead kernel is reported and its broken profile is not reactivated")
 
 # `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
 # it must call cli_kaggle.run_kaggle itself, the same function object imported

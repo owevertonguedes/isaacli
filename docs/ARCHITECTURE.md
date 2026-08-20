@@ -113,7 +113,7 @@ registered, so it cannot remove the engine underneath another process.
 
 `uninstall --purge --kaggle` is the sibling strong purge. It removes Kaggle only when `kaggle-install.json` records that isaacli created the isolated per-user environment and launcher. A package-managed or changed executable is refused. Kaggle authentication files are removed only after the strong purge warning. Existing third-party Kaggle installations and remote kernels are preserved.
 
-The normal `isaacli kaggle` path always renders the GPU template in `contrib/kaggle/`. It never starts automatically and asks for confirmation immediately before each push. The separate `--flow-validation-cpu` switch renders a short CPU-only OpenAI-compatible probe for validating push, tunnel discovery, reachability and profile persistence without spending GPU quota. It cannot run a model and is never the default.
+The normal `isaacli kaggle` path renders the GPU template in `contrib/kaggle/` with a versioned CUDA binary dataset and the exact GGUF dataset attached. The GPU run loads and serves these inputs instead of compiling or downloading the model. Before offering a push, it checks recorded isaacli kernels: a live kernel with a successfully responding saved API endpoint reactivates its existing profile, while a dead kernel is reported and the user may explicitly start another. The separate `--flow-validation-cpu` switch renders a short CPU-only OpenAI-compatible probe for validating push, tunnel discovery, reachability and profile persistence without spending GPU quota. It cannot run a model and is never the default.
 
 The resume command uses `isaacli` when this installation is on `PATH`;
 otherwise it prints the absolute launcher that is actually executable.
