@@ -33,7 +33,7 @@ def input_file(name):
     return matches[0]
 
 
-runtime_root = Path(SCRATCH) / "llama-cuda-sm75-b10502"
+runtime_root = Path(SCRATCH) / f"llama-cuda-sm{CUDA_ARCH}-b10502"
 
 
 def optional_input(name):

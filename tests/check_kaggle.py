@@ -2,8 +2,10 @@
 """Kaggle lifecycle checks with isolated local state and no network."""
 import io
 import builtins
+import inspect
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -315,6 +317,38 @@ check(len(drawn) == 1 and len(drawn[0][1]) == len(cli_kaggle.prepared_models())
 check(chosen_model["benchmark_source"] in chosen_output.getvalue()
       and chosen_model["source"] in chosen_output.getvalue(),
       "the evidence behind the chosen model is still shown, without the wall")
+
+# The prepared runtime is found by name, and the name carries both the compute
+# architecture and the llama.cpp build. A P100 launch used to extract
+# llama-cuda-sm60-b10502 and then look for the server inside a directory named
+# sm75, which is a crash after the archive was already attached. And if any of
+# the four places that spell the build tag drifts from the others, the GPU
+# kernel silently stops finding what was prepared and recompiles for half an
+# hour instead, which is the failure the prepared asset exists to remove.
+p100_dir = root / "p100-render"
+p100_dir.mkdir()
+p100_model = next(item for item in cli_kaggle.recommended_models()
+                  if item["cuda_arch"] == "60")
+cli_kaggle._render_kernel(p100_dir, "account/p100", p100_model, "key", False, [])
+p100_source = next(path for path in p100_dir.iterdir()
+                   if path.suffix == ".py").read_text(encoding="utf-8")
+check("sm75" not in p100_source and 'CUDA_ARCH = "60"' in p100_source,
+      "a kernel rendered for one architecture never names another one")
+
+templates = {
+    path.name: path.read_text(encoding="utf-8")
+    for path in (HERE.parent / "contrib" / "kaggle").glob("*.tmpl")
+}
+build_tags = {
+    name: set(re.findall(r"b(\d{5,})", source))
+    for name, source in templates.items() if "b10502" in source
+}
+build_tags["cli_kaggle"] = set(re.findall(
+    r"b(\d{5,})", inspect.getsource(cli_kaggle)))
+check(len(build_tags) >= 3
+      and len(set.union(*build_tags.values())) == 1
+      and all(len(tags) == 1 for tags in build_tags.values()),
+      f"every place that names the llama.cpp build names the same one ({build_tags})")
 
 p100_models = cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
 t4_models = cli_kaggle.models_for_accelerator("NvidiaTeslaT4")
