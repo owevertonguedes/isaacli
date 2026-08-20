@@ -122,7 +122,11 @@ purge_config = purge_root / "config" / "isaacli"
 purge_sessions = purge_root / "cli_sessions"
 purge_feedback = purge_root / "feedback"
 purge_runtime = purge_root / "runtime" / "isaacli"
-for directory in (purge_config, purge_sessions, purge_feedback, purge_runtime):
+# Kaggle asset preparation stages its downloads in the cache directory, so this
+# program creates it and purge has to be able to take it away again.
+purge_cache = purge_root / "cache" / "isaacli"
+for directory in (purge_config, purge_sessions, purge_feedback, purge_runtime,
+                  purge_cache):
     directory.mkdir(parents=True)
     (directory / "state").write_text("private", encoding="utf-8")
 untouched_clone = purge_root / "clone"
@@ -135,15 +139,17 @@ with redirect_stdout(io.StringIO()):
     active_purge = app._uninstall_launcher(
         purge=True, bin_dir=purge_bin, config_dir=purge_config,
         data_dirs=[purge_sessions, purge_feedback], runtime_dir=purge_runtime,
+        cache_dir=purge_cache,
     )
     (purge_runtime / "ollama.json").write_text("{}", encoding="utf-8")
     purged = app._uninstall_launcher(
         purge=True, bin_dir=purge_bin, config_dir=purge_config,
         data_dirs=[purge_sessions, purge_feedback], runtime_dir=purge_runtime,
+        cache_dir=purge_cache,
     )
 check(active_purge == 1 and purged == 0 and not (purge_bin / "isaacli").exists()
       and not any(path.exists() for path in (
-          purge_config, purge_sessions, purge_feedback, purge_runtime,
+          purge_config, purge_sessions, purge_feedback, purge_runtime, purge_cache,
       )) and untouched_clone.exists(),
       "purge blocks active sessions, then removes private state and preserves the clone")
 

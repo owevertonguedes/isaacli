@@ -52,7 +52,7 @@ def install_launcher(bin_dir=None):
 
 def uninstall_launcher(
     purge=False, bin_dir=None, config_dir=None, data_dirs=None, runtime_dir=None,
-    check_only=False,
+    check_only=False, cache_dir=None,
 ):
     """Remove only this checkout's launcher and, when requested, its local data."""
     source = (HERE.parent / "isaacli").resolve()
@@ -70,6 +70,11 @@ def uninstall_launcher(
     ]
     purge_dirs.extend([
         Path(config_dir) if config_dir is not None else config.config_path().parent,
+        # Kaggle asset preparation stages downloads here, so this program creates
+        # it and this program has to be able to take it away again. It stays
+        # ahead of the runtime directory because the Ollama state file below is
+        # read from the last entry.
+        Path(cache_dir) if cache_dir is not None else config.cache_path(),
         Path(runtime_dir) if runtime_dir is not None else _runtime_ollama_dir(),
     ])
     if purge:
