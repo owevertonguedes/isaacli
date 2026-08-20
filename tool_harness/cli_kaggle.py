@@ -338,7 +338,16 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False):
     )
 
 
-def discover_tunnel_url(executable, slug, timeout=300, popen_fn=subprocess.Popen):
+# The kernel builds llama.cpp with CUDA and downloads more than 15 GB before it
+# can serve anything, and it only publishes the URL once the server answers.
+# Measured on 2026-08-20 with Qwen3.8-27B on T4 x2: 34 minutes of GPU time from
+# push to first token. A shorter wait does not fail safely, because the kernel
+# keeps running and spending quota while the command has already given up.
+URL_DISCOVERY_TIMEOUT = 75 * 60
+
+
+def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
+                        popen_fn=subprocess.Popen):
     process = popen_fn(
         [str(executable), "kernels", "logs", "-f", slug],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -453,8 +462,12 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         url = discover_tunnel_url(executable, slug, popen_fn=popen_fn)
         profile = save_kaggle_profile(url, slug, model, api_key, config_file)
     except (OSError, RuntimeError) as error:
+        # Giving up here does not stop anything: the kernel was already pushed
+        # and keeps spending quota that does not come back, so say that instead
+        # of only offering a link.
         print(t("cli.kaggle.failed", error=error))
-        print(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))
+        print(t("cli.kaggle.stop_spending",
+                url=f"https://www.kaggle.com/code/{slug}"))
         return 1
     print(t("cli.kaggle.ready", profile=profile, url=url + "/v1"))
     print(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))

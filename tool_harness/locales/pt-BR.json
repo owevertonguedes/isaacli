@@ -324,5 +324,6 @@
   "api.autostart.prompt": "Comando (Enter para pular): ",
   "api.autostart.invalid": "Não consegui ler esse comando ({error}); ele não foi salvo.",
   "cli.error.local_server_unavailable": "ERRO: {name} não subiu. O endpoint está configurado; quem não responde é o servidor por trás dele. Rode com --debug para ver o motivo.",
-  "cli.welcome.label.session": "sessão"
+  "cli.welcome.label.session": "sessão",
+  "cli.kaggle.stop_spending": "O kernel provavelmente continua rodando e continua gastando a sua quota de GPU. Pare pela interface web, o CLI do Kaggle não tem comando para parar: {url}"
 }

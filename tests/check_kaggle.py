@@ -169,6 +169,18 @@ module_source = (HERE.parent / "tool_harness" / "cli_kaggle.py").read_text(encod
 check('"sudo"' not in module_source and "'sudo'" not in module_source,
       "no Kaggle orchestration command can invoke sudo")
 
+# The kernel builds CUDA and downloads more than 15 GB before it can answer, and
+# it only publishes the URL once the server does. A five minute wait guarantees
+# the command gives up while the kernel keeps spending quota, which is exactly
+# how the first real attempt failed. Measured cost from push to first token was
+# 34 minutes, so the ceiling has to leave real room above that.
+import inspect
+
+discovery_default = inspect.signature(
+    cli_kaggle.discover_tunnel_url).parameters["timeout"].default
+check(discovery_default >= 45 * 60,
+      "waiting for the tunnel outlasts a real build, download and model load")
+
 gpu_dir = root / "gpu-render"
 gpu_t4_dir = root / "gpu-t4-render"
 cpu_dir = root / "cpu-render"
