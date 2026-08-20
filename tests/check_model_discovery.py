@@ -327,6 +327,36 @@ check([item["alias"] for item in
       == ["stronger", "weaker"],
       "two models on the same ruler are ordered by that ruler's score")
 
+# The local list is where the declared task was asked about and then did
+# nothing, because all five entries carried an empty score. Asking a question,
+# announcing the ruler and producing the identical list is worse than not
+# asking. What is checked is the effect on the list the user actually sees.
+local_catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))["local"]
+local_curated = [item["reference"] for item in local_catalog]
+
+
+def local_order(task):
+    return [item["reference"]
+            for item in model_discovery.order_for_task(local_catalog, task)]
+
+
+check(any(item["scores"] for item in local_catalog)
+      and all(item["benchmark_source"] for item in local_catalog if item["scores"])
+      and all(not item["scores"] for item in local_catalog
+              if not item["benchmark_source"]),
+      "a local model with a score cites where it comes from, and none has a loose number")
+check(local_order(None) == local_curated
+      and local_order("explain_code") != local_curated
+      and local_order("fix_bug") != local_curated,
+      "the declared task really reorders the local list, not only the Kaggle one")
+# fix_bug and build_new coincide today, and that is a fact about the data rather
+# than a broken ruler: the same model leads both, and the only model scored on
+# Aider is behind both models scored on LiveCodeBench. Pinning it means a future
+# catalogue edit that separates them is a visible change, not a silent one.
+check(local_order("fix_bug") == local_order("build_new")
+      and local_order("explain_code") != local_order("fix_bug"),
+      "reading code selects a different local order than fixing or building does")
+
 check(model_discovery.matched_ruler(
           {"scores": {"gpqa_diamond": 89.2}}, "explain_code") == "gpqa_diamond"
       and model_discovery.matched_ruler({"scores": {}}, "fix_bug") is None,
