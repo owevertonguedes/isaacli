@@ -60,6 +60,8 @@ python3 tests/check_tools.py
 python3 tests/check_sandbox.py
 python3 tests/check_execution.py
 python3 tests/check_hardware.py
+python3 tests/check_kaggle.py
+python3 tests/check_model_discovery.py
 ```
 
 Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create
