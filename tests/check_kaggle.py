@@ -535,6 +535,18 @@ check(bool(carrying_secret)
 check("SECRET-UNDER-TEST" not in credential_config.read_text(encoding="utf-8"),
       "a Kaggle credential never reaches the config file that carries no secrets")
 
+# Pointing KAGGLE_CONFIG_DIR somewhere else is not enough on its own: measured
+# on 2026-08-20, the CLI still authenticated from a cached token when only that
+# variable was set, which would have run against whichever account happened to
+# be cached instead of the selected one. Neutralising KAGGLE_API_TOKEN and the
+# two KAGGLE_ variables is what makes the selection real, so none of them may
+# quietly disappear from the environment the flow builds.
+check(account_env.get("KAGGLE_CONFIG_DIR")
+      and account_env.get("KAGGLE_API_TOKEN")
+      and "KAGGLE_USERNAME" not in account_env
+      and "KAGGLE_KEY" not in account_env,
+      "account selection pins the config dir and the token, and clears the rest")
+
 # `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
 # it must call cli_kaggle.run_kaggle itself, the same function object imported
 # by the top-level `isaacli kaggle` command, rather than a copied flow.
