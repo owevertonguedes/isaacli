@@ -1083,10 +1083,18 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
         return 1
     for ref in available.values():
         print(t("cli.kaggle.assets.available", ref=ref))
-    if len(available) == 2:
+    missing = [kind for kind in ("binary", "model") if kind not in available]
+    if not missing:
         print(t("cli.kaggle.prepare.nothing_missing", username=username))
         return 0
+    # Announcing both steps when only one is missing promises a CPU kernel that
+    # will not run, and the plan is the thing being consented to.
     print(t("cli.kaggle.prepare.plan", username=username))
+    if "binary" in missing:
+        print(t("cli.kaggle.prepare.plan_binary", arch=model["cuda_arch"]))
+    if "model" in missing:
+        print(t("cli.kaggle.prepare.plan_model",
+                size=f"{model['model_bytes'] / 1024 ** 3:.1f}"))
     if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() != t(
             "cli.kaggle.confirm_yes"):
         print(t("cli.kaggle.cancelled"))

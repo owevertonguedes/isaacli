@@ -867,6 +867,43 @@ check(config.load(prepare_file).get("default_profile") is None
       and not (config.load(prepare_file).get("kaggle") or {}).get("kernels"),
       "preparation leaves no endpoint behind, because it never started a server")
 
+# The plan is the thing being consented to, so it has to name the steps that
+# will really run. With the runtime already published, announcing a CPU kernel
+# promises work that is skipped, and the run must not push one either.
+partial_file = root / "partial" / "config.json"
+add_account(partial_file, "preparer", "prepare-key")
+partial_pushes = []
+
+
+def partial_run(command, check=False, capture_output=False, text=False, env=None,
+                **kwargs):
+    parts = list(map(str, command))
+    joined = " ".join(parts)
+    if "kernels push" in joined:
+        partial_pushes.append(parts)
+    if "datasets list" in joined:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"ref,title\n{prepared_refs['binary']},Runtime\n", stderr="")
+    return prepare_run(command, check, capture_output, text, env, **kwargs)
+
+
+# "1" account, "1" model, "n" declines, so nothing is built and only the plan
+# that was going to be carried out is on screen.
+partial_answers = iter(["1", "1", "n"])
+with redirect_stdout(io.StringIO()) as partial_output:
+    partial_code = cli_kaggle.run_prepare_assets(
+        input_fn=lambda _prompt: next(partial_answers), run_fn=partial_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=partial_file,
+        home_dir=home,
+    )
+partial_text = partial_output.getvalue()
+check(partial_code == 130 and not partial_pushes
+      and prepared_refs["binary"] in partial_text
+      and "CPU kernel" not in partial_text
+      and f"{prepared_model['model_bytes'] / 1024 ** 3:.1f} GiB" in partial_text,
+      "the plan names only the assets that are actually missing")
+
 # Staging belongs on a disk, and the refusal belongs before the transfer. /tmp
 # is a tmpfs on a normal desktop, so a 15 GiB weight staged there is written
 # into RAM. What is checked is the effect: the scratch directory is not the
