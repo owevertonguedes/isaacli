@@ -750,7 +750,11 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     # The ruler belongs on the screen whose order it decided. Announcing it in
     # setup and then drawing a differently ordered list without it leaves the
     # order looking arbitrary.
-    explanation = [model_discovery.text("cli.kaggle.models.title")]
+    # This screen assigns T4 x2 to every candidate, so it may not describe the
+    # P100 the seeded catalogue screen can still choose. Saying a smaller
+    # accelerator is used when the model fits it, next to rows that all read
+    # "T4 x2", would be describing a path this screen does not take.
+    explanation = [model_discovery.text("cli.kaggle.models.title_t4")]
     if onboarding_task:
         explanation.append(model_discovery.text(
             f"onboarding.task.ruler.{onboarding_task}"))

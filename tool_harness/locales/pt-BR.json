@@ -193,6 +193,7 @@
   "cli.kaggle.unresponsive": "O kernel registrado do Kaggle está ativo, mas a URL de API gravada não respondeu com sucesso. O perfil não foi reativado e outro kernel não foi enviado.",
   "cli.kaggle.catalog.invalid": "o catálogo de modelos do Kaggle é inválido: {error}",
   "cli.kaggle.models.title": "Selecione um modelo com cabimento exato no Kaggle. A P100 é usada quando o modelo cabe em uma GPU de 16 GB. A T4 x2 oferece capacidade para modelos maiores por divisão sequencial de camadas, sem afirmação de velocidade. Os placares descrevem os pesos originais, não o GGUF quantizado.",
+  "cli.kaggle.models.title_t4": "Todo lançamento aqui pede T4 x2, duas GPUs de 16 GB, e a capacidade para um modelo maior vem de dividir as camadas dele entre as duas, sem afirmação de velocidade. Os placares descrevem os pesos originais, não o GGUF quantizado.",
   "cli.kaggle.models.section": "Qual modelo deve rodar no Kaggle?",
   "cli.kaggle.models.entry": "{name} · {size} GiB · {machine} · {benchmark}",
   "cli.kaggle.models.none": "Nenhum modelo do catálogo respaldado por benchmark cabe em um acelerador do Kaggle.",

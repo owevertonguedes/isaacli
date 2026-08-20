@@ -193,6 +193,7 @@
   "cli.kaggle.unresponsive": "The recorded Kaggle kernel is live, but its saved API URL did not answer successfully. It was not reactivated and another kernel was not pushed.",
   "cli.kaggle.catalog.invalid": "the Kaggle model catalog is invalid: {error}",
   "cli.kaggle.models.title": "Choose a model that fits Kaggle exactly. P100 is used when the model fits one 16 GB GPU. T4 x2 provides capacity for larger models through sequential layer splitting, with no speed claim. Benchmark scores describe the upstream weights, not the quantized GGUF.",
+  "cli.kaggle.models.title_t4": "Every launch here requests T4 x2, two 16 GB GPUs, and capacity for a larger model comes from splitting its layers across them, with no speed claim. Benchmark scores describe the upstream weights, not the quantized GGUF.",
   "cli.kaggle.models.section": "Which model should run on Kaggle?",
   "cli.kaggle.models.entry": "{name} · {size} GiB · {machine} · {benchmark}",
   "cli.kaggle.models.none": "No benchmark-backed model in the catalog fits a Kaggle accelerator.",

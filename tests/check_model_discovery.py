@@ -285,6 +285,12 @@ try:
     finally:
         cli_kaggle.terminal_ui.select = original_select
     ruler = model_discovery.text("onboarding.task.ruler.fix_bug")
+    # Every row on this screen reads T4 x2, because that is what it assigns, so
+    # the explanation above them must not promise a smaller accelerator.
+    check(all(cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["label"] in option
+              for option in drawn[0][1][:-1])
+          and "P100" not in drawn[0][0],
+          "the screen describes the accelerator it actually requests")
     check(len(drawn) == 1 and all("\n" not in option for option in drawn[0][1])
           and task_model["name"] in drawn[0][1][0]
           and drawn[0][1][-1] == model_discovery.text("model.discovery.exact"),
