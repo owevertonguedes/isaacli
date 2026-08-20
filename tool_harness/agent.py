@@ -301,13 +301,15 @@ def _reasoning_effort_rejected(error_text):
 
 def call_api(model, messages, use_tools=True, temperature=0.0,
              tools_schema=None, thinking=None, api_key=None, base_url=None,
-             response_format=None):
+             response_format=None, seed=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
         raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": False}
+    if seed is not None:
+        payload["seed"] = int(seed)
     if response_format:
         # Constraining the decoding and offering the tools at the same time asks
         # the server for two different output shapes. The caller that passes a
@@ -348,7 +350,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
 
 def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                     on_token=None, tools_schema=None, thinking=None,
-                    api_key=None, base_url=None, on_progress=None):
+                    api_key=None, base_url=None, on_progress=None, seed=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
@@ -356,6 +358,8 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": True,
                "stream_options": {"include_usage": True}}
+    if seed is not None:
+        payload["seed"] = int(seed)
     if use_tools:
         payload.update({"tools": tools_schema or tools.SCHEMA,
                         "tool_choice": "auto", "parallel_tool_calls": False})
@@ -650,7 +654,8 @@ def message_from_constrained(content, schema):
     })
 
 
-def _constrained_correction(model, msgs, schema, provider, provider_kind):
+def _constrained_correction(model, msgs, schema, provider, provider_kind,
+                            temperature=0.0, seed=None):
     """The correction turn, with the output constrained to one tool call.
 
     Returns None when the constraint could not be applied, and says why under
@@ -669,6 +674,7 @@ def _constrained_correction(model, msgs, schema, provider, provider_kind):
             model, prompt, use_tools=False,
             api_key=(provider or {}).get("api_key"),
             base_url=(provider or {}).get("base_url"),
+            temperature=temperature, seed=seed,
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "tool_call", "strict": True,
@@ -749,7 +755,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         on_token=None, on_tool=None, on_tool_before=None, history=None,
         tools_schema=None, thinking=None, on_working=None, provider=None,
         on_thinking=None, num_ctx=None, require_change=False,
-        is_changing_tool=None, changing_tool_succeeded=None, on_progress=None):
+        is_changing_tool=None, changing_tool_succeeded=None, on_progress=None,
+        temperature=0.0, seed=None):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
@@ -802,20 +809,22 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                     tools_schema=schema, thinking=thinking,
                     api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"),
-                    on_progress=on_progress)
+                    on_progress=on_progress, temperature=temperature, seed=seed)
             if provider_kind == "openai_compatible":
                 return call_api(
                     model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
-                    base_url=(provider or {}).get("base_url"))
+                    base_url=(provider or {}).get("base_url"),
+                    temperature=temperature, seed=seed)
             if should_stream:
                 return call_stream(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
                     on_thinking=on_thinking, num_ctx=num_ctx,
-                    on_progress=on_progress)
+                    on_progress=on_progress, temperature=temperature)
             return call(model, msgs, use_tools=use_tools,
-                        tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
+                        tools_schema=schema, thinking=thinking, num_ctx=num_ctx,
+                        temperature=temperature)
 
         call_via = "native"
         structured_step = correction_pending
@@ -823,7 +832,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             instruction = TOOL_CALL_RETRY if successful_changes else MUTATION_RETRY
             msgs.append({"role": "system", "content": instruction})
             constrained = _constrained_correction(
-                model, msgs, active_schema, provider, provider_kind)
+                model, msgs, active_schema, provider, provider_kind,
+                temperature=temperature, seed=seed)
             if constrained is None:
                 # Keep this non-streaming. If an unsupported provider returns a
                 # JSON object as ordinary content, it must be rejected before

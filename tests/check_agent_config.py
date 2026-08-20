@@ -100,7 +100,7 @@ try:
     msg = agent.call_stream_api(
         "free-model", [{"role": "user", "content": "hi"}],
         on_token=tokens.append, thinking="medium", api_key="test-key",
-        base_url="https://api.example.test/v1",
+        base_url="https://api.example.test/v1", temperature=0.7, seed=21001,
     )
 finally:
     agent.urllib.request.urlopen = original
@@ -108,6 +108,8 @@ assert api_capture["url"] == "https://api.example.test/v1/chat/completions"
 assert api_capture["auth"] == "Bearer test-key"
 assert api_capture["payload"]["model"] == "free-model"
 assert api_capture["payload"]["reasoning_effort"] == "medium"
+assert api_capture["payload"]["temperature"] == 0.7
+assert api_capture["payload"]["seed"] == 21001
 assert msg["content"] == "Hello" and tokens == ["Hello"]
 assert msg["_usage"]["prompt_eval_count"] == 12
 print("AGENT API OK: OpenAI-compatible endpoint, streaming and tools are configurable")
@@ -275,8 +277,9 @@ thinking_calls = []
 
 
 def fake_call_api(model, messages, use_tools=True, tools_schema=None,
-                  thinking=None, api_key=None, base_url=None, temperature=0.0):
-    thinking_calls.append(thinking)
+                  thinking=None, api_key=None, base_url=None, temperature=0.0,
+                  seed=None):
+    thinking_calls.append((thinking, temperature, seed))
     if len(thinking_calls) == 1:
         return {"role": "assistant", "content": "", "_thinking_rejected": True,
                 "tool_calls": [{"id": "t1", "type": "function",
@@ -292,12 +295,12 @@ try:
     thinking_result = agent.run(
         "test", "qwen/qwen3.6-27b", verbose=False,
         provider={"provider": "openai_compatible", "api_key": "k", "base_url": "https://x"},
-        thinking="medium",
+        thinking="medium", temperature=0.7, seed=21001,
     )
 finally:
     agent.call_api = original_call_api
     agent.tools.execute = original_execute2
-assert thinking_calls == ["medium", None], (
+assert thinking_calls == [("medium", 0.7, 21001), (None, 0.7, 21001)], (
     "after the rejection, later calls in the same turn must not repeat reasoning_effort")
 assert thinking_result["thinking_adjusted"] is True
 print("AGENT REASONING TURN OFF OK: after a rejection the rest of the turn stops "
@@ -630,6 +633,7 @@ with tempfile.TemporaryDirectory() as constrained_dir:
             "create index.html and style.css", "weak-local-model", verbose=False,
             provider=openai_provider(), require_change=True,
             is_changing_tool=lambda name, _args: name == "write_file",
+            temperature=0.7, seed=21001,
         )
         assert Path(constrained_dir, "index.html").read_text() == "<h1>hi</h1>"
         assert Path(constrained_dir, "style.css").read_text() == "h1 { color: navy; }"
@@ -658,6 +662,9 @@ assert all("response_format" in payload and "tools" not in payload
            for payload in constrained_payloads[1:4:2])
 assert all("response_format" not in payload and "tools" in payload
            for payload in constrained_payloads[2::2])
+assert all(payload["temperature"] == 0.7 and payload["seed"] == 21001
+           for payload in constrained_payloads), (
+    "sampling parameters must survive native and constrained steps")
 print("AGENT CONSTRAINED LOOP OK: two consecutive constrained calls create two "
       "files, preserve via, and stop when the model returns legitimate prose")
 

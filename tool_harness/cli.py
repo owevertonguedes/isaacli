@@ -579,7 +579,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             print(_color(t("cli.note.command_failed",
                            code=new_commands[-1]["code"]), "warn"))
         self._log("assistant_final", content=final, usage=usage,
-                  calls=len(calls))
+                  calls=len(calls), steps=(r or {}).get("steps"))
         self.feedback_reminder(bool(new_commands))
         print()
         return 1 if empty_answer else 0

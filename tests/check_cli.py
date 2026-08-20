@@ -695,7 +695,7 @@ original_ensure = cli.ensure_ollama
 try:
     cli.ensure_ollama = lambda warn=False: "test"
     app.agent.run = lambda *_a, **_kw: {
-        "final": "Deleted successfully.", "calls": [], "usage": {},
+        "final": "Deleted successfully.", "calls": [], "usage": {}, "steps": 3,
     }
     out = io.StringIO()
     with redirect_stdout(out):
@@ -705,6 +705,29 @@ finally:
     cli.ensure_ollama = original_ensure
 check("no changing tool was executed" in out.getvalue(),
       "the CLI contradicts a hallucinated success when no tool changed anything")
+last_final = next(
+    event for event in reversed([
+        json.loads(line) for line in cli.session_path.read_text().splitlines()
+    ]) if event.get("type") == "assistant_final"
+)
+check(last_final.get("steps") == 3,
+      "the session log preserves the exact model step count")
+
+# How a call was obtained is the only thing that separates "the model chose this
+# tool" from "the schema constraint put the model back on the rails". It never
+# reaches the screen, so the log is the only place it can be read, and both
+# branches of _tool_after have to write it: run_command keeps its own.
+with redirect_stdout(io.StringIO()):
+    cli._tool_after("read_file", '{"path": "x"}', "content", "native")
+    cli._tool_after("run_command", '{"cmd": "true"}', "exit code: 0", "constrained")
+logged_via = [
+    (event.get("name"), event.get("via"))
+    for event in [json.loads(line)
+                  for line in cli.session_path.read_text().splitlines()]
+    if event.get("type") == "tool_result"
+][-2:]
+check(logged_via == [("read_file", "native"), ("run_command", "constrained")],
+      "the session log records how each call was obtained, on both branches")
 check(app._asks_for_mutation("vamos começar a criar um design.md")
       and app._asks_for_mutation("write a design file")
       and not app._asks_for_mutation("como criar um design.md?")
