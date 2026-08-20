@@ -3,6 +3,7 @@
 import io
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -589,48 +590,61 @@ def openai_response(message, tokens=7):
 
 
 constrained_payloads = []
-constrained_executed = []
 
 
 def urlopen_constrained(req, timeout=0):
     payload = json.loads(req.data.decode())
     constrained_payloads.append(payload)
     if "response_format" in payload:
+        constrained_number = sum(
+            "response_format" in item for item in constrained_payloads)
+        if constrained_number == 1:
+            outcome = {"name": "write_file", "arguments": {
+                "path": "index.html", "content": "<h1>hi</h1>"}}
+        elif constrained_number == 2:
+            outcome = {"name": "write_file", "arguments": {
+                "path": "style.css", "content": "h1 { color: navy; }"}}
+        return openai_response({
+            "role": "assistant",
+            "content": json.dumps(outcome),
+        })
+    if len(constrained_payloads) in (1, 3):
+        # What the weak model actually does after each tool: the right call as
+        # ordinary JSON content instead of a native tool_call.
+        path = "index.html" if len(constrained_payloads) == 1 else "style.css"
         return openai_response({
             "role": "assistant",
             "content": json.dumps({"name": "write_file", "arguments": {
-                "path": "index.html", "content": "<h1>hi</h1>"}}),
+                "path": path, "content": "draft"}}),
         })
-    if len(constrained_payloads) == 1:
-        # What the weak model actually does: the right call, fenced as markdown.
-        return openai_response({
-            "role": "assistant",
-            "content": '```json\n{"name": "write_file", "arguments": {}}\n```',
-        })
-    return openai_response({"role": "assistant", "content": "done"})
+    return openai_response({"role": "assistant", "content": "Created both files."})
 
 
 original_execute3 = agent.tools.execute
-try:
-    agent.urllib.request.urlopen = urlopen_constrained
-    agent.tools.execute = lambda name, args: (
-        constrained_executed.append((name, json.loads(args))) or "OK: wrote index.html"
-    )
-    constrained_result = agent.run(
-        "create index.html", "weak-local-model", verbose=False,
-        provider=openai_provider(), require_change=True,
-        is_changing_tool=lambda name, _args: name == "write_file",
-    )
-finally:
-    agent.urllib.request.urlopen = original
-    agent.tools.execute = original_execute3
+original_sandbox_root = agent.tools.SANDBOX_ROOT
+with tempfile.TemporaryDirectory() as constrained_dir:
+    try:
+        agent.urllib.request.urlopen = urlopen_constrained
+        agent.tools.SANDBOX_ROOT = Path(constrained_dir)
+        constrained_result = agent.run(
+            "create index.html and style.css", "weak-local-model", verbose=False,
+            provider=openai_provider(), require_change=True,
+            is_changing_tool=lambda name, _args: name == "write_file",
+        )
+        assert Path(constrained_dir, "index.html").read_text() == "<h1>hi</h1>"
+        assert Path(constrained_dir, "style.css").read_text() == "h1 { color: navy; }"
+    finally:
+        agent.urllib.request.urlopen = original
+        agent.tools.SANDBOX_ROOT = original_sandbox_root
 
-assert constrained_executed == [("write_file", {"path": "index.html",
-                                                "content": "<h1>hi</h1>"})], (
-    "the constrained correction has to actually run the tool it described")
-assert constrained_result["successful_changes"] == 1
-assert [call[3] for call in constrained_result["calls"]] == ["constrained"], (
-    "a call obtained through the constraint must not be recorded as native")
+assert [json.loads(call[1])["path"] for call in constrained_result["calls"]] == [
+    "index.html", "style.css"], (
+    "two consecutive constrained steps have to execute their distinct arguments")
+assert constrained_result["successful_changes"] == 2
+assert constrained_result["final"] == "Created both files."
+assert [call[3] for call in constrained_result["calls"]] == [
+    "constrained", "constrained"], (
+    "every call obtained through the constraint must be recorded as constrained")
 assert "response_format" in constrained_payloads[1], (
     "the correction turn has to carry the schema constraint")
 assert "tools" not in constrained_payloads[1], (
@@ -640,8 +654,143 @@ assert {branch["properties"]["name"]["const"] for branch in branches} == {
     entry["function"]["name"] for entry in agent.tools.SCHEMA}, (
     "every declared tool has to be reachable through the constrained schema")
 assert "tools" in constrained_payloads[0], "the first turn stays a normal tool call"
-print("AGENT CONSTRAINED RETRY OK: the correction turn constrains the output and "
-      "the described tool really runs")
+assert all("response_format" in payload and "tools" not in payload
+           for payload in constrained_payloads[1:4:2])
+assert all("response_format" not in payload and "tools" in payload
+           for payload in constrained_payloads[2::2])
+print("AGENT CONSTRAINED LOOP OK: two consecutive constrained calls create two "
+      "files, preserve via, and stop when the model returns legitimate prose")
+
+
+# A normal prose-only request never enters constrained mode and still finishes.
+prose_payloads = []
+
+
+def urlopen_prose(req, timeout=0):
+    prose_payloads.append(json.loads(req.data.decode()))
+    return openai_response({"role": "assistant", "content": "A concise explanation."})
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_prose
+    prose_result = agent.run(
+        "explain what CSS does", "weak-local-model", verbose=False,
+        provider=openai_provider(), require_change=False,
+    )
+finally:
+    agent.urllib.request.urlopen = original
+
+assert prose_result["final"] == "A concise explanation."
+assert prose_result["calls"] == []
+assert len(prose_payloads) == 1 and "response_format" not in prose_payloads[0]
+print("AGENT LEGITIMATE PROSE OK: a non-mutation answer still ends immediately")
+
+
+# Talking about JSON is not smuggling a tool call. A finished answer that
+# mentions an object inline has to reach the user untouched, and must not push
+# the session into another tool call it never asked for. The guard is about the
+# whole answer being the object, which is what was actually measured.
+inline_json_answer = 'Done. I created config.json with {"theme": "dark"} in it.'
+inline_payloads = []
+inline_executed = []
+
+
+def urlopen_inline_json(req, timeout=0):
+    inline_payloads.append(json.loads(req.data.decode()))
+    if len(inline_payloads) == 1:
+        return openai_response({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "write_file", "arguments": json.dumps(
+                    {"path": "config.json", "content": "{}"})},
+            }],
+        })
+    return openai_response({"role": "assistant", "content": inline_json_answer})
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_inline_json
+    agent.tools.execute = lambda name, args: (
+        inline_executed.append(name) or "OK: wrote config.json")
+    inline_result = agent.run(
+        "create config.json", "weak-local-model", verbose=False,
+        provider=openai_provider(), require_change=True,
+        is_changing_tool=lambda name, _args: name == "write_file",
+    )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.tools.execute = original_execute3
+
+assert inline_result["final"] == inline_json_answer, (
+    "an answer that merely mentions an object is a legitimate final answer")
+assert inline_executed == ["write_file"], (
+    "no extra tool may run because the answer talked about JSON")
+assert len(inline_payloads) == 2, "no extra correction turn may be spent"
+print("AGENT INLINE JSON OK: prose that mentions an object still ends the run")
+
+
+# Measured on 2026-08-20 against llama-server: after creating both files,
+# Qwen2.5-Coder-3B answered with four call objects in a row, separated by
+# newlines and wrapped in nothing. That is not one object, and it reached the
+# screen as the final answer. The guard is about objects accounting for the
+# whole answer, so this shape has to be caught too.
+sequence_answer = "\n".join(json.dumps(
+    {"name": "run_command", "arguments": {"cmd": command}})
+    for command in ("git add index.html", "git add style.css", "git commit"))
+sequence_payloads = []
+sequence_tokens = []
+
+
+def urlopen_sequence(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    sequence_payloads.append(payload)
+    if "response_format" in payload:
+        return openai_response({
+            "role": "assistant",
+            "content": json.dumps({"name": "write_file", "arguments": {
+                "path": "second.txt", "content": "second"}}),
+        })
+    if len(sequence_payloads) == 1:
+        return openai_response({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "write_file", "arguments": json.dumps(
+                    {"path": "first.txt", "content": "first"})},
+            }],
+        })
+    if len(sequence_payloads) == 2:
+        return openai_response({"role": "assistant", "content": sequence_answer})
+    return openai_response({"role": "assistant", "content": "Both files are saved."})
+
+
+sequence_executed = []
+try:
+    agent.urllib.request.urlopen = urlopen_sequence
+    agent.tools.execute = lambda name, args: (
+        sequence_executed.append((name, json.loads(args)["path"])) or "OK: wrote it")
+    sequence_result = agent.run(
+        "create first.txt and second.txt", "weak-local-model", verbose=False,
+        provider=openai_provider(), require_change=True,
+        is_changing_tool=lambda name, _args: name == "write_file",
+        on_token=sequence_tokens.append,
+    )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.tools.execute = original_execute3
+
+assert sequence_result["final"] == "Both files are saved.", (
+    "a run of call objects must never be the answer the user reads")
+assert sequence_answer not in "".join(sequence_tokens), (
+    "the object sequence must not reach the terminal at all")
+assert sequence_executed == [("write_file", "first.txt"),
+                             ("write_file", "second.txt")], (
+    "the withheld sequence has to become one real constrained call")
+print("AGENT JSON SEQUENCE OK: several objects in a row are withheld and "
+      "re-decoded under the schema")
 
 
 # A provider that rejects response_format must not silently lose the correction:
@@ -681,6 +830,87 @@ assert "tools" in unsupported_payloads[-1] and "response_format" not in unsuppor
     "after the rejection the correction has to go out unconstrained, as before")
 print("AGENT CONSTRAINED RETRY UNSUPPORTED OK: a provider without json_schema keeps "
       "today's behaviour and today's visible failure")
+
+
+# If that old unconstrained path returns a JSON object, it must not become a
+# final answer and must not be streamed before validation. It is not parsed as
+# a tool dialect and no tool is executed.
+json_text_payloads = []
+json_text_tokens = []
+json_text_executed = []
+
+
+def urlopen_json_text(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    json_text_payloads.append(payload)
+    if "response_format" in payload:
+        raise agent.urllib.error.HTTPError(
+            "https://endpoint.example/v1/chat/completions", 400, "Bad Request", {},
+            io.BytesIO(json.dumps(
+                {"error": {"message": "response_format is not supported"}}).encode()))
+    if len(json_text_payloads) == 1:
+        return openai_response({"role": "assistant", "content": "draft"})
+    leaked = [
+        {"name": "write_file", "arguments": {"path": "leak.txt", "content": "x"}},
+        {"name": "write_file", "arguments": {"path": "leak2.txt", "content": "y"}},
+    ]
+    return openai_response({"role": "assistant", "content": "```json\n" + "\n".join(
+        json.dumps(item) for item in leaked) + "\n```"})
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_json_text
+    agent.tools.execute = lambda name, args: json_text_executed.append((name, args))
+    try:
+        agent.run(
+            "create leak.txt", "weak-local-model", verbose=False,
+            provider=openai_provider(), require_change=True,
+            is_changing_tool=lambda name, _args: name == "write_file",
+            on_token=json_text_tokens.append,
+        )
+        json_text_error = None
+    except agent.ConstrainedOutputError as error:
+        json_text_error = error
+finally:
+    agent.urllib.request.urlopen = original
+    agent.tools.execute = original_execute3
+
+assert json_text_error is not None and json_text_error.reason == "json_as_text"
+assert json_text_executed == []
+assert json_text_tokens == [], "a JSON object must be rejected before reaching the UI"
+print("AGENT JSON TEXT GUARD OK: JSON cannot become a final answer or execute as a call")
+
+
+# An endpoint may accept response_format and still violate it. That is a hard,
+# visible failure, not a reason to send another unconstrained request.
+invalid_constrained_payloads = []
+
+
+def urlopen_invalid_constrained(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    invalid_constrained_payloads.append(payload)
+    if "response_format" in payload:
+        return openai_response({"role": "assistant", "content": "{}"})
+    return openai_response({"role": "assistant", "content": "draft"})
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_invalid_constrained
+    try:
+        agent.run(
+            "create invalid.txt", "weak-local-model", verbose=False,
+            provider=openai_provider(), require_change=True,
+        )
+        invalid_constrained_error = None
+    except agent.ConstrainedOutputError as error:
+        invalid_constrained_error = error
+finally:
+    agent.urllib.request.urlopen = original
+
+assert invalid_constrained_error is not None
+assert invalid_constrained_error.reason == "invalid_response"
+assert len(invalid_constrained_payloads) == 2
+print("AGENT INVALID CONSTRAINED OUTPUT OK: accepted but unusable schema output raises")
 
 
 # The conversion refuses anything that is not a call to a declared tool. The

@@ -504,6 +504,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     is_changing_tool=_changing_tool_call,
                     changing_tool_succeeded=_changing_tool_succeeded,
                 )
+        except agent.ConstrainedOutputError as e:
+            self._clear_working()
+            cause = t(f"cli.error.constrained_output.{e.reason}")
+            print(t("cli.error.constrained_output", cause=cause))
+            self._log("error", error=f"constrained_output:{e.reason}")
+            return 1
         except RuntimeError as e:
             self._clear_working()
             print(t("cli.error.generic", error=e))

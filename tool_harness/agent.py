@@ -560,6 +560,7 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
 
 
 MUTATION_RETRY = """The user asked for a change, but no changing tool has succeeded, so no change is confirmed. If the task has enough information, call exactly one appropriate tool now and continue from its result. Do not present file contents as saved unless a tool saved them. If essential information is missing, ask one concise clarification question instead."""
+TOOL_CALL_RETRY = """The previous answer was a JSON object in ordinary text, not an executable tool call. If more work remains, call exactly one appropriate tool now. Do not repeat the object as prose."""
 READ_ONLY_RESULT_NOTE = """NOTE: This tool only inspected state and changed nothing. Re-read the user's request before answering. If the requested outcome requires any persistent change, call an appropriate changing tool first; never describe an unsaved draft or a read result as a completed change."""
 FAILED_CHANGE_NOTE = """NOTE: This changing tool did not succeed, so no change from this call is confirmed. Do not claim completion. Correct the call or explain the failure."""
 CHANGING_TOOLS = {"write_file", "append_file", "replace_between", "replace_text"}
@@ -578,6 +579,14 @@ CHANGING_TOOLS = {"write_file", "append_file", "replace_between", "replace_text"
 # with the constraint plus the tool list below. The list is not decoration:
 # without it the same run scored 4/6, picking append_file for "create a file".
 CONSTRAINED_RETRY_HEADER = """Answer with a single JSON object describing the tool call: {"name": <tool name>, "arguments": {...}}. The available tools are:"""
+
+
+class ConstrainedOutputError(RuntimeError):
+    """A schema-constrained answer could not become a safe loop outcome."""
+
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
 
 
 def constrained_call_schema(schema):
@@ -676,13 +685,64 @@ def _constrained_correction(model, msgs, schema, provider, provider_kind):
     if msg is None:
         debug.note("agent.constrained_retry.parse",
                    "the endpoint accepted response_format but the answer was not "
-                   "a call to a declared tool")
-        return None
+                   "an executable constrained outcome")
+        raise ConstrainedOutputError("invalid_response")
     msg["_usage"] = answer.get("_usage")
     debug.note("agent.constrained_retry",
                "this tool call came from the schema-constrained correction, not "
                "from a native tool_call: the model did not emit one")
     return msg
+
+
+def _is_json_object(content):
+    """True when the whole answer is a JSON object rather than prose.
+
+    This deliberately does not interpret keys or translate a text dialect into
+    a tool call. A fresh schema-constrained request is the only route that can
+    turn model output into an executable call.
+
+    The test is on the whole answer, not on any object found inside it. A
+    coding assistant talks about JSON all the time ("I created config.json with
+    {"theme": "dark"}"), and treating that sentence as a smuggled call would
+    throw away a legitimate final answer and push the session into tool calls
+    the user never asked for. What was measured is different: the answer was
+    nothing but call objects. Sometimes one, sometimes several separated by
+    newlines (Qwen2.5-Coder-3B answered with four in a row on 2026-08-20), bare
+    or inside a Markdown fence. So the answer counts as structured output only
+    when objects account for all of it, whitespace aside.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return False
+    body = _markdown_fence_body(text)
+    if body is None:
+        body = text
+    decoder = json.JSONDecoder()
+    position = 0
+    objects = 0
+    while position < len(body):
+        try:
+            value, position = decoder.raw_decode(body, position)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+        if not isinstance(value, dict):
+            return False
+        objects += 1
+        while position < len(body) and body[position].isspace():
+            position += 1
+    return objects > 0
+
+
+def _markdown_fence_body(text):
+    """The body of a Markdown fence that wraps the whole text, else None."""
+    if not text.startswith("```") or not text.endswith("```") or len(text) < 6:
+        return None
+    body = text[3:-3]
+    newline = body.find("\n")
+    if newline == -1:
+        return None
+    # Drop the info string ("json", "" and anything else) on the opening line.
+    return body[newline + 1:].strip()
 
 
 def run(request, model, max_steps=8, use_tools=True, verbose=True,
@@ -716,6 +776,11 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
     successful_changes = 0
     correction_pending = False
     correction_sent = False
+    # A normal prose answer after successful work is the stop condition. A JSON
+    # object is not prose completion: it is withheld and causes one fresh
+    # schema-constrained call. Returning to an unconstrained turn after each
+    # tool lets a model that really finished stop, while max_steps remains the
+    # hard cap for a model that keeps requesting work forever.
     for step in range(max_steps):
         if on_working:
             on_working()
@@ -723,11 +788,15 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         active_schema = tools_schema or tools.SCHEMA
 
         visible_stream = not require_change or successful_changes or correction_sent
-        stream_response = bool(on_progress or (on_token and visible_stream))
+        # Post-tool output must be validated before display. Otherwise a JSON
+        # object can leak token by token before the loop knows it was not prose.
+        stream_response = (bool(on_progress or (on_token and visible_stream))
+                           and not (require_change and successful_changes))
         visible_token = on_token if visible_stream else None
 
-        def query(schema):
-            if provider_kind == "openai_compatible" and stream_response:
+        def query(schema, allow_stream=True):
+            should_stream = stream_response and allow_stream
+            if provider_kind == "openai_compatible" and should_stream:
                 return call_stream_api(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
@@ -739,7 +808,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                     model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"))
-            if stream_response:
+            if should_stream:
                 return call_stream(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
@@ -749,12 +818,17 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                         tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
 
         call_via = "native"
-        if correction_pending:
-            msgs.append({"role": "system", "content": MUTATION_RETRY})
+        structured_step = correction_pending
+        if structured_step:
+            instruction = TOOL_CALL_RETRY if successful_changes else MUTATION_RETRY
+            msgs.append({"role": "system", "content": instruction})
             constrained = _constrained_correction(
                 model, msgs, active_schema, provider, provider_kind)
             if constrained is None:
-                msg = query(active_schema)
+                # Keep this non-streaming. If an unsupported provider returns a
+                # JSON object as ordinary content, it must be rejected before
+                # any bytes can reach the user's terminal.
+                msg = query(active_schema, allow_stream=False)
             else:
                 msg, call_via = constrained, "constrained"
             msgs.pop()
@@ -770,6 +844,15 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
 
         if not tc:
             if require_change and not successful_changes and not correction_sent:
+                correction_pending = True
+                continue
+            if structured_step and _is_json_object(msg.get("content")):
+                raise ConstrainedOutputError("json_as_text")
+            if require_change and _is_json_object(msg.get("content")):
+                # The object is evidence that this was not legitimate prose
+                # completion. Discard it and ask the endpoint to decode a fresh
+                # object under the schema. We never execute or reinterpret the
+                # loose object's fields.
                 correction_pending = True
                 continue
             msgs.append(msg)
