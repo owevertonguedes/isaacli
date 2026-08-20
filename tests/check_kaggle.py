@@ -32,6 +32,11 @@ def check(condition, description):
         failures.append(description)
 
 
+def add_account(path, username="tester", key="key"):
+    config.save({"language": "en", "profiles": {}, "default_profile": None}, path)
+    cli_kaggle.register_account(username, {"key": key}, path)
+
+
 home = Path(os.environ["HOME"])
 record = root / "managed.json"
 commands = []
@@ -108,14 +113,18 @@ def live_run(command, check=False, capture_output=False, text=False, **kwargs):
         return SimpleNamespace(returncode=0, stdout="ref,title\nuser/running,Running\n", stderr="")
     if "kernels status" in joined:
         return SimpleNamespace(returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
+second_file = root / "second.json"
+add_account(second_file)
 with redirect_stdout(io.StringIO()):
     second_code = cli_kaggle.run_kaggle(
-        input_fn=lambda _prompt: (_ for _ in ()).throw(AssertionError("no prompt expected")),
+        input_fn=lambda _prompt: "1",
         run_fn=live_run, which_fn=lambda _name: "/fake/kaggle",
-        config_file=root / "second.json", home_dir=home,
+        config_file=second_file, home_dir=home,
     )
 check(second_code == 1 and not any("kernels push" in " ".join(map(str, c))
                                    for c in live_commands),
@@ -138,19 +147,25 @@ def push_run(command, check=False, capture_output=False, text=False, **kwargs):
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
-answers = iter(["1", "y"])
-with redirect_stdout(io.StringIO()):
+timeout_file = root / "timeout.json"
+add_account(timeout_file)
+answers = iter(["1", "1", "n", "y"])
+timeout_output = io.StringIO()
+with redirect_stdout(timeout_output):
     cli_kaggle.run_kaggle(
         input_fn=lambda _prompt: next(answers), run_fn=push_run,
         popen_fn=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no discovery")),
         which_fn=lambda _name: "/fake/kaggle",
-        config_file=root / "timeout.json", home_dir=home,
+        config_file=timeout_file, home_dir=home,
     )
 pushes = [c for c in push_commands if "push" in c]
 check(bool(pushes) and all(
     "-t" in c and c[c.index("-t") + 1].isdigit() and int(c[c.index("-t") + 1]) > 0
     for c in pushes),
       "every push carries a session ceiling so an unattended kernel cannot run on")
+check("34 minutes" in timeout_output.getvalue()
+      and "self-contained" in timeout_output.getvalue(),
+      "missing assets announce the measured cost before the self-contained push")
 
 profile_file = root / "profile" / "config.json"
 model = {"alias": "test-model"}
@@ -182,29 +197,94 @@ check(20 * 60 <= discovery_default <= 40 * 60,
 
 gpu_dir = root / "gpu-render"
 gpu_t4_dir = root / "gpu-t4-render"
+self_contained_dir = root / "gpu-self-contained-render"
 cpu_dir = root / "cpu-render"
 gpu_dir.mkdir()
 gpu_t4_dir.mkdir()
+self_contained_dir.mkdir()
 cpu_dir.mkdir()
 recommended = cli_kaggle.recommended_models()
-t4_model = cli_kaggle.prepared_models()[0]
-cli_kaggle._render_kernel(gpu_dir, "user/gpu", t4_model, "key", False)
-cli_kaggle._render_kernel(gpu_t4_dir, "user/gpu-t4", t4_model, "key", False)
+t4_model = next(
+    model for model in cli_kaggle.prepared_models()
+    if model["machine_shape"] == "NvidiaTeslaT4"
+    and model["alias"] not in {
+        item["alias"] for item in cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
+    })
+user_assets = list(cli_kaggle._asset_refs("account-one", t4_model).values())
+other_assets = list(cli_kaggle._asset_refs("account-two", t4_model).values())
+cli_kaggle._render_kernel(
+    gpu_dir, "account-one/gpu", t4_model, "key", False, user_assets)
+cli_kaggle._render_kernel(
+    gpu_t4_dir, "account-two/gpu-t4", t4_model, "key", False, other_assets)
+cli_kaggle._render_kernel(
+    self_contained_dir, "account-one/self-contained", t4_model, "key", False, [])
 cli_kaggle._render_kernel(
     cpu_dir, "user/cpu", {"repo": "", "file": "", "alias": "probe"}, "key", True,
 )
 gpu_metadata = json.loads((gpu_dir / "kernel-metadata.json").read_text())
 t4_metadata = json.loads((gpu_t4_dir / "kernel-metadata.json").read_text())
 cpu_metadata = json.loads((cpu_dir / "kernel-metadata.json").read_text())
+self_contained_metadata = json.loads(
+    (self_contained_dir / "kernel-metadata.json").read_text())
 check(gpu_metadata["enable_gpu"] is True and cpu_metadata["enable_gpu"] is False,
       "the normal template always requests GPU and only flow validation requests CPU")
 check(gpu_metadata["machine_shape"] == "NvidiaTeslaT4"
       and t4_metadata["machine_shape"] == "NvidiaTeslaT4",
       "kernel metadata requests the accelerator derived from the selected model")
-check(gpu_metadata["dataset_sources"] == [
-    cli_kaggle.CUDA_BINARY_DATASETS["75"],
-    cli_kaggle.MODEL_DATASETS[t4_model["alias"]],
-], "the normal kernel attaches the reusable CUDA binary and exact GGUF")
+check(gpu_metadata["dataset_sources"] == user_assets
+      and t4_metadata["dataset_sources"] == other_assets
+      and user_assets != other_assets,
+      "the authenticated owner determines every attached dataset")
+check(self_contained_metadata["dataset_sources"] == [],
+      "a user without prepared assets gets a self-contained kernel")
+
+
+def rendered_sources_for_account(username):
+    account_file = root / f"authenticated-{username}" / "config.json"
+    add_account(account_file, username, f"key-{username}")
+    rendered = []
+
+    def authenticated_run(command, check=False, capture_output=False, text=False,
+                          env=None, **kwargs):
+        joined = " ".join(map(str, command))
+        credential = json.loads(
+            (Path(env["KAGGLE_CONFIG_DIR"]) / "kaggle.json").read_text())
+        if " quota" in joined:
+            return SimpleNamespace(returncode=0, stdout="GPU 30h remaining", stderr="")
+        if "config view" in joined:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"username: {credential['username']}\n", stderr="")
+        if "kernels list" in joined:
+            return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+        if "datasets list" in joined:
+            model = cli_kaggle.prepared_models()[0]
+            refs = cli_kaggle._asset_refs(credential["username"], model)
+            rows = "\n".join(f"{ref},asset" for ref in refs.values())
+            return SimpleNamespace(returncode=0, stdout=f"ref,title\n{rows}\n", stderr="")
+        if "kernels push" in joined:
+            folder = Path(command[command.index("-p") + 1])
+            rendered.append(json.loads((folder / "kernel-metadata.json").read_text()))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    answers = iter(["1", "1", "y"])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.run_kaggle(
+            input_fn=lambda _prompt: next(answers), run_fn=authenticated_run,
+            popen_fn=lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("stop after render")),
+            which_fn=lambda _name: "/fake/kaggle", config_file=account_file,
+            home_dir=home,
+        )
+    return rendered[0]["dataset_sources"]
+
+
+authenticated_first = rendered_sources_for_account("authenticated-one")
+authenticated_second = rendered_sources_for_account("authenticated-two")
+check(authenticated_first != authenticated_second
+      and all(ref.startswith("authenticated-one/") for ref in authenticated_first)
+      and all(ref.startswith("authenticated-two/") for ref in authenticated_second),
+      "changing kaggle config view changes the datasets in rendered kernel metadata")
 
 p100_models = cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
 t4_models = cli_kaggle.models_for_accelerator("NvidiaTeslaT4")
@@ -230,11 +310,11 @@ check('CUDA_ARCH = "75"' in gpu_source and 'MACHINE_SHAPE = "NvidiaTeslaT4"' in 
       and 'CUDA_ARCH = "75"' in t4_source
       and 'MACHINE_SHAPE = "NvidiaTeslaT4"' in t4_source,
       "the rendered CUDA architecture matches each requested machine shape")
-check('"git", "clone"' not in gpu_source and '"curl"' not in gpu_source
-      and "huggingface.co" not in gpu_source
-      and "input_file(MODEL_FILE)" in gpu_source
-      and 'input_file("llama-server")' in gpu_source,
-      "the rendered GPU kernel neither clones llama.cpp nor downloads runtime assets")
+check('"git", "clone"' in gpu_source and '"curl"' in gpu_source
+      and "huggingface.co" in gpu_source
+      and "optional_input(MODEL_FILE)" in gpu_source
+      and 'optional_input("llama-server")' in gpu_source,
+      "the rendered GPU kernel retains the announced self-contained path")
 check("/v1/models" in gpu_source
       and gpu_source.index("/v1/models") < gpu_source.index('"TUNNEL_URL="'),
       "the GPU template probes the server before publishing the tunnel URL")
@@ -263,6 +343,7 @@ config.save({
     }]},
 }, reuse_file)
 config.save_secret("reuse-key", "secret", reuse_file.with_name("secrets.json"))
+cli_kaggle.register_account("user", {"key": "account-key"}, reuse_file)
 reuse_commands = []
 
 
@@ -275,6 +356,8 @@ def reuse_run(command, check=False, capture_output=False, text=False, **kwargs):
         return SimpleNamespace(returncode=0, stdout=f"ref,title\n{reuse_slug},Existing\n", stderr="")
     if "kernels status" in joined:
         return SimpleNamespace(returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -290,7 +373,7 @@ class HealthyAnswer:
 
 with redirect_stdout(io.StringIO()):
     reuse_code = cli_kaggle.run_kaggle(
-        input_fn=lambda _prompt: (_ for _ in ()).throw(AssertionError("no prompt expected")),
+        input_fn=lambda _prompt: "1",
         run_fn=reuse_run, which_fn=lambda _name: "/fake/kaggle",
         config_file=reuse_file, home_dir=home,
         urlopen_fn=lambda _request, timeout=0: HealthyAnswer(),
@@ -312,6 +395,7 @@ config.save({
         "profile": reuse_profile, "model": "qwen38-27b",
     }]},
 }, dead_file)
+cli_kaggle.register_account("user", {"key": "account-key"}, dead_file)
 dead_commands = []
 
 
@@ -322,10 +406,12 @@ def dead_run(command, check=False, capture_output=False, text=False, **kwargs):
         return SimpleNamespace(returncode=0, stdout="GPU quota", stderr="")
     if "kernels list" in joined:
         return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
     return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
-dead_answers = iter(["1", "n"])
+dead_answers = iter(["1", "1", "n", "n"])
 dead_output = io.StringIO()
 with redirect_stdout(dead_output):
     dead_code = cli_kaggle.run_kaggle(
@@ -336,6 +422,99 @@ check(dead_code == 130 and config.load(dead_file)["default_profile"] == "other"
       and "user/dead" in dead_output.getvalue()
       and not any("kernels push" in " ".join(command) for command in dead_commands),
       "a dead kernel is reported and its broken profile is not reactivated")
+
+accounts_file = root / "accounts" / "config.json"
+add_account(accounts_file, "first-account", "first-key")
+cli_kaggle.register_account("second-account", {"key": "second-key"}, accounts_file)
+account_calls = []
+
+
+def account_run(command, check=False, capture_output=False, text=False, env=None, **kwargs):
+    credential = json.loads(
+        (Path(env["KAGGLE_CONFIG_DIR"]) / "kaggle.json").read_text())
+    account_calls.append((list(map(str, command)), credential))
+    return SimpleNamespace(
+        returncode=0,
+        stdout=f"GPU 1h used, {credential['username']} has 29h remaining\n",
+        stderr="",
+    )
+
+
+accounts_output = io.StringIO()
+with redirect_stdout(accounts_output):
+    selected_account, selected_env = cli_kaggle._select_account(
+        Path("/fake/kaggle"), lambda _prompt: "2", account_run, accounts_file)
+selected_credential = json.loads(
+    (Path(selected_env["KAGGLE_CONFIG_DIR"]) / "kaggle.json").read_text())
+check(selected_account == "second-account"
+      and selected_credential == {"username": "second-account", "key": "second-key"}
+      and account_calls[-1][1]["username"] == "second-account"
+      and "KAGGLE_USERNAME" not in selected_env
+      and "KAGGLE_KEY" not in selected_env
+      and "first-account has 29h remaining" in accounts_output.getvalue()
+      and "second-account has 29h remaining" in accounts_output.getvalue(),
+      "every account shows quota and selecting the second uses its credential")
+
+private_dir = root / "private-dataset"
+private_dir.mkdir()
+(private_dir / "asset.bin").write_bytes(b"asset")
+private_commands = []
+
+
+def private_run(command, **kwargs):
+    private_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+cli_kaggle._publish_private_dataset(
+    Path("/fake/kaggle"), private_dir, "owner/private-asset",
+    "private asset", private_run, {})
+private_metadata = json.loads((private_dir / "dataset-metadata.json").read_text())
+check(private_metadata["isPrivate"] is True
+      and all("-u" not in command for command in private_commands),
+      "asset preparation publishes a private dataset and never requests public access")
+
+preparation_dir = root / "preparation-render"
+preparation_dir.mkdir()
+cli_kaggle._render_preparation_kernel(
+    preparation_dir, "owner/prepare", "75")
+preparation_metadata = json.loads(
+    (preparation_dir / "kernel-metadata.json").read_text())
+check(preparation_metadata["enable_gpu"] is False
+      and preparation_metadata["is_private"] is True,
+      "asset compilation runs in a private CPU kernel")
+
+owned_sources = [HERE.parent / "tool_harness", HERE]
+forbidden_hits = []
+for source_root in owned_sources:
+    for path in source_root.rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".json", ".md"}:
+            forbidden_name = "owe" + "vertonguedes"
+            if forbidden_name in path.read_text(encoding="utf-8", errors="ignore"):
+                forbidden_hits.append(str(path))
+check(not forbidden_hits,
+      "no personal Kaggle account name is fixed in tool_harness or tests")
+
+# Nothing isaacli creates in someone's Kaggle account may be world readable.
+# The CLI already defaults to private, so the danger is a stray --public or a
+# metadata file that says otherwise, and both are cheap to forbid outright.
+public_flag_hits = []
+private_flag_hits = []
+public_marks = ('"--pub' + 'lic"', '"' + '-u"', "'--pub" + "lic'")
+private_marks = ('"isPri' + 'vate": False', '"is_pri' + 'vate": False')
+for source_root in [HERE.parent / "tool_harness", HERE.parent / "contrib"]:
+    for path in source_root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".tmpl", ".json"}:
+            continue
+        body = path.read_text(encoding="utf-8", errors="ignore")
+        if any(mark in body for mark in public_marks):
+            public_flag_hits.append(str(path))
+        if any(mark in body for mark in private_marks):
+            private_flag_hits.append(str(path))
+check(not public_flag_hits,
+      "no Kaggle path anywhere asks for public visibility")
+check(not private_flag_hits,
+      "no Kaggle dataset or kernel is ever declared non-private")
 
 # `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
 # it must call cli_kaggle.run_kaggle itself, the same function object imported
