@@ -121,6 +121,37 @@ check(second_code == 1 and not any("kernels push" in " ".join(map(str, c))
                                    for c in live_commands),
       "a visible live kernel refuses a second push by effect")
 
+# There is no way to stop a kernel through the API, so an unattended one spends
+# quota until Kaggle's own maximum. Every push has to carry its own ceiling.
+push_commands = []
+
+
+def push_run(command, check=False, capture_output=False, text=False, **kwargs):
+    push_commands.append([str(part) for part in command])
+    joined = " ".join(str(part) for part in command)
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout="GPU quota: 30 hours", stderr="")
+    if "kernels list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: tester\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+answers = iter(["1", "y"])
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.run_kaggle(
+        input_fn=lambda _prompt: next(answers), run_fn=push_run,
+        popen_fn=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no discovery")),
+        which_fn=lambda _name: "/fake/kaggle",
+        config_file=root / "timeout.json", home_dir=home,
+    )
+pushes = [c for c in push_commands if "push" in c]
+check(bool(pushes) and all(
+    "-t" in c and c[c.index("-t") + 1].isdigit() and int(c[c.index("-t") + 1]) > 0
+    for c in pushes),
+      "every push carries a session ceiling so an unattended kernel cannot run on")
+
 profile_file = root / "profile" / "config.json"
 model = {"alias": "test-model"}
 profile_name = cli_kaggle.save_kaggle_profile(

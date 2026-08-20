@@ -26,6 +26,10 @@ MODEL_CATALOG_PATH = HERE / "model_catalog.json"
 TERMINAL_STATES = {"COMPLETE", "ERROR", "CANCELLED"}
 URL_PATTERN = re.compile(r"TUNNEL_URL=(https://[-a-z0-9]+\.trycloudflare\.com)")
 MODEL_CONTEXT = 16384
+# There is no `kaggle kernels stop`, only `delete`, so a kernel nobody watches
+# runs until Kaggle's own global maximum and spends quota that does not come
+# back. Every push carries its own ceiling instead of relying on that maximum.
+SESSION_TIMEOUT_SECONDS = 4 * 60 * 60
 ACCELERATORS = {
     "NvidiaTeslaP100": {
         "label": "P100 16 GB", "vram_mb": 16384,
@@ -440,7 +444,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
     try:
         with tempfile.TemporaryDirectory(prefix="isaacli-kaggle-") as temporary:
             _render_kernel(Path(temporary), slug, model, api_key, validation_cpu)
-            result = run_fn([str(executable), "kernels", "push", "-p", temporary], check=False)
+            result = run_fn([str(executable), "kernels", "push", "-p", temporary,
+                             "-t", str(SESSION_TIMEOUT_SECONDS)], check=False)
             if result.returncode != 0:
                 raise RuntimeError(t("cli.kaggle.push.failed"))
         print(t("cli.kaggle.pushed", slug=slug,
