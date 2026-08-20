@@ -21,6 +21,13 @@ HF_API = HF_ROOT + "/api/models"
 DEFAULT_TIMEOUT = 8
 DEFAULT_CONTEXT = 16384
 NO_PUBLIC_SCORE = "no public score on the accepted coding benchmarks"
+TASK_RULERS = {
+    "fix_bug": (
+        "swebench_verified", "swebench_lite", "swebench_pro", "aider_polyglot",
+    ),
+    "build_new": ("aider_polyglot", "livecodebench_v6"),
+    "explain_code": ("gpqa_diamond",),
+}
 
 
 class DiscoveryError(RuntimeError):
@@ -202,6 +209,7 @@ def _seed_maps(catalog_path):
             "benchmark": item.get("benchmark") or NO_PUBLIC_SCORE,
             "benchmark_source": source or None,
             "upstream_repo": upstream or None,
+            "scores": item.get("scores") or {},
         }
         if repo:
             by_gguf[repo.casefold()] = evidence
@@ -256,6 +264,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "active_ratio": active_ratio,
         "benchmark": benchmark,
         "benchmark_source": evidence.get("benchmark_source"),
+        "scores": evidence.get("scores") or {},
         "benchmark_scope": "original weights, not quantized GGUF",
         "upstream_repo": upstream,
         "downloads": repo_payload.get("downloads", 0),
@@ -265,7 +274,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
 
 def discover_models(catalog_path, search=None, limit=6,
                     urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT):
-    """Discover and resolve live candidates, ordered by bytes read per token."""
+    """Discover and resolve live candidates while preserving search order."""
     query = {"filter": "gguf", "limit": str(limit)}
     if search:
         query["search"] = search
@@ -275,7 +284,7 @@ def discover_models(catalog_path, search=None, limit=6,
     )
     if not isinstance(payload, list):
         raise DiscoveryError(text("model.discovery.error.search_json"))
-    models = []
+    resolved = {}
     errors = []
     repos = [_model_id(item) for item in payload if isinstance(item, dict)]
     repos = [repo for repo in repos if repo]
@@ -290,12 +299,10 @@ def discover_models(catalog_path, search=None, limit=6,
         for future in as_completed(pending):
             repo = pending[future]
             try:
-                models.append(future.result())
+                resolved[repo] = future.result()
             except DiscoveryError as error:
                 errors.append(f"{repo}: {error}")
-    models.sort(key=lambda item: hardware.bytes_read_per_token(
-        item["model_bytes"], item["active_ratio"],
-    ))
+    models = [resolved[repo] for repo in repos if repo in resolved]
     return models, errors
 
 
@@ -320,13 +327,15 @@ def fit_report(model, vram_mb, overhead_mb=hardware.DEFAULT_OVERHEAD_MB,
     return result
 
 
-def format_fit(report):
+def format_fit(report, translate=None, state_key="model.discovery.fit",
+               fit_yes_key="model.discovery.fit_yes",
+               fit_no_key="model.discovery.fit_no"):
+    translate = translate or text
     gib = 1024 ** 3
     available = max(0, report["vram_mb"] - report["overhead_mb"]) * 1024 ** 2
-    return text(
-        "model.discovery.fit",
-        fits=text("model.discovery.fit_yes") if report["fits"]
-        else text("model.discovery.fit_no"),
+    return translate(
+        state_key,
+        fits=translate(fit_yes_key) if report["fits"] else translate(fit_no_key),
         weights=f"{report['model_bytes'] / gib:.2f}",
         kv=f"{report['kv_bytes'] / gib:.2f}",
         total=f"{(report['model_bytes'] + report['kv_bytes']) / gib:.2f}",
@@ -336,6 +345,42 @@ def format_fit(report):
 
 def benchmark_line(model):
     return text("model.discovery.score", score=model.get("benchmark") or NO_PUBLIC_SCORE)
+
+
+def matched_ruler(model, task):
+    """The first ruler of this task the model has a score on, or None."""
+    scores = model.get("scores") or {}
+    for ruler in TASK_RULERS.get(task, ()):
+        if ruler in scores:
+            return ruler
+    return None
+
+
+def order_for_task(models, task):
+    """Put scored models first without disturbing the remaining curation.
+
+    Scores are only ever compared inside one ruler. Numbers from different
+    benchmarks do not share a scale: 61.7 on SWE-bench Pro is a stronger result
+    than 53.6 on SWE-bench Verified, so ranking one above the other by the digit
+    alone would demote the better model while looking rigorous. Models sharing a
+    ruler are ordered by that ruler; everything else keeps the curated order,
+    which is the order a human chose and the only defensible tie-break.
+    """
+    if not TASK_RULERS.get(task):
+        return list(models)
+    groups = {}
+    for position, model in enumerate(models):
+        groups.setdefault(matched_ruler(model, task), []).append((position, model))
+    ordered = []
+    for ruler, members in sorted(
+            (item for item in groups.items() if item[0]),
+            key=lambda item: item[1][0][0]):
+        ordered.extend(
+            model for _position, model in sorted(
+                members, key=lambda entry: -float(entry[1]["scores"][ruler]))
+        )
+    ordered.extend(model for _position, model in groups.get(None, []))
+    return ordered
 
 
 def local_vram():

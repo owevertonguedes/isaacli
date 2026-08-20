@@ -1,10 +1,40 @@
 {
-  "recommended": [
-    "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
-    "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
-    "granite4.1:3b",
-    "phi4-mini:latest",
-    "gpt-oss:20b"
+  "local": [
+    {
+      "name": "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
+      "reference": "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
+      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark_source": null,
+      "scores": {}
+    },
+    {
+      "name": "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
+      "reference": "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
+      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark_source": null,
+      "scores": {}
+    },
+    {
+      "name": "granite4.1:3b",
+      "reference": "granite4.1:3b",
+      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark_source": null,
+      "scores": {}
+    },
+    {
+      "name": "phi4-mini:latest",
+      "reference": "phi4-mini:latest",
+      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark_source": null,
+      "scores": {}
+    },
+    {
+      "name": "gpt-oss:20b",
+      "reference": "gpt-oss:20b",
+      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark_source": null,
+      "scores": {}
+    }
   ],
   "kaggle": [
     {
@@ -19,6 +49,11 @@
       "head_dim": 256,
       "benchmark": "LiveCodeBench v6 90.3, GPQA Diamond 89.2, SWE-bench Pro 61.7",
       "benchmark_source": "https://huggingface.co/Qwen/Qwen3.8-27B",
+      "scores": {
+        "livecodebench_v6": 90.3,
+        "gpqa_diamond": 89.2,
+        "swebench_pro": 61.7
+      },
       "active_ratio": 1.0
     },
     {
@@ -33,6 +68,7 @@
       "head_dim": 128,
       "benchmark": "no public score at this size",
       "benchmark_source": "https://qwenlm.github.io/blog/qwen3-coder/",
+      "scores": {},
       "active_ratio": 0.1
     },
     {
@@ -47,6 +83,11 @@
       "head_dim": 128,
       "benchmark": "Aider Polyglot 55.1, LiveCodeBench v6 45.2, GPQA 68.4",
       "benchmark_source": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "scores": {
+        "aider_polyglot": 55.1,
+        "livecodebench_v6": 45.2,
+        "gpqa_diamond": 68.4
+      },
       "active_ratio": 0.1
     },
     {
@@ -61,6 +102,9 @@
       "head_dim": 128,
       "benchmark": "SWE-bench Verified 53.6%",
       "benchmark_source": "https://huggingface.co/mistralai/Devstral-Small-2507",
+      "scores": {
+        "swebench_verified": 53.6
+      },
       "active_ratio": 1.0
     }
   ]

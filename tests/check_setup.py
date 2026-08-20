@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import stat
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -12,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
 import config
+import model_discovery
 import setup_ollama
 
 
@@ -83,7 +85,7 @@ try:
     out = io.StringIO()
     with redirect_stdout(out):
         code = setup_ollama.run_setup(
-            answers("1", "1", "1", "6", "12K", "1"), config_file=config_file,
+            answers("1", "4", "1", "1", "6", "12K", "1"), config_file=config_file,
         )
     data = json.loads(config_file.read_text())
     qwen_profile = data["profiles"][data["default_profile"]]
@@ -135,7 +137,7 @@ try:
 
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "1", "5", "3", "3"), config_file=config_file,
+            answers("1", "4", "1", "5", "3", "3"), config_file=config_file,
         )
     data = config.load(config_file)
     gpt_profile = data["profiles"][data["default_profile"]]
@@ -153,7 +155,7 @@ try:
         "model_info": {"qwen3.context_length": 262144},
     }
     with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers("1", "1", "1"), config_file=config_file)
+        code = setup_ollama.run_setup(answers("1", "4", "1", "1"), config_file=config_file)
     check(code == 1 and config_file.read_text() == before_failure,
           "a model without tools is refused without touching the previous profile")
     client.infos[qwen36] = original_qwen_info
@@ -161,7 +163,7 @@ try:
     setup_ollama.shutil.which = lambda _name: None
     missing = root / "missing.json"
     with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers("1", "1"), config_file=missing)
+        code = setup_ollama.run_setup(answers("1", "4", "1"), config_file=missing)
     check(code == 2 and not missing.exists(),
           "a missing Ollama gives instructions and writes no partial config")
 
@@ -169,7 +171,7 @@ try:
     api_config = root / "api-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "2", "Groq", "https://api.groq.com/openai/v1",
+            answers("1", "4", "2", "Groq", "https://api.groq.com/openai/v1",
                     "openai/gpt-oss-20b", "test-secret", "3"),
             config_file=api_config,
         )
@@ -214,7 +216,7 @@ try:
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             answers(
-                "1", "2", "Server", "https://api.test/v1/chat/completions",
+                "1", "4", "2", "Server", "https://api.test/v1/chat/completions",
                 "test-model", "wrong-key", "1",
                 "Server", "https://api.test/v1", "test-model", "right-key", "1",
             ),
@@ -231,7 +233,7 @@ try:
     back_config = root / "back-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "1", "8", "2", "Server", "https://api.test/v1",
+            answers("1", "4", "1", "8", "4", "2", "Server", "https://api.test/v1",
                     "test-model", "key", "1"),
             config_file=back_config,
         )
@@ -269,6 +271,168 @@ try:
         )
     check(back is None and back_thinking == "__context__",
           "the context and reasoning menus allow going back")
+
+    # ------------------------------------------------------------------
+    # Task-oriented onboarding.
+    #
+    # Every check below drives the real screens. The Hugging Face seam is
+    # replaced by a fake that answers with numbers no live repository has, so a
+    # code path that went around the seam and reached the network would report
+    # different sizes and fail here. That is deliberate: the screen once made
+    # six serial requests on every draw, which both froze the setup on a bad
+    # link and made this file depend on the network its own first line promises
+    # it does not use.
+    # ------------------------------------------------------------------
+    class FakeResponse:
+        def __init__(self, payload=None, length=None):
+            self.payload = payload
+            self.headers = {"Content-Length": str(length)} if length else {}
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    QWEN_REPO = "unsloth/Qwen3.6-35B-A3B-GGUF"
+    QWEN_FILE = "Qwen3.6-35B-A3B-UD-IQ1_M.gguf"
+    QWEN_BYTES = 2 * 1024 ** 3
+    hf_requests = []
+
+    def fake_hf(request, timeout=None):
+        url = request.full_url
+        hf_requests.append(url)
+        if url == f"{model_discovery.HF_API}/{QWEN_REPO}":
+            return FakeResponse({
+                "id": QWEN_REPO,
+                "siblings": [{"rfilename": QWEN_FILE}],
+                "cardData": {"base_model": "Qwen/Qwen3.6-35B-A3B"},
+            })
+        if url.endswith("/config.json") and "Qwen3.6-35B-A3B/" in url:
+            return FakeResponse({
+                "num_hidden_layers": 4, "num_key_value_heads": 2,
+                "head_dim": 64, "num_attention_heads": 8,
+            })
+        if request.get_method() == "HEAD" and url.endswith(QWEN_FILE):
+            return FakeResponse(length=QWEN_BYTES)
+        raise urllib.error.URLError("not in the fake index")
+
+    original_detect = setup_ollama.hardware.detect
+    original_seam = setup_ollama.LOCAL_RESOLUTION_URLOPEN
+    setup_ollama.LOCAL_RESOLUTION_URLOPEN = fake_hf
+    try:
+        setup_ollama.hardware.detect = lambda: {
+            "gpus": [{"name": "NVIDIA GeForce GTX 1650", "vram_mb": 4096,
+                      "bandwidth_gbs": 128.0}],
+            "ram_mb": 15813, "cpu_cores": 12,
+        }
+        setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
+        task_config = root / "task-config.json"
+        task_out = io.StringIO()
+        with redirect_stdout(task_out):
+            code = setup_ollama.run_setup(
+                answers("1", "1", "1", "6", "12K", "1"), config_file=task_config,
+            )
+        task_data = config.load(task_config)
+        screen = task_out.getvalue()
+        check(code == 0 and task_data["onboarding"]["task"] == "fix_bug",
+              "the onboarding records the declared task alongside the profile")
+        check(pt.t("onboarding.task.ruler.fix_bug") in screen,
+              "the declared task names the public ruler it selected, on screen")
+        check(pt.t("model.benchmark.scope") in screen,
+              "the screen that shows scores also says they are pre-quantization")
+        check("NVIDIA GeForce GTX 1650" in screen and "15.4" in screen,
+              "the detected machine is stated instead of being assumed")
+        check(f"{QWEN_BYTES / 1024 ** 3:.2f}" in screen
+              and any(QWEN_FILE in url for url in hf_requests),
+              "the recommended list reports the size the seam returned, not a guess")
+        check(all("huggingface.co" in url for url in hf_requests),
+              "resolution goes through the injected seam and nowhere else")
+
+        # An entry the fake index refuses stands for a model whose size nothing
+        # records. Saying "does not fit" there would be inventing the number
+        # that decides it.
+        check(pt.t("model.fit.unknown") in screen,
+              "a model whose size cannot be resolved says so instead of guessing")
+
+        setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
+        skip_config = root / "skip-config.json"
+        skip_out = io.StringIO()
+        with redirect_stdout(skip_out):
+            code = setup_ollama.run_setup(
+                answers("1", "4", "1", "1", "6", "12K", "1"),
+                config_file=skip_config,
+            )
+        skip_data = config.load(skip_config)
+        check(code == 0 and "onboarding" not in skip_data,
+              "skipping the task question stores nothing rather than a default")
+        check(pt.t("onboarding.task.ruler.fix_bug") not in skip_out.getvalue(),
+              "a skipped task claims no ruler")
+
+        # Preselection is what makes `isaacli setup` the way to redo the
+        # onboarding: the stored answer has to come back as the default.
+        preselected = []
+        original_select = setup_ollama._select
+
+        def recording_select(tr_, title, options, input_fn, explanation=None,
+                             initial=0, disabled=None):
+            preselected.append(initial)
+            return initial
+
+        setup_ollama._select = recording_select
+        try:
+            chosen_task = setup_ollama._choose_task(
+                config.load(task_config), answers(), pt,
+            )
+        finally:
+            setup_ollama._select = original_select
+        check(chosen_task == "fix_bug" and preselected == [0],
+              "running the onboarding again defaults to the task already stored")
+
+        # No GPU is a normal machine. Reporting "does not fit" against zero VRAM
+        # answers a question nobody asked and hides the real one, which is that
+        # it would run on the CPU.
+        setup_ollama.hardware.detect = lambda: {
+            "gpus": [], "ram_mb": 15813, "cpu_cores": 12,
+        }
+        setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
+        headless_out = io.StringIO()
+        with redirect_stdout(headless_out):
+            code = setup_ollama.run_setup(
+                answers("1", "1", "1", "6", "12K", "1"),
+                config_file=root / "headless-config.json",
+            )
+        headless = headless_out.getvalue()
+        check(code == 0 and pt.t("hardware.local.no_gpu", ram="15.4", cores=12)
+              in headless,
+              "a machine with no GPU is reported as such, not as a failure")
+        check(pt.t("model.fit.no_gpu_sized", weights=f"{QWEN_BYTES / 1024 ** 3:.2f}")
+              in headless and pt.t("model.fit.does_not_fit") not in headless,
+              "with no GPU the screen says it runs on the CPU instead of does not fit")
+
+        # Detection that blows up must not take the setup with it.
+        def exploding_detect():
+            raise OSError("nvidia-smi is not speaking to the driver")
+
+        setup_ollama.hardware.detect = exploding_detect
+        setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
+        broken_out = io.StringIO()
+        with redirect_stdout(broken_out):
+            code = setup_ollama.run_setup(
+                answers("1", "1", "1", "6", "12K", "1"),
+                config_file=root / "broken-detect-config.json",
+            )
+        check(code == 0 and "Traceback" not in broken_out.getvalue()
+              and pt.t("hardware.local.no_gpu", ram="0.0", cores=0)
+              in broken_out.getvalue(),
+              "hardware detection that raises degrades to a line, not a traceback")
+    finally:
+        setup_ollama.hardware.detect = original_detect
+        setup_ollama.LOCAL_RESOLUTION_URLOPEN = original_seam
+        setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
 
     def interrupt(_prompt=""):
         raise KeyboardInterrupt

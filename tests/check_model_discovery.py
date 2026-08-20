@@ -102,17 +102,22 @@ catalog = setup_ollama.MODEL_CATALOG_PATH
 discovered, discovery_errors = model_discovery.discover_models(
     catalog, urlopen_fn=fake_urlopen,
 )
+by_repo = {item["repo"]: item for item in discovered}
+# The search answers Dense first and MoE second, and the MoE reads a tenth of
+# the bytes per token. Ordering by that would put the cheap model on top, which
+# is a recommendation whether it means to be one or not. Speed and capability
+# point opposite ways here, and the ordering must not quietly pick speed.
 check(not discovery_errors and [item["repo"] for item in discovered] == [
-    "test/MoE-30B-GGUF", "test/Dense-20B-GGUF",
-], "discovery sorts by bytes read per token, putting the larger MoE first")
-check(discovered[0]["active_ratio"] == 8 / 128
-      and discovered[1]["active_ratio"] == 1.0,
+    "test/Dense-20B-GGUF", "test/MoE-30B-GGUF",
+], "discovery keeps the source order instead of promoting the cheapest model")
+check(by_repo["test/MoE-30B-GGUF"]["active_ratio"] == 8 / 128
+      and by_repo["test/Dense-20B-GGUF"]["active_ratio"] == 1.0,
       "MoE active ratio comes from config.json while a dense model uses 1.0")
 check(all(timeout and timeout <= model_discovery.DEFAULT_TIMEOUT
           for _url, _method, timeout in calls),
       "every Hugging Face request has a finite timeout")
-check(discovered[0]["benchmark"] == model_discovery.NO_PUBLIC_SCORE
-      and discovered[0]["benchmark_source"] is None,
+check(by_repo["test/MoE-30B-GGUF"]["benchmark"] == model_discovery.NO_PUBLIC_SCORE
+      and by_repo["test/MoE-30B-GGUF"]["benchmark_source"] is None,
       "an uncurated model reports no public accepted score instead of inventing one")
 
 
@@ -172,7 +177,9 @@ try:
 
     setup_ollama._choose_other_ollama = choose_other
     setup_ollama._download_model = download
-    answers = iter(["1", "1", "7", "1", "1"])
+    # Language, the onboarding task skipped, the "other model" entry, then the
+    # download confirmation.
+    answers = iter(["1", "4", "1", "7", "1", "1"])
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             lambda _prompt="": next(answers),
@@ -249,6 +256,54 @@ try:
           "a Kaggle model that exceeds T4 x2 does not reach kernel rendering silently")
 finally:
     model_discovery.discover_models = original_discover
+
+
+# ----------------------------------------------------------------------
+# Ordering by the ruler the declared task selects.
+# ----------------------------------------------------------------------
+kaggle_catalog = json.loads(Path(catalog).read_text(encoding="utf-8"))["kaggle"]
+curated = [item["alias"] for item in kaggle_catalog]
+
+check([item["alias"] for item in model_discovery.order_for_task(kaggle_catalog, None)]
+      == curated,
+      "no declared task leaves the curated order exactly as it is")
+check([item["alias"] for item in
+       model_discovery.order_for_task(kaggle_catalog, "unknown_task")] == curated,
+      "a task with no ruler does not silently invent an ordering")
+
+# Devstral scores 53.6 on SWE-bench Verified and Qwen3.8-27B scores 61.7 on
+# SWE-bench Pro. Pro is the harder set, so ranking Verified above it because
+# Verified is the preferred ruler would demote the stronger model while looking
+# rigorous. Scores are only ever compared inside one ruler.
+fix_order = [item["alias"] for item in
+             model_discovery.order_for_task(kaggle_catalog, "fix_bug")]
+check(fix_order.index("qwen38-27b") < fix_order.index("devstral-small-2507"),
+      "scores from different rulers are not compared against each other")
+check(fix_order[-1] == "qwen3-coder-30b-a3b",
+      "a model with no score on the chosen ruler falls to the end, not out of the list")
+check(sorted(fix_order) == sorted(curated),
+      "ordering for a task keeps every model in the list")
+
+build_order = [item["alias"] for item in
+               model_discovery.order_for_task(kaggle_catalog, "build_new")]
+check(build_order[:2] == ["qwen38-27b", "qwen3-30b-a3b-2507"],
+      "build_new promotes the models scored on its rulers, best ruler first")
+
+# Inside one ruler the number does decide, and the curated order does not
+# override it: the lower score is listed first in the catalog on purpose here.
+same_ruler = [
+    {"alias": "weaker", "scores": {"swebench_verified": 20.0}},
+    {"alias": "stronger", "scores": {"swebench_verified": 70.0}},
+]
+check([item["alias"] for item in
+       model_discovery.order_for_task(same_ruler, "fix_bug")]
+      == ["stronger", "weaker"],
+      "two models on the same ruler are ordered by that ruler's score")
+
+check(model_discovery.matched_ruler(
+          {"scores": {"gpqa_diamond": 89.2}}, "explain_code") == "gpqa_diamond"
+      and model_discovery.matched_ruler({"scores": {}}, "fix_bug") is None,
+      "the ruler a model is judged by is reported, or None when it has no score")
 
 
 print()

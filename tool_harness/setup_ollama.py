@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import agent
@@ -33,13 +34,31 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
         raise RuntimeError(
             Translator().t("setup.catalog.invalid", path=path, error=e)) from e
+    required = {"name", "reference", "benchmark", "benchmark_source", "scores"}
     if not isinstance(models, list) or not models or not all(
-            isinstance(item, str) and item.strip() for item in models):
+            isinstance(item, dict) and required <= item.keys()
+            and isinstance(item["name"], str) and item["name"].strip()
+            and isinstance(item["reference"], str) and item["reference"].strip()
+            and isinstance(item["scores"], dict)
+            for item in models):
         raise RuntimeError(Translator().t("setup.catalog.not_list", path=path))
     return models
 
 
-RECOMMENDED = _load_catalog("recommended")
+LOCAL_CATALOG = _load_catalog("local")
+RECOMMENDED = [item["reference"] for item in LOCAL_CATALOG]
+TASK_VALUES = ("fix_bug", "build_new", "explain_code")
+_UNCHANGED = object()
+_LOCAL_RESOLUTION_CACHE = {}
+# The model screen has to draw fast and has to work with the network down. Each
+# hf.co entry costs three requests, so resolving them one after another at the
+# default eight second ceiling can freeze the screen for the best part of a
+# minute on a bad link. They go together, under a short ceiling, and whatever
+# misses it degrades to the honest "size unknown" state instead of stalling.
+# The urlopen seam exists so the suite stays offline, which its first line
+# promises.
+LOCAL_RESOLUTION_TIMEOUT = 4
+LOCAL_RESOLUTION_URLOPEN = urllib.request.urlopen
 
 CONTEXT_LEVELS = [
     ("context.compact", 8192),
@@ -173,17 +192,24 @@ def _download_model(ollama_exe, model, tr=None):
         raise RuntimeError(tr.t("model.download.failed", code=result.returncode))
 
 
-def _model_item(model, recommended=False):
+def _model_item(model, recommended=False, catalog=None):
     normalized = model.removesuffix(":latest")
     slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-") or "local"
-    return {
+    item = {
         "id": slug, "name": model, "base_model": model,
         "temperature": 0, "thinking_kind": "detect", "recommended": recommended,
     }
+    if catalog:
+        item["catalog"] = catalog
+    return item
 
 
-def _recommended_catalog():
-    return [_model_item(model, recommended=True) for model in RECOMMENDED]
+def _recommended_catalog(task=None):
+    ordered = model_discovery.order_for_task(LOCAL_CATALOG, task)
+    return [
+        _model_item(item["reference"], recommended=True, catalog=item)
+        for item in ordered
+    ]
 
 
 def _installed_models(installed):
@@ -199,7 +225,163 @@ def _model_label(item, installed, tr):
     base = item["base_model"]
     state = ("model.installed" if _is_installed(base, installed)
               else "model.not_installed")
-    return f"{base} [{tr.t(state)}]"
+    fit = item.get("fit_label") or tr.t("model.fit.unknown")
+    return tr.t("model.option", model=base, state=tr.t(state), fit=fit)
+
+
+def _task_ruler(task, tr):
+    return tr.t(f"onboarding.task.ruler.{task}") if task else ""
+
+
+def _choose_task(data, input_fn, tr):
+    stored = (data.get("onboarding") or {}).get("task")
+    initial = TASK_VALUES.index(stored) if stored in TASK_VALUES else 3
+    index = _select(
+        tr, tr.t("onboarding.task.title"),
+        [tr.t(f"onboarding.task.{value}") for value in TASK_VALUES]
+        + [tr.t("onboarding.task.skip")],
+        input_fn, tr.t("onboarding.task.explain"), initial=initial,
+    )
+    return TASK_VALUES[index] if index < len(TASK_VALUES) else None
+
+
+def _store_onboarding(data, task):
+    if task:
+        data.setdefault("onboarding", {})["task"] = task
+        return
+    onboarding = data.get("onboarding")
+    if isinstance(onboarding, dict):
+        onboarding.pop("task", None)
+        if not onboarding:
+            data.pop("onboarding", None)
+
+
+def _machine_profile(tr):
+    try:
+        profile = hardware.detect()
+        if not isinstance(profile, dict):
+            raise TypeError("hardware.detect returned a non-object")
+        ram_mb = float(profile.get("ram_mb") or 0)
+        cores = int(profile.get("cpu_cores") or 0)
+        gpus = []
+        for raw in profile.get("gpus") or []:
+            if not isinstance(raw, dict):
+                continue
+            vram_mb = float(raw.get("vram_mb") or 0)
+            if vram_mb <= 0:
+                continue
+            gpus.append({
+                "name": raw.get("name") or tr.t("hardware.unknown"),
+                "vram_mb": vram_mb,
+            })
+    except Exception:
+        debug.swallowed("setup_ollama._machine_profile")
+        ram_mb = 0
+        cores = 0
+        gpus = []
+    profile = {"gpus": gpus, "ram_mb": ram_mb, "cpu_cores": cores}
+    ram_gib = ram_mb / 1024
+    if not gpus:
+        line = tr.t("hardware.local.no_gpu", ram=f"{ram_gib:.1f}", cores=cores)
+    else:
+        gpu_labels = tr.t("hardware.local.separator").join(
+            tr.t(
+                "hardware.local.gpu_item", name=item["name"],
+                vram=f"{item['vram_mb'] / 1024:.1f}",
+            )
+            for item in gpus
+        )
+        line = tr.t(
+            "hardware.local.summary", gpus=gpu_labels, ram=f"{ram_gib:.1f}", cores=cores,
+        )
+    return profile, line
+
+
+def _resolve_live(reference):
+    """Live metadata for one catalogued reference, or None when unresolvable.
+
+    Returning None is a real answer here: it becomes the "size unknown" state on
+    screen, which is the honest thing to say about a model nobody measured.
+    """
+    if reference in _LOCAL_RESOLUTION_CACHE:
+        return _LOCAL_RESOLUTION_CACHE[reference]
+    try:
+        live = model_discovery.resolve_hf_model(
+            reference, catalog_path=MODEL_CATALOG_PATH,
+            urlopen_fn=LOCAL_RESOLUTION_URLOPEN,
+            timeout=LOCAL_RESOLUTION_TIMEOUT,
+        )
+    except model_discovery.DiscoveryError as error:
+        debug.note(f"setup_ollama._resolve_live {reference}", str(error))
+        live = None
+    except Exception:
+        debug.swallowed(f"setup_ollama._resolve_live {reference}")
+        live = None
+    # A failure is cached too. Without that, every redraw pays the timeout again
+    # for the reference that already failed, which is the slowest case asking to
+    # be repeated.
+    _LOCAL_RESOLUTION_CACHE[reference] = live
+    return live
+
+
+def _resolved_local_catalog(task, profile, tr):
+    vram_mb = sum(
+        int(item.get("vram_mb") or 0)
+        for item in profile.get("gpus") or [] if isinstance(item, dict)
+    )
+    gpu_count = len(profile.get("gpus") or [])
+    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    ordered = model_discovery.order_for_task(LOCAL_CATALOG, task)
+    pending = [
+        item["reference"] for item in ordered
+        if item["reference"].startswith("hf.co/")
+        and item["reference"] not in _LOCAL_RESOLUTION_CACHE
+    ]
+    if pending:
+        with ThreadPoolExecutor(max_workers=len(pending)) as executor:
+            list(executor.map(_resolve_live, pending))
+    items = []
+    for catalog in ordered:
+        reference = catalog["reference"]
+        resolved = dict(catalog)
+        live = _resolve_live(reference) if reference.startswith("hf.co/") else None
+        if live:
+            resolved.update(live)
+            # The live payload carries its own benchmark evidence, derived from
+            # the Kaggle seed. The curated entry is the authority for this
+            # model, so it wins rather than being overwritten by a neighbour.
+            resolved.update({
+                "benchmark": catalog["benchmark"],
+                "benchmark_source": catalog["benchmark_source"],
+                "scores": catalog["scores"],
+            })
+        complete = all(
+            key in resolved
+            for key in ("model_bytes", "n_layers", "n_kv_heads", "head_dim")
+        )
+        item = _model_item(reference, recommended=True, catalog=catalog)
+        if not gpu_count:
+            # Without a GPU there is no VRAM to fit into, so "does not fit" would
+            # be answering a question nobody asked. What the user needs to know
+            # is that it runs on CPU and system RAM, and that this is slow.
+            item["fit_label"] = (
+                tr.t("model.fit.no_gpu_sized",
+                     weights=f"{resolved['model_bytes'] / 1024 ** 3:.2f}")
+                if complete else tr.t("model.fit.no_gpu")
+            )
+        elif complete:
+            report = model_discovery.fit_report(
+                resolved, vram_mb, overhead_mb=overhead_mb,
+            )
+            item["fit_report"] = report
+            item["fit_label"] = model_discovery.format_fit(
+                report, tr.t, state_key="model.fit.report",
+                fit_yes_key="model.fit.fits", fit_no_key="model.fit.does_not_fit",
+            )
+        else:
+            item["fit_label"] = tr.t("model.fit.unknown")
+        items.append(item)
+    return items
 
 
 def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
@@ -429,7 +611,7 @@ def _ask_autostart(base_url, input_fn, tr):
     return {"cmd": cmd, "health_url": base_url.rstrip("/") + "/models"}
 
 
-def _setup_api(language, input_fn, config_file, tr):
+def _setup_api(language, input_fn, config_file, tr, onboarding_task=_UNCHANGED):
     field_error = None
     while True:
         terminal_ui.clear()
@@ -487,6 +669,8 @@ def _setup_api(language, input_fn, config_file, tr):
     config.save_secret(credential, key, secret_path)
     data = config.load(config_file)
     data["language"] = language
+    if onboarding_task is not _UNCHANGED:
+        _store_onboarding(data, onboarding_task)
     data["profiles"][profile_name] = {
         "provider": "openai_compatible", "provider_name": name,
         "base_url": base_url, "model": model, "thinking": thinking,
@@ -499,20 +683,24 @@ def _setup_api(language, input_fn, config_file, tr):
     return 0
 
 
-def _setup_kaggle(language, input_fn, config_file):
+def _setup_kaggle(language, input_fn, config_file, onboarding_task=_UNCHANGED):
     """One Kaggle configuration path shared by setup and the model selector."""
     from cli_i18n import set_language
     import cli_kaggle
 
     data = config.load(config_file)
     data["language"] = language
+    if onboarding_task is not _UNCHANGED:
+        _store_onboarding(data, onboarding_task)
     config.save(data, config_file)
     set_language(language)
-    return run_kaggle(input_fn=input_fn, config_file=config_file)
+    return run_kaggle(
+        input_fn=input_fn, config_file=config_file, onboarding_task=onboarding_task,
+    )
 
 
 def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
-                             urlopen_fn=urllib.request.urlopen):
+                             urlopen_fn=urllib.request.urlopen, onboarding_task=None):
     """Combine the offline seed with live GGUF discovery for Kaggle."""
     import cli_kaggle
 
@@ -543,7 +731,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
                 "gpu_count": accelerator["gpu_count"],
             })
             models.append(report)
-    models.sort(key=lambda item: item["bytes_per_token"])
+    models = model_discovery.order_for_task(models, onboarding_task)
     print(model_discovery.text("model.discovery.section"))
     for index, item in enumerate(models, 1):
         print(
@@ -613,9 +801,19 @@ def run_kaggle(**kwargs):
     original_select = cli_kaggle._select_model
     input_fn = kwargs.get("input_fn") or input
     urlopen_fn = kwargs.get("urlopen_fn", urllib.request.urlopen)
+    onboarding_task = kwargs.pop("onboarding_task", _UNCHANGED)
+    if onboarding_task is _UNCHANGED:
+        try:
+            onboarding_task = (
+                config.load(kwargs.get("config_file")).get("onboarding") or {}
+            ).get("task")
+        except ValueError:
+            debug.swallowed("setup_ollama.run_kaggle onboarding")
+            onboarding_task = None
     cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH: (
         _dynamic_kaggle_selector(
             _input, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
+            onboarding_task=onboarding_task,
         )
     )
     try:
@@ -634,24 +832,42 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         except KeyboardInterrupt:
             print("\n" + Translator("en").t("setup.cancelled"))
             return 130
+    from cli_i18n import set_language
+    set_language(language)
     tr = Translator(language)
     print(tr.t("setup.title"), "\n")
+    onboarding_task = _UNCHANGED
+    ruler_line = ""
 
     try:
         if not ollama_only:
+            setup_data = config.load(config_file)
+            previous_task = (setup_data.get("onboarding") or {}).get("task")
+            onboarding_task = _choose_task(setup_data, input_fn, tr)
+            _store_onboarding(setup_data, onboarding_task)
+            if onboarding_task or previous_task:
+                config.save(setup_data, config_file)
+            ruler_line = _task_ruler(onboarding_task, tr)
+            engine_explanation = tr.t("engine.explain")
+            if ruler_line:
+                engine_explanation += "\n" + ruler_line
             engine = _select(
                 tr, tr.t("engine.title"),
                 [tr.t("engine.ollama"), tr.t("engine.api"),
                  tr.t("engine.kaggle")], input_fn,
-                tr.t("engine.explain"),
+                engine_explanation,
             )
             if engine == 1:
-                api_result = _setup_api(language, input_fn, config_file, tr)
+                api_result = _setup_api(
+                    language, input_fn, config_file, tr, onboarding_task,
+                )
                 if api_result == "__engine__":
                     return _run_setup(input_fn, config_file, initial_language=language)
                 return api_result
             if engine == 2:
-                return _setup_kaggle(language, input_fn, config_file)
+                return _setup_kaggle(
+                    language, input_fn, config_file, onboarding_task,
+                )
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
         print(tr.t("setup.error", error=e))
         return 1
@@ -670,6 +886,16 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         version, started = _ensure_server(client, ollama_exe, tr)
         installed = {m.get("name", "").removesuffix(":latest") for m in client.models()}
         current_config = config.load(config_file)
+        machine, machine_line = _machine_profile(tr)
+        # /model does not ask the task again, but it must not contradict the
+        # answer either: reordering the same list differently in the two screens
+        # would read as the recommendation having changed.
+        if onboarding_task is _UNCHANGED:
+            screen_task = (current_config.get("onboarding") or {}).get("task")
+            ruler_line = _task_ruler(screen_task, tr)
+        else:
+            screen_task = onboarding_task
+        recommended_items = _resolved_local_catalog(screen_task, machine, tr)
         configured_derivatives = {
             profile.get("model", "").removesuffix(":latest").casefold()
             for profile in (current_config.get("profiles") or {}).values()
@@ -678,7 +904,6 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
             and profile.get("model") != profile.get("base_model")
         }
         while True:
-            recommended_items = _recommended_catalog()
             catalogued = {
                 item["base_model"].removesuffix(":latest").casefold()
                 for item in recommended_items
@@ -718,7 +943,12 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
             model_index = _select(
                 tr, tr.t("model.title"), options, input_fn,
                 terminal_ui.dim(
-                    tr.t("model.recommended.explain", version=version), input_fn,
+                    "\n".join(filter(None, [
+                        tr.t("model.recommended.explain", version=version),
+                        machine_line,
+                        ruler_line,
+                        tr.t("model.benchmark.scope"),
+                    ])), input_fn,
                 ),
                 initial=initial,
                 disabled=headers,
@@ -770,6 +1000,8 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
 
         data = config.load(config_file)
         data["language"] = language
+        if onboarding_task is not _UNCHANGED:
+            _store_onboarding(data, onboarding_task)
         _save_ollama_profile(data, chosen, num_ctx, limit, thinking)
         config.save(data, config_file)
         return 0

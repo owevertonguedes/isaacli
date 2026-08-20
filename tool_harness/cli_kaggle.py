@@ -341,7 +341,7 @@ def _load_model_candidates(path=MODEL_CATALOG_PATH):
     required = {
         "name", "repo", "file", "alias", "source", "model_bytes",
         "n_layers", "n_kv_heads", "head_dim", "benchmark",
-        "benchmark_source", "active_ratio",
+        "benchmark_source", "scores", "active_ratio",
     }
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
