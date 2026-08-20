@@ -801,9 +801,30 @@ def run_kaggle(**kwargs):
     """Run cli_kaggle through the shared dynamic selector without duplicating flow."""
     import cli_kaggle
 
+    return _with_dynamic_selector(
+        cli_kaggle.run_kaggle, kwargs,
+        kwargs.get("urlopen_fn", urllib.request.urlopen))
+
+
+def run_prepare_assets(**kwargs):
+    """Prepare the reusable assets from the same screens the launch uses.
+
+    Preparation reaches Hugging Face to draw the model screen, but never reaches
+    a saved endpoint, so the probe function is for the screen alone and does not
+    travel into the entry point.
+    """
+    import cli_kaggle
+
+    return _with_dynamic_selector(
+        cli_kaggle.run_prepare_assets, kwargs,
+        kwargs.pop("urlopen_fn", urllib.request.urlopen))
+
+
+def _with_dynamic_selector(entry, kwargs, urlopen_fn):
+    """Lend one Kaggle entry point the merged offline plus live model screen."""
+    import cli_kaggle
+
     original_select = cli_kaggle._select_model
-    input_fn = kwargs.get("input_fn") or input
-    urlopen_fn = kwargs.get("urlopen_fn", urllib.request.urlopen)
     onboarding_task = kwargs.pop("onboarding_task", _UNCHANGED)
     if onboarding_task is _UNCHANGED:
         try:
@@ -811,7 +832,7 @@ def run_kaggle(**kwargs):
                 config.load(kwargs.get("config_file")).get("onboarding") or {}
             ).get("task")
         except ValueError:
-            debug.swallowed("setup_ollama.run_kaggle onboarding")
+            debug.swallowed("setup_ollama._with_dynamic_selector onboarding")
             onboarding_task = None
     cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH: (
         _dynamic_kaggle_selector(
@@ -820,7 +841,7 @@ def run_kaggle(**kwargs):
         )
     )
     try:
-        return cli_kaggle.run_kaggle(**kwargs)
+        return entry(**kwargs)
     finally:
         cli_kaggle._select_model = original_select
 

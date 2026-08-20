@@ -986,6 +986,91 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
     return profile_name
 
 
+def _prune_dead_kernels(live, config_file=None, account=None, username=None):
+    """Forget the kernels that are over, and the profiles they left behind.
+
+    A tunnel URL is minted per session and never comes back, so a record whose
+    kernel has no session names an address that cannot answer again, and the
+    profile built from it is pointed at nothing. They accumulate: the first real
+    account reached eight records. Only Kaggle decides what is over, only this
+    account's records are touched, and a profile is only removed when it still
+    holds the exact dead URL that record created it with, so a profile the user
+    edited or reused is left alone.
+    """
+    data = config.load(config_file)
+    state = data.get("kaggle") or {}
+    live_refs = {ref for ref, _state in live}
+    kept, removed = [], []
+    for record in state.get("kernels") or []:
+        slug = record.get("slug") or ""
+        owned = record.get("account") == account or (
+            record.get("account") is None
+            and bool(username) and slug.startswith(f"{username}/"))
+        (kept if slug in live_refs or not owned else removed).append(record)
+    if not removed:
+        return []
+    profiles = data.get("profiles") or {}
+    for record in removed:
+        profile = profiles.get(record.get("profile"))
+        if not profile or not record.get("url"):
+            continue
+        if profile.get("base_url", "").rstrip("/") != record["url"].rstrip("/") + "/v1":
+            continue
+        profiles.pop(record["profile"])
+        config.delete_secret(profile.get("credential"), _secret_path(config_file))
+        if data.get("default_profile") == record["profile"]:
+            data["default_profile"] = next(iter(profiles), None)
+    state["kernels"] = kept
+    config.save(data, config_file)
+    return removed
+
+
+def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
+                       home_dir=None, record_path=None, which_fn=shutil.which):
+    """Build the reusable Kaggle assets on their own, spending no GPU quota.
+
+    Preparation only ever existed grafted onto the GPU launch, so the one step
+    that costs nothing could not be reached without starting the one that costs
+    hours. It is a CPU kernel and a private dataset, and it is what removes the
+    34 minute compile and download from the GPU clock afterwards.
+    """
+    input_fn = input if input_fn is None else input_fn
+    executable = install_kaggle_cli(
+        input_fn=input_fn, run_fn=run_fn, which_fn=which_fn,
+        home_dir=home_dir, record_path=record_path,
+    )
+    if executable is None:
+        return 1
+    try:
+        _account, environment = _select_account(
+            executable, input_fn, run_fn, config_file)
+        username = _authenticated_username(executable, run_fn, environment)
+        model = _select_model(input_fn)
+        available = _available_asset_refs(
+            executable, username, model, run_fn, environment)
+    except RuntimeError as error:
+        print(t("cli.kaggle.failed", error=error))
+        return 1
+    for ref in available.values():
+        print(t("cli.kaggle.assets.available", ref=ref))
+    if len(available) == 2:
+        print(t("cli.kaggle.prepare.nothing_missing", username=username))
+        return 0
+    print(t("cli.kaggle.prepare.plan", username=username))
+    if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() != t(
+            "cli.kaggle.confirm_yes"):
+        print(t("cli.kaggle.cancelled"))
+        return 130
+    try:
+        available = _prepare_assets(
+            executable, username, model, available, input_fn, run_fn, environment)
+    except (OSError, RuntimeError) as error:
+        print(t("cli.kaggle.failed", error=error))
+        return 1
+    print(t("cli.kaggle.prepare.done", count=len(available)))
+    return 0
+
+
 def _reactivate_live_profile(live, config_file=None, account=None,
                              urlopen_fn=urllib.request.urlopen):
     """Reactivate a saved profile only when its recorded kernel and API answer."""
@@ -1057,6 +1142,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
     except RuntimeError as error:
         print(t("cli.kaggle.failed", error=error))
         return 1
+    for record in _prune_dead_kernels(live, config_file, account, username):
+        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
     if live:
         for ref, state in live:
             print(t("cli.kaggle.live", slug=ref, state=state,
@@ -1079,14 +1166,6 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 return 1
         print(t("cli.kaggle.second_refused"))
         return 1
-    if not validation_cpu:
-        saved = [
-            item for item in
-            (config.load(config_file).get("kaggle") or {}).get("kernels", [])
-            if item.get("account") in (None, account)
-        ]
-        if saved:
-            print(t("cli.kaggle.dead", slug=saved[-1].get("slug", "?")))
     if validation_cpu:
         print(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}

@@ -472,6 +472,44 @@ check("12.18h" in dead_output.getvalue()
       and "--------" not in dead_output.getvalue(),
       "the run shows the hours left, not the raw quota table a second time")
 
+dead_state = config.load(dead_file)
+check(not (dead_state.get("kaggle") or {}).get("kernels")
+      and reuse_profile not in dead_state["profiles"]
+      and "other" in dead_state["profiles"],
+      "a kernel Kaggle no longer runs is forgotten, with the profile it created")
+
+# Pruning has to be decided by Kaggle and bounded by ownership. A record that is
+# still running, one belonging to another account, and one whose profile no
+# longer holds that dead URL are three different reasons to keep something, and
+# each of them has been a way to delete somebody's working configuration.
+keep_file = root / "keep" / "config.json"
+config.save({
+    "language": "en", "default_profile": "kept-live",
+    "profiles": {
+        "kept-live": {"provider": "openai_compatible",
+                       "base_url": "https://live.trycloudflare.com/v1"},
+        "kept-edited": {"provider": "openai_compatible",
+                         "base_url": "https://elsewhere.example/v1"},
+    },
+    "kaggle": {"kernels": [
+        {"slug": "owner/live", "url": "https://live.trycloudflare.com",
+         "profile": "kept-live", "account": "owner"},
+        {"slug": "other/over", "url": "https://gone.trycloudflare.com",
+         "profile": "kept-edited", "account": "other"},
+        {"slug": "owner/over", "url": "https://gone2.trycloudflare.com",
+         "profile": "kept-edited", "account": "owner"},
+    ]},
+}, keep_file)
+pruned = cli_kaggle._prune_dead_kernels(
+    [("owner/live", "KernelWorkerStatus.RUNNING")], keep_file, "owner", "owner")
+kept_state = config.load(keep_file)
+kept_slugs = [item["slug"] for item in kept_state["kaggle"]["kernels"]]
+check([record["slug"] for record in pruned] == ["owner/over"]
+      and kept_slugs == ["owner/live", "other/over"]
+      and set(kept_state["profiles"]) == {"kept-live", "kept-edited"}
+      and kept_state["default_profile"] == "kept-live",
+      "pruning removes only this account's finished kernels, and no repointed profile")
+
 accounts_file = root / "accounts" / "config.json"
 add_account(accounts_file, "first-account", "first-key")
 cli_kaggle.register_account("second-account", {"key": "second-key"}, accounts_file)
@@ -719,6 +757,100 @@ finally:
 check(purge_code == 0 and calls == [
     ("isaac", True, True), ("kaggle", True), ("isaac", True, False),
 ], "the explicit Kaggle purge validates, removes Kaggle, then purges isaacli data")
+
+# ----------------------------------------------------------------------
+# Preparing the reusable assets on its own, which is the step that costs
+# nothing and until now could only be reached by starting the step that costs
+# hours. What is checked is the effect: every kernel this command pushes has to
+# declare no accelerator, and no GPU kernel may be pushed at all.
+# ----------------------------------------------------------------------
+prepare_file = root / "prepare" / "config.json"
+add_account(prepare_file, "preparer", "prepare-key")
+prepare_pushes = []
+prepare_datasets = []
+prepared_model = cli_kaggle.prepared_models()[0]
+prepared_refs = cli_kaggle._asset_refs("preparer", prepared_model)
+prepared_archive = prepared_refs["binary"].split("/", 1)[1].replace("isaacli-", "")
+
+
+def prepare_run(command, check=False, capture_output=False, text=False, env=None,
+                **kwargs):
+    parts = list(map(str, command))
+    joined = " ".join(parts)
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: preparer\n", stderr="")
+    if "kernels list" in joined or "datasets list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\npreparer/x,X\n", stderr="")
+    if "kernels push" in joined:
+        folder = Path(parts[parts.index("-p") + 1])
+        prepare_pushes.append(json.loads(
+            (folder / "kernel-metadata.json").read_text()))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.COMPLETE", stderr="")
+    if "kernels output" in joined:
+        # The real command writes the archive the CPU kernel produced, named
+        # for the architecture that kernel was told to compile for.
+        folder = Path(parts[parts.index("-p") + 1])
+        (folder / f"{prepared_archive}.tar.gz").write_bytes(b"runtime")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "datasets create" in joined:
+        folder = Path(parts[parts.index("-p") + 1])
+        prepare_datasets.append((
+            json.loads((folder / "dataset-metadata.json").read_text()),
+            sorted(path.name for path in folder.iterdir()),
+        ))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+# "1" selects the account, "1" the model, "y" confirms preparation, "n" declines
+# publishing the weight, which is the part that downloads gigabytes locally.
+prepare_answers = iter(["1", "1", "y", "n"])
+prepare_output = io.StringIO()
+with redirect_stdout(prepare_output):
+    prepare_code = cli_kaggle.run_prepare_assets(
+        input_fn=lambda _prompt: next(prepare_answers), run_fn=prepare_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=prepare_file,
+        home_dir=home,
+    )
+prepare_metadata, prepare_files = prepare_datasets[0] if prepare_datasets else ({}, [])
+check(prepare_code == 0 and len(prepare_pushes) == 1
+      and prepare_pushes[0]["enable_gpu"] is False
+      and prepare_pushes[0]["enable_tpu"] is False
+      and "machine_shape" not in prepare_pushes[0],
+      "preparing assets pushes one kernel and it asks for no accelerator")
+check(len(prepare_datasets) == 1 and prepare_metadata["isPrivate"] is True
+      and prepare_metadata["id"] == prepared_refs["binary"]
+      and f"{prepared_archive}.tar.gz" in prepare_files,
+      "the compiled CUDA runtime is published as a private dataset of that account")
+check(config.load(prepare_file).get("default_profile") is None
+      and not (config.load(prepare_file).get("kaggle") or {}).get("kernels"),
+      "preparation leaves no endpoint behind, because it never started a server")
+
+# The command has to reach preparation through the same wrapper the launch uses,
+# because that wrapper is what lends it the live model screen. Routing it
+# straight at cli_kaggle would give this command a different, smaller list.
+routed = []
+original_prepare = setup_ollama.run_prepare_assets
+original_launch = setup_ollama.run_kaggle
+try:
+    setup_ollama.run_prepare_assets = lambda **kwargs: routed.append("prepare") or 0
+    setup_ollama.run_kaggle = lambda **kwargs: routed.append(
+        ("launch", kwargs.get("validation_cpu"))) or 0
+    with redirect_stdout(io.StringIO()):
+        prepare_route = cli.main(["kaggle", "--prepare-assets"])
+        launch_route = cli.main(["kaggle"])
+        bogus_route = cli.main(["kaggle", "--prepare"])
+finally:
+    setup_ollama.run_prepare_assets = original_prepare
+    setup_ollama.run_kaggle = original_launch
+check(prepare_route == 0 and launch_route == 0 and bogus_route == 2
+      and routed == ["prepare", ("launch", False)],
+      "isaacli kaggle --prepare-assets prepares and never falls through to a launch")
 
 # ----------------------------------------------------------------------
 # Adding an account the way the Kaggle CLI already supports.

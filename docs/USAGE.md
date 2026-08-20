@@ -47,6 +47,10 @@ Kaggle has no CLI command to stop a running kernel. The command prints the direc
 
 The versioned GPU notebook is [gpu-server.py.tmpl](../contrib/kaggle/gpu-server.py.tmpl). Prepared datasets are always derived from the authenticated Kaggle username and are private by default. If either input is absent, the same notebook remains self-contained and compiles or downloads the missing input after warning about the measured cost. It is never started by opening an isaacli session.
 
+`isaacli kaggle --prepare-assets` runs only the preparation half: it picks an account and a model, reports which reusable assets that account already owns, and builds the missing ones. The CUDA runtime is compiled by a private CPU kernel and published as a private dataset, so this requests no accelerator and spends no GPU quota. Publishing the model weight is a separate confirmation, because it downloads the file locally first. Nothing is pushed to a GPU and no endpoint is saved.
+
+A recorded kernel that Kaggle no longer runs is forgotten on the next run, together with the profile it created, because a tunnel URL is minted per session and never comes back. A profile that was repointed somewhere else is left alone.
+
 `isaacli kaggle --flow-validation-cpu` exists only to validate orchestration without using GPU quota. Its separate template starts a tiny OpenAI-compatible probe and exits after five minutes. It does not download, load or run a model, and it is never selected by the normal command.
 
 ## Setup
