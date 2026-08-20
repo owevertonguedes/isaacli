@@ -4,6 +4,7 @@ import io
 import builtins
 import json
 import os
+import shutil
 import sys
 import tempfile
 from contextlib import redirect_stdout
@@ -16,6 +17,12 @@ sys.path.insert(0, str(HERE.parent / "tool_harness"))
 root = Path(tempfile.mkdtemp())
 os.environ["HOME"] = str(root / "home")
 os.environ["XDG_CONFIG_HOME"] = str(root / "config")
+# A signed-in shell is the case that matters. Asserting these are absent from a
+# process that never had them proves nothing, and pointing KAGGLE_CONFIG_DIR at
+# a fresh folder is not on its own enough to change account: the CLI answered
+# from a cached token and reported another account's quota.
+os.environ["KAGGLE_USERNAME"] = "ambient-account"
+os.environ["KAGGLE_KEY"] = "ambient-key"
 
 import cli_kaggle
 import cli
@@ -596,6 +603,144 @@ finally:
 check(purge_code == 0 and calls == [
     ("isaac", True, True), ("kaggle", True), ("isaac", True, False),
 ], "the explicit Kaggle purge validates, removes Kaggle, then purges isaacli data")
+
+# ----------------------------------------------------------------------
+# Adding an account the way the Kaggle CLI already supports.
+#
+# Typing a username and pasting a token is doing by hand what `auth login`
+# does through the browser, and the username is something the CLI can be
+# asked for. Both of these drive the real functions; the browser round trip
+# itself is the one part a test cannot perform.
+# ----------------------------------------------------------------------
+login_file = root / "login" / "config.json"
+config.save({"language": "en", "profiles": {}, "default_profile": None}, login_file)
+login_commands = []
+
+
+def refuse_input(_prompt=""):
+    raise AssertionError("the account flow asked the user to type something")
+
+
+def login_run(command, check=False, capture_output=False, text=False, env=None,
+              **kwargs):
+    command = list(map(str, command))
+    login_commands.append((command, dict(env or {})))
+    if command[1:3] == ["config", "view"]:
+        directory = Path(env["KAGGLE_CONFIG_DIR"])
+        # The real CLI answers with whoever finished the browser flow. Standing
+        # in for that means writing the session into the folder it was told to
+        # use, which is also what proves the folder is the one being used.
+        (directory / "kaggle-session").write_text("session", encoding="utf-8")
+        return SimpleNamespace(
+            returncode=0, stdout="- username: browser-user\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    logged_in = cli_kaggle.login_account(
+        Path("/fake/kaggle"), login_file, login_run)
+login_data = config.load(login_file)
+login_command, login_env = login_commands[0]
+session_dir = cli_kaggle._account_dir("browser-user", login_file)
+secrets_file = login_file.with_name("secrets.json")
+
+check(logged_in == "browser-user"
+      and login_data["kaggle"]["accounts"]["browser-user"] == {"browser_login": True}
+      and login_data["kaggle"]["selected_account"] == "browser-user",
+      "the browser sign-in registers the account the CLI says answered")
+check(login_command[1:] == ["auth", "login", "--force"],
+      "the sign-in forces a fresh login instead of accepting the cached one")
+check(login_env["KAGGLE_CONFIG_DIR"].startswith(
+          str(cli_kaggle._accounts_root(login_file)))
+      and "KAGGLE_USERNAME" not in login_env and "KAGGLE_KEY" not in login_env,
+      "the sign-in runs in a folder of its own with the ambient account cleared")
+check((session_dir / "kaggle-session").exists(),
+      "the session the CLI wrote is kept, under the folder for that account")
+check(not secrets_file.exists()
+      or "kaggle:browser-user" not in json.loads(secrets_file.read_text()),
+      "a browser session is not copied into secrets.json in a shape we invented")
+
+browser_env = cli_kaggle._account_environment("browser-user", login_file)
+check(browser_env["KAGGLE_CONFIG_DIR"] == str(session_dir)
+      and "KAGGLE_API_TOKEN" not in browser_env,
+      "using a browser account points the CLI at its own session and adds nothing")
+
+key_json = root / "downloaded-kaggle.json"
+key_json.write_text(json.dumps({"username": "key-user", "key": "downloaded-key"}),
+                    encoding="utf-8")
+cli_kaggle.register_api_key_file(str(key_json), login_file)
+key_data = config.load(login_file)
+check("key-user" in key_data["kaggle"]["accounts"]
+      and "downloaded-key" not in login_file.read_text()
+      and json.loads(json.loads(
+          secrets_file.read_text())["kaggle:key-user"])["key"] == "downloaded-key",
+      "an API key file registers its own username and keeps the key out of the config")
+check(cli_kaggle._account_environment("key-user", login_file)["KAGGLE_CONFIG_DIR"]
+      != browser_env["KAGGLE_CONFIG_DIR"],
+      "two registered accounts never share one credential folder")
+
+pasted = json.dumps({"username": "pasted-user", "key": "pasted-key"})
+cli_kaggle.register_api_key_file(pasted, login_file)
+check("pasted-user" in config.load(login_file)["kaggle"]["accounts"],
+      "the contents of kaggle.json can be pasted instead of a path")
+
+rejected = False
+try:
+    cli_kaggle.register_api_key_file("{\"username\": \"no-key\"}", login_file)
+except RuntimeError:
+    rejected = True
+check(rejected and "no-key" not in config.load(login_file)["kaggle"]["accounts"],
+      "a file without a key is refused instead of registering half an account")
+
+# Signing out is local unless revoking was asked for. Revoking cannot be undone
+# from here, so it must never be the thing that happens by default.
+revoke_commands = []
+
+
+def revoke_run(command, check=False, capture_output=False, text=False, env=None,
+               **kwargs):
+    revoke_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.forget_account("key-user", login_file, Path("/fake/kaggle"), revoke_run)
+after_forget = config.load(login_file)
+check("key-user" not in after_forget["kaggle"]["accounts"]
+      and "kaggle:key-user" not in json.loads(secrets_file.read_text())
+      and not cli_kaggle._account_dir("key-user", login_file).exists(),
+      "signing out removes the account, its credential and its folder")
+check(not revoke_commands,
+      "signing out does not revoke the token at Kaggle unless that was asked for")
+
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.forget_account(
+        "browser-user", login_file, Path("/fake/kaggle"), revoke_run, revoke=True)
+check(any(command[1:] == ["auth", "revoke"] for command in revoke_commands)
+      and not session_dir.exists()
+      and "browser-user" not in config.load(login_file)["kaggle"]["accounts"],
+      "an explicitly confirmed sign-out revokes the token and clears the session")
+
+ghost_file = root / "ghost" / "config.json"
+config.save({"language": "en", "profiles": {}, "default_profile": None}, ghost_file)
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.login_account(Path("/fake/kaggle"), ghost_file, login_run)
+shutil.rmtree(cli_kaggle._account_dir("browser-user", ghost_file))
+ghost_error = None
+try:
+    cli_kaggle._account_environment("browser-user", ghost_file)
+except RuntimeError as error:
+    ghost_error = str(error)
+check(ghost_error and "browser-user" in ghost_error,
+      "a browser account whose session is gone says so instead of using another one")
+
+# The username is never typed. If any of this asked for input, the flow would
+# have raised, because the input function used above refuses to answer.
+with redirect_stdout(io.StringIO()):
+    silent = cli_kaggle.login_account(
+        Path("/fake/kaggle"), root / "silent" / "config.json", login_run)
+check(silent == "browser-user", "signing in never asks the user for a username")
+del refuse_input
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")

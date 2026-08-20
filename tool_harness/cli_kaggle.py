@@ -1,6 +1,5 @@
 """Kaggle CLI installation and explicit remote-kernel orchestration."""
 import csv
-import getpass
 import hashlib
 import io
 import json
@@ -91,25 +90,55 @@ def register_account(username, credential, config_file=None):
     return username
 
 
+def _accounts_root(config_file=None):
+    base = (Path(config_file).parent if config_file else config.config_path().parent)
+    return base / "kaggle-accounts"
+
+
+def _account_dir(username, config_file=None):
+    digest = hashlib.sha256(username.encode("utf-8")).hexdigest()[:16]
+    return _accounts_root(config_file) / digest
+
+
+def _isolated_environment(account_dir):
+    """A Kaggle environment that can only reach the credential in this folder.
+
+    Pointing `KAGGLE_CONFIG_DIR` at an empty folder is not enough on its own:
+    the CLI authenticated anyway from a token cached elsewhere and answered with
+    another account's quota, which would have spent the first account's hours
+    while displaying the second account's name. The ambient variables have to be
+    cleared as well, and that is what makes the selection real.
+    """
+    environment = dict(os.environ)
+    environment.pop("KAGGLE_USERNAME", None)
+    environment.pop("KAGGLE_KEY", None)
+    environment["KAGGLE_CONFIG_DIR"] = str(account_dir)
+    return environment
+
+
 def _account_environment(username, config_file=None):
     """Materialize one selected credential for the Kaggle CLI only."""
     data = config.load(config_file)
     account = ((data.get("kaggle") or {}).get("accounts") or {}).get(username)
     if not account:
         raise RuntimeError(t("cli.kaggle.accounts.missing", username=username))
+    account_dir = _account_dir(username, config_file)
+    if account.get("browser_login"):
+        # The Kaggle CLI wrote this folder itself during `auth login`, and it
+        # owns whatever shape the credential has. Copying it into secrets.json
+        # would mean this code deciding what a Kaggle credential looks like, and
+        # then breaking the day that shape changes.
+        if not account_dir.is_dir():
+            raise RuntimeError(t("cli.kaggle.accounts.session_missing",
+                                 username=username))
+        return _isolated_environment(account_dir)
     raw = config.load_secret(account.get("credential"), _secret_path(config_file))
     try:
         credential = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(t("cli.kaggle.accounts.credential_invalid")) from error
-    base = (Path(config_file).parent if config_file else config.config_path().parent)
-    digest = hashlib.sha256(username.encode("utf-8")).hexdigest()[:16]
-    account_dir = base / "kaggle-accounts" / digest
     account_dir.mkdir(parents=True, exist_ok=True)
-    environment = dict(os.environ)
-    environment.pop("KAGGLE_USERNAME", None)
-    environment.pop("KAGGLE_KEY", None)
-    environment["KAGGLE_CONFIG_DIR"] = str(account_dir)
+    environment = _isolated_environment(account_dir)
     if credential.get("token"):
         token_path = account_dir / "access_token"
         token_path.write_text(str(credential["token"]).strip() + "\n", encoding="utf-8")
@@ -126,12 +155,135 @@ def _account_environment(username, config_file=None):
     return environment
 
 
-def _register_account_interactive(input_fn, config_file=None):
-    username = input_fn(t("cli.kaggle.accounts.username_prompt")).strip()
-    credential_input = getpass.getpass if input_fn is input else input_fn
-    value = credential_input(t("cli.kaggle.accounts.credential_prompt")).strip()
-    credential = {"token": value} if value.startswith("KGAT_") else {"key": value}
-    return register_account(username, credential, config_file)
+def _authenticated_username(executable, run_fn=subprocess.run, env=None):
+    """The account the CLI is actually authenticated as, asked rather than typed."""
+    result = _run_capture([str(executable), "config", "view"], run_fn, env)
+    match = re.search(
+        r"(?:username:\s*|- username:\s*)([^\s]+)", result.stdout or "", re.I)
+    if result.returncode != 0 or not match:
+        raise RuntimeError(t("cli.kaggle.username.failed"))
+    return match.group(1)
+
+
+def login_account(executable, config_file=None, run_fn=subprocess.run,
+                  launch_browser=True):
+    """Log in through the Kaggle CLI itself and register whoever answered.
+
+    The CLI already has a browser flow, so asking the person to type a username
+    and paste a token is doing by hand what `auth login` does for them. The name
+    is read back from the CLI afterwards, because the CLI is the only thing that
+    knows which account actually authenticated.
+    """
+    root = _accounts_root(config_file)
+    root.mkdir(parents=True, exist_ok=True)
+    pending = Path(tempfile.mkdtemp(prefix="pending-", dir=str(root)))
+    pending.chmod(0o700)
+    environment = _isolated_environment(pending)
+    # Without --force the CLI can decide it is already logged in and keep the
+    # previous account, which is exactly how a second account ends up spending
+    # the first account's quota under the wrong name.
+    command = [str(executable), "auth", "login", "--force"]
+    if not launch_browser:
+        command.append("--no-launch-browser")
+    print(t("cli.kaggle.accounts.login_starting"))
+    try:
+        result = run_fn(command, check=False, env=environment)
+        if result.returncode != 0:
+            raise RuntimeError(t("cli.kaggle.accounts.login_failed"))
+        username = _authenticated_username(executable, run_fn, environment)
+    except RuntimeError:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise
+    target = _account_dir(username, config_file)
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    pending.replace(target)
+    target.chmod(0o700)
+    data = config.load(config_file)
+    state = data.setdefault("kaggle", {})
+    state.setdefault("accounts", {})[username] = {"browser_login": True}
+    state["selected_account"] = username
+    config.save(data, config_file)
+    print(t("cli.kaggle.accounts.login_done", username=username))
+    return username
+
+
+def register_api_key_file(source, config_file=None):
+    """Register an account from the kaggle.json the user downloaded.
+
+    That file already carries the username, so nothing has to be typed and
+    nothing has to be guessed.
+    """
+    text = source
+    path = Path(str(source).strip()).expanduser()
+    try:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+    except OSError:
+        debug.swallowed("cli_kaggle.register_api_key_file read")
+    try:
+        payload = json.loads(text)
+        username = payload["username"]
+        key = payload["key"]
+    except (TypeError, ValueError, KeyError) as error:
+        raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid")) from error
+    return register_account(username, {"key": key}, config_file)
+
+
+def forget_account(username, config_file=None, executable=None,
+                   run_fn=subprocess.run, revoke=False):
+    """Remove one account from isaacli, optionally revoking it at Kaggle too.
+
+    Forgetting is local by default. Revoking reaches Kaggle and cannot be
+    undone from here, so it only happens when it was asked for explicitly.
+    """
+    data = config.load(config_file)
+    state = data.get("kaggle") or {}
+    accounts = state.get("accounts") or {}
+    if username not in accounts:
+        raise RuntimeError(t("cli.kaggle.accounts.missing", username=username))
+    if revoke and executable:
+        try:
+            environment = _account_environment(username, config_file)
+            result = _run_capture(
+                [str(executable), "auth", "revoke"], run_fn, environment)
+            if result.returncode != 0:
+                print(t("cli.kaggle.accounts.revoke_failed",
+                        error=(result.stderr or result.stdout).strip()))
+            else:
+                print(t("cli.kaggle.accounts.revoked", username=username))
+        except RuntimeError as error:
+            print(t("cli.kaggle.accounts.revoke_failed", error=error))
+    secret = accounts[username].get("credential")
+    if secret:
+        config.delete_secret(secret, _secret_path(config_file))
+    shutil.rmtree(_account_dir(username, config_file), ignore_errors=True)
+    accounts.pop(username, None)
+    if state.get("selected_account") == username:
+        state["selected_account"] = next(iter(accounts), None)
+    config.save(data, config_file)
+    print(t("cli.kaggle.accounts.forgotten", username=username))
+    return username
+
+
+def _register_account_interactive(input_fn, config_file=None, executable=None,
+                                  run_fn=subprocess.run):
+    """Add an account the way the CLI supports, never by typing a username."""
+    options = [
+        t("cli.kaggle.accounts.add_browser"),
+        t("cli.kaggle.accounts.add_api_key"),
+    ]
+    print(t("cli.kaggle.accounts.add_title"))
+    for index, option in enumerate(options, 1):
+        print(f"  {index}. {option}")
+    answer = input_fn(t("cli.kaggle.accounts.add_prompt")).strip() or "1"
+    if answer == "2":
+        print(t("cli.kaggle.accounts.api_key_explain"))
+        source = input_fn(t("cli.kaggle.accounts.api_key_prompt")).strip()
+        return register_api_key_file(source, config_file)
+    if executable is None:
+        raise RuntimeError(t("cli.kaggle.accounts.login_unavailable"))
+    return login_account(executable, config_file, run_fn)
 
 
 def install_kaggle_cli(input_fn=None, run_fn=subprocess.run, which_fn=shutil.which,
@@ -252,16 +404,21 @@ def _quota(executable, run_fn=subprocess.run, env=None):
     return result.stdout.strip()
 
 
-def _authenticate(executable, run_fn=subprocess.run, env=None):
+def _forget_account_interactive(names, input_fn, config_file=None, executable=None,
+                                run_fn=subprocess.run):
+    """Sign out of one registered account, and say what that does and does not do."""
+    print(t("cli.kaggle.accounts.forget_title"))
+    for index, username in enumerate(names, 1):
+        print(f"  {index}. {username}")
+    answer = input_fn(t("cli.kaggle.accounts.forget_prompt")).strip()
     try:
-        return _quota(executable, run_fn, env)
-    except RuntimeError as error:
-        debug.swallowed("cli_kaggle._authenticate quota before login")
-        print(t("cli.kaggle.login.required", error=error))
-    result = run_fn([str(executable), "auth", "login"], check=False, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(t("cli.kaggle.login.failed"))
-    return _quota(executable, run_fn, env)
+        username = names[int(answer) - 1]
+    except (ValueError, IndexError) as error:
+        raise RuntimeError(t("cli.kaggle.accounts.invalid")) from error
+    print(t("cli.kaggle.accounts.forget_explain", username=username))
+    revoke = input_fn(t("cli.kaggle.accounts.revoke_prompt")).strip().lower() == t(
+        "cli.kaggle.confirm_yes")
+    return forget_account(username, config_file, executable, run_fn, revoke)
 
 
 def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=None):
@@ -270,7 +427,7 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
     accounts = ((data.get("kaggle") or {}).get("accounts") or {})
     if not accounts:
         print(t("cli.kaggle.accounts.none"))
-        _register_account_interactive(input_fn, config_file)
+        _register_account_interactive(input_fn, config_file, executable, run_fn)
         data = config.load(config_file)
         accounts = ((data.get("kaggle") or {}).get("accounts") or {})
     names = list(accounts)
@@ -284,6 +441,7 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
         print(t("cli.kaggle.accounts.option", index=index, username=username,
                 quota=quota))
     print(t("cli.kaggle.accounts.add_option", index=len(names) + 1))
+    print(t("cli.kaggle.accounts.forget_option", index=len(names) + 2))
     selected = ((data.get("kaggle") or {}).get("selected_account"))
     default = names.index(selected) + 1 if selected in names else 1
     answer = input_fn(t("cli.kaggle.accounts.prompt", default=default)).strip()
@@ -292,7 +450,13 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
     except ValueError as error:
         raise RuntimeError(t("cli.kaggle.accounts.invalid")) from error
     if index == len(names):
-        username = _register_account_interactive(input_fn, config_file)
+        username = _register_account_interactive(
+            input_fn, config_file, executable, run_fn)
+    elif index == len(names) + 1:
+        _forget_account_interactive(names, input_fn, config_file, executable, run_fn)
+        # Signing out changes the list this screen just printed, so it is drawn
+        # again rather than acting on the stale numbering the user saw.
+        return _select_account(executable, input_fn, run_fn, config_file)
     elif 0 <= index < len(names):
         username = names[index]
     else:
@@ -762,14 +926,7 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             executable, input_fn, run_fn, config_file)
         quota = _quota(executable, run_fn, environment)
         print(t("cli.kaggle.quota", quota=quota))
-        username_result = _run_capture(
-            [str(executable), "config", "view"], run_fn, environment)
-        username_match = re.search(
-            r"(?:username:\s*|- username:\s*)([^\s]+)",
-            username_result.stdout, re.I)
-        if username_result.returncode != 0 or not username_match:
-            raise RuntimeError(t("cli.kaggle.username.failed"))
-        username = username_match.group(1)
+        username = _authenticated_username(executable, run_fn, environment)
         live = live_kernels(executable, run_fn, environment)
     except RuntimeError as error:
         print(t("cli.kaggle.failed", error=error))

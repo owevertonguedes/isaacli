@@ -52,6 +52,22 @@ def load_secret(name, path=None):
         return None
 
 
+def delete_secret(name, path=None):
+    """Remove one secret, so forgetting an account really forgets its credential."""
+    target = Path(path) if path else secrets_path()
+    if not target.exists():
+        return False
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if name not in data:
+        return False
+    data.pop(name)
+    save(data, target)
+    return True
+
+
 def empty_config():
     return {
         "version": CONFIG_VERSION,
