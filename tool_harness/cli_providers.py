@@ -74,6 +74,7 @@ class ProvidersMixin:
         self.model = item["model"]
         self.thinking = item.get("thinking")
         self.num_ctx = item.get("num_ctx")
+        self.temperature = item.get("temperature")
         self.provider = self._provider_from_profile(item)
         self._log("meta", event="model", profile=name, model=self.model,
                   thinking=self.thinking, num_ctx=self.num_ctx)

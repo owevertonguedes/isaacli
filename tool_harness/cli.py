@@ -207,10 +207,15 @@ def _read_input():
 
 class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
-                 thinking=None, num_ctx=None, config_file=None, provider=None):
+                 thinking=None, num_ctx=None, config_file=None, provider=None,
+                 temperature=None):
         self.model = model
         self.thinking = thinking
         self.num_ctx = num_ctx
+        # A profile that says temperature and is never read is a setting that
+        # silently does nothing, which is worse than not offering it. `None`
+        # means the profile did not choose, and the agent's own default holds.
+        self.temperature = temperature
         self.config_file = config_file
         try:
             language = config.load(config_file).get("language")
@@ -504,6 +509,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     thinking=self.thinking,
                     num_ctx=self.num_ctx,
                     provider=self.provider,
+                    **({} if self.temperature is None
+                       else {"temperature": self.temperature}),
                     require_change=asked_for_mutation,
                     is_changing_tool=_changing_tool_call,
                     changing_tool_succeeded=_changing_tool_succeeded,
@@ -897,6 +904,7 @@ def main(argv=None):
     cli = IsaacCLI(
         model, workspace, args.max_steps, thinking=thinking,
         num_ctx=(model_profile or {}).get("num_ctx"),
+        temperature=(model_profile or {}).get("temperature"),
     )
     cli.provider = cli._provider_from_profile(model_profile)
     if resumed:

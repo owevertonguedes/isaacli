@@ -163,6 +163,7 @@ class CommandsMixin:
                     self.model = item["model"]
                     self.thinking = item.get("thinking")
                     self.num_ctx = item.get("num_ctx")
+                    self.temperature = item.get("temperature")
                     self.provider = self._provider_from_profile(item)
                     self._log("meta", event="setup", profile=name,
                               model=self.model, thinking=self.thinking)
@@ -224,6 +225,7 @@ class CommandsMixin:
                     self.model = item["model"]
                     self.thinking = item.get("thinking")
                     self.num_ctx = item.get("num_ctx")
+                    self.temperature = item.get("temperature")
                     self.provider = self._provider_from_profile(item)
                     source = t("cli.model.source.profile", name=arg)
                 else:
@@ -251,6 +253,7 @@ class CommandsMixin:
                     self.model = item["model"]
                     self.thinking = item.get("thinking")
                     self.num_ctx = item.get("num_ctx")
+                    self.temperature = item.get("temperature")
                     self.provider = self._provider_from_profile(item)
                     self._log("meta", event="kaggle", profile=name,
                               model=self.model, thinking=self.thinking)

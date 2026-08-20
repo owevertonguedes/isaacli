@@ -1194,6 +1194,42 @@ check(code == 1 and "Llama Server" in message and "--debug" in message
       and "/setup" not in message,
       "a local server that did not come up is reported as such, not as a bad credential")
 
+
+# A profile that records `temperature` and is never read is a setting that
+# silently does nothing. This checks the effect: the number the profile chose
+# is the number that reaches agent.run, and a profile that chose nothing leaves
+# the agent's own default alone.
+captured_temperature = []
+original_agent_run = app.agent.run
+
+
+def fake_run(*_args, **kwargs):
+    captured_temperature.append(kwargs.get("temperature", "__absent__"))
+    return {"final": "done", "calls": [], "steps": 0, "usage": {},
+            "thinking_adjusted": False, "changing_calls": 0,
+            "successful_changes": 0}
+
+
+try:
+    app.agent.run = fake_run
+    warm = app.IsaacCLI("m", ".", 4, temperature=0.7)
+    warm.history = []
+    warm.ensure_ollama = lambda warn=False: True
+    with redirect_stdout(io.StringIO()):
+        warm.ask("hi")
+    cold = app.IsaacCLI("m", ".", 4)
+    cold.history = []
+    cold.ensure_ollama = lambda warn=False: True
+    with redirect_stdout(io.StringIO()):
+        cold.ask("hi")
+finally:
+    app.agent.run = original_agent_run
+
+check(captured_temperature[:1] == [0.7],
+      "the temperature a profile records is the temperature the request carries")
+check(captured_temperature[1:2] == ["__absent__"],
+      "a profile without temperature leaves the agent default untouched")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")
