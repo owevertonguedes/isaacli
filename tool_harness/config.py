@@ -26,6 +26,18 @@ def config_path() -> Path:
     return root / "isaacli" / "config.json"
 
 
+def cache_path() -> Path:
+    """Where large rebuildable downloads go, which is never RAM and never config.
+
+    tempfile's default is /tmp, and on a normal Fedora desktop /tmp is a tmpfs:
+    a 15 GiB model weight staged there is written into memory and fails at the
+    size of RAM instead of the size of the disk.
+    """
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".cache"
+    return root / "isaacli"
+
+
 def secrets_path() -> Path:
     return config_path().with_name("secrets.json")
 

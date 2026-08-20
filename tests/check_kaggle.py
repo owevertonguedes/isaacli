@@ -768,6 +768,7 @@ prepare_file = root / "prepare" / "config.json"
 add_account(prepare_file, "preparer", "prepare-key")
 prepare_pushes = []
 prepare_datasets = []
+prepare_paths = []
 prepared_model = cli_kaggle.prepared_models()[0]
 prepared_refs = cli_kaggle._asset_refs("preparer", prepared_model)
 prepared_archive = prepared_refs["binary"].split("/", 1)[1].replace("isaacli-", "")
@@ -785,6 +786,7 @@ def prepare_run(command, check=False, capture_output=False, text=False, env=None
         return SimpleNamespace(returncode=0, stdout="ref,title\npreparer/x,X\n", stderr="")
     if "kernels push" in joined:
         folder = Path(parts[parts.index("-p") + 1])
+        prepare_paths.append(folder)
         prepare_pushes.append(json.loads(
             (folder / "kernel-metadata.json").read_text()))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -830,6 +832,42 @@ check(len(prepare_datasets) == 1 and prepare_metadata["isPrivate"] is True
 check(config.load(prepare_file).get("default_profile") is None
       and not (config.load(prepare_file).get("kaggle") or {}).get("kernels"),
       "preparation leaves no endpoint behind, because it never started a server")
+
+# Staging belongs on a disk, and the refusal belongs before the transfer. /tmp
+# is a tmpfs on a normal desktop, so a 15 GiB weight staged there is written
+# into RAM. What is checked is the effect: the scratch directory is not the
+# system temp root, and a weight that cannot fit is refused without curl ever
+# being invoked, rather than after spending the whole download to find out.
+space_file = root / "space" / "config.json"
+add_account(space_file, "preparer", "prepare-key")
+space_calls = []
+original_free = cli_kaggle._free_bytes
+try:
+    cli_kaggle._free_bytes = lambda _path: SimpleNamespace(
+        total=0, used=0, free=prepared_model["model_bytes"] - 1)
+
+    def space_run(command, check=False, capture_output=False, text=False, env=None,
+                  **kwargs):
+        space_calls.append(list(map(str, command)))
+        return prepare_run(command, check, capture_output, text, env, **kwargs)
+
+    refused = ""
+    with redirect_stdout(io.StringIO()) as space_output:
+        # The runtime is already published, so only the weight is left to decide.
+        cli_kaggle._prepare_assets(
+            "/fake/kaggle", "preparer", prepared_model, {"binary": "x"},
+            lambda _prompt: "y", space_run, {},
+        )
+except RuntimeError as error:
+    refused = str(error)
+finally:
+    cli_kaggle._free_bytes = original_free
+check("GiB" in refused and not any("curl" in parts[0] for parts in space_calls),
+      "a weight that cannot fit is refused with the numbers, before any download")
+check(all(Path(path).is_relative_to(config.cache_path()) for path in prepare_paths)
+      and prepare_paths
+      and Path(cli_kaggle._scratch_root()) == config.cache_path(),
+      "large staging follows the cache location, not the system temp filesystem")
 
 # The command has to reach preparation through the same wrapper the launch uses,
 # because that wrapper is what lends it the live model screen. Routing it

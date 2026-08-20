@@ -213,6 +213,7 @@
   "cli.kaggle.prepare.output_missing": "a saída da preparação em CPU não continha o arquivo do runtime CUDA",
   "cli.kaggle.prepare.publish_failed": "a publicação do dataset privado falhou para {ref}",
   "cli.kaggle.prepare.download_failed": "o download do peso do modelo falhou",
+  "cli.kaggle.prepare.no_space": "espaço insuficiente em {path}: o peso precisa de {needed} GiB e há {free} GiB livres. Libere espaço ou aponte XDG_CACHE_HOME para um disco maior.",
   "cli.kaggle.prepare.created": "Dataset privado criado: {ref}. Remova com: kaggle datasets delete {ref}",
   "cli.kaggle.prepare.kernel_remove": "Kernel de preparação em CPU: {slug}. Remova depois de conferir a saída com: kaggle kernels delete {slug}",
   "cli.kaggle.cpu_only": "SOMENTE VALIDAÇÃO DE FLUXO: este kernel pede CPU explicitamente. Ele prova envio, descoberta do túnel, alcançabilidade e gravação do perfil, mas não carrega nem executa um modelo.",

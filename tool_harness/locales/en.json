@@ -213,6 +213,7 @@
   "cli.kaggle.prepare.output_missing": "the CPU preparation output did not contain the CUDA runtime archive",
   "cli.kaggle.prepare.publish_failed": "private dataset publication failed for {ref}",
   "cli.kaggle.prepare.download_failed": "the model weight download failed",
+  "cli.kaggle.prepare.no_space": "not enough room in {path}: the weight needs {needed} GiB and {free} GiB are free. Free space or point XDG_CACHE_HOME at a larger disk.",
   "cli.kaggle.prepare.created": "Private dataset created: {ref}. Remove it with: kaggle datasets delete {ref}",
   "cli.kaggle.prepare.kernel_remove": "CPU preparation kernel: {slug}. Remove it after inspecting its output with: kaggle kernels delete {slug}",
   "cli.kaggle.cpu_only": "FLOW VALIDATION ONLY: this kernel explicitly requests CPU. It proves push, tunnel discovery, reachability and profile persistence, but it does not load or run a model.",

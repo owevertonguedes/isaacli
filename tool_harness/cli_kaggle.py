@@ -858,14 +858,41 @@ def _publish_private_dataset(executable, folder, ref, title,
         raise RuntimeError(t("cli.kaggle.prepare.publish_failed", ref=ref))
 
 
+_free_bytes = shutil.disk_usage
+
+
+def _scratch_root():
+    """Stage hundreds of megabytes on disk, not in the machine's memory."""
+    root = config.cache_path()
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
+def _require_space(directory, needed_bytes):
+    """Refuse a download that cannot land, before it starts, with the numbers.
+
+    The limit belongs at the entrance. Starting a 15 GiB transfer into a
+    filesystem that has 7 GiB spends the whole transfer to find out, and the
+    error at the end is about a write, not about the choice that caused it.
+    """
+    free = _free_bytes(directory).free
+    if free >= needed_bytes:
+        return
+    raise RuntimeError(t(
+        "cli.kaggle.prepare.no_space", path=directory,
+        needed=f"{needed_bytes / 1024 ** 3:.2f}", free=f"{free / 1024 ** 3:.2f}"))
+
+
 def _prepare_assets(executable, username, model, available, input_fn,
                     run_fn=subprocess.run, env=None):
     expected = _asset_refs(username, model)
+    scratch = _scratch_root()
     if "binary" not in available:
         suffix = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         slug = f"{username}/isaacli-prepare-cpu-{suffix}"
         print(t("cli.kaggle.prepare.cpu", slug=slug))
-        with tempfile.TemporaryDirectory(prefix="isaacli-kaggle-prepare-") as temporary:
+        with tempfile.TemporaryDirectory(
+                prefix="isaacli-kaggle-prepare-", dir=scratch) as temporary:
             folder = Path(temporary)
             _render_preparation_kernel(folder, slug, model["cuda_arch"])
             result = run_fn([
@@ -887,7 +914,9 @@ def _prepare_assets(executable, username, model, available, input_fn,
                 raise RuntimeError(t("cli.kaggle.prepare.output_missing"))
             dataset = folder / "binary-dataset"
             dataset.mkdir()
-            shutil.copy2(archives[0], dataset / archives[0].name)
+            # Moved, not copied: a second copy of the runtime archive buys
+            # nothing and doubles what has to fit while it is being published.
+            archives[0].replace(dataset / archives[0].name)
             _publish_private_dataset(
                 executable, dataset, expected["binary"],
                 f"isaacli CUDA runtime sm{model['cuda_arch']}", run_fn, env)
@@ -899,8 +928,9 @@ def _prepare_assets(executable, username, model, available, input_fn,
         print(t("cli.kaggle.prepare.weight", size=f"{size:.1f}", name=model["name"]))
         if input_fn(t("cli.kaggle.prepare.weight_confirm")).strip().lower() == t(
                 "cli.kaggle.confirm_yes"):
+            _require_space(scratch, model["model_bytes"])
             with tempfile.TemporaryDirectory(
-                    prefix="isaacli-kaggle-weight-") as temporary:
+                    prefix="isaacli-kaggle-weight-", dir=scratch) as temporary:
                 folder = Path(temporary)
                 target = folder / model["file"]
                 url = model.get("file_url") or (
