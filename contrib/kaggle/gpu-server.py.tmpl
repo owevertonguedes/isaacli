@@ -1,5 +1,7 @@
 """Kaggle GPU server for isaacli. Requires T4 x2 and internet access."""
+import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -11,33 +13,49 @@ MODEL_FILE = "__MODEL_FILE__"
 MODEL_ALIAS = "__MODEL_ALIAS__"
 API_KEY = "__API_KEY__"
 PORT = 8080
+# `/kaggle/working` is the persisted output directory and is capped well below
+# what this needs: the weights alone are around 18 GB and the CUDA build adds
+# several more. Scratch space is not persisted and not capped that way, so
+# everything that is thrown away at the end of the session lives here.
+SCRATCH = "/kaggle/temp" if os.path.isdir("/kaggle/temp") else "/tmp"
 
 
 def run(command):
     subprocess.run(command, check=True)
 
 
+# Fail here, with the real numbers, instead of dying half an hour into a CUDA
+# build that is already spending GPU quota.
+NEEDED_BYTES = 32 * 1024 ** 3
+free_bytes = shutil.disk_usage(SCRATCH).free
+print(f"Scratch directory {SCRATCH}: {free_bytes / 1024 ** 3:.1f} GiB free",
+      flush=True)
+if free_bytes < NEEDED_BYTES:
+    raise RuntimeError(
+        f"{SCRATCH} has {free_bytes / 1024 ** 3:.1f} GiB free and the build plus "
+        f"the weights need about {NEEDED_BYTES / 1024 ** 3:.0f} GiB")
+
 print("Building llama.cpp with CUDA", flush=True)
+source_dir = f"{SCRATCH}/llama.cpp"
 run(["git", "clone", "--depth", "1", "--branch", "b10502",
-     "https://github.com/ggml-org/llama.cpp", "/kaggle/working/llama.cpp"])
-run(["cmake", "-S", "/kaggle/working/llama.cpp", "-B",
-     "/kaggle/working/llama.cpp/build", "-DGGML_CUDA=ON",
-     "-DCMAKE_CUDA_ARCHITECTURES=75"])
-run(["cmake", "--build", "/kaggle/working/llama.cpp/build", "--config",
+     "https://github.com/ggml-org/llama.cpp", source_dir])
+run(["cmake", "-S", source_dir, "-B", f"{source_dir}/build",
+     "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75"])
+run(["cmake", "--build", f"{source_dir}/build", "--config",
      "Release", "-j4", "--target", "llama-server"])
 
 print("Downloading the selected model weights", flush=True)
-model_path = "/kaggle/working/" + MODEL_FILE
+model_path = f"{SCRATCH}/{MODEL_FILE}"
 run(["curl", "-fL", "-o", model_path,
      f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
 server = subprocess.Popen([
-    "/kaggle/working/llama.cpp/build/bin/llama-server",
+    f"{source_dir}/build/bin/llama-server",
     "-m", model_path, "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
     "--split-mode", "layer", "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
 ])
 
-cloudflared = "/kaggle/working/cloudflared"
+cloudflared = f"{SCRATCH}/cloudflared"
 run(["curl", "-fL", "-o", cloudflared,
      "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"])
 run(["chmod", "+x", cloudflared])
