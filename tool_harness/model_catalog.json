@@ -8,18 +8,18 @@
   ],
   "kaggle": [
     {
-      "name": "Qwen3 30B A3B Instruct 2507, Q4_K_M",
-      "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
-      "file": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
-      "alias": "qwen3-30b-a3b-2507",
-      "source": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
-      "model_bytes": 18556686752,
-      "n_layers": 48,
+      "name": "Qwen3.8-27B, Q4_K_M",
+      "repo": "unsloth/Qwen3.8-27B-GGUF",
+      "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "alias": "qwen38-27b",
+      "source": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
+      "model_bytes": 16464440224,
+      "n_layers": 64,
       "n_kv_heads": 4,
-      "head_dim": 128,
-      "benchmark": "Aider Polyglot 55.1, LiveCodeBench v6 45.2",
-      "benchmark_source": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
-      "active_ratio": 0.1
+      "head_dim": 256,
+      "benchmark": "LiveCodeBench v6 90.3, GPQA Diamond 89.2, SWE-bench Pro 61.7",
+      "benchmark_source": "https://huggingface.co/Qwen/Qwen3.8-27B",
+      "active_ratio": 1.0
     },
     {
       "name": "Qwen3 Coder 30B A3B Instruct, Q4_K_M",
@@ -36,6 +36,20 @@
       "active_ratio": 0.1
     },
     {
+      "name": "Qwen3 30B A3B Instruct 2507, Q4_K_M",
+      "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+      "file": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+      "alias": "qwen3-30b-a3b-2507",
+      "source": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+      "model_bytes": 18556686752,
+      "n_layers": 48,
+      "n_kv_heads": 4,
+      "head_dim": 128,
+      "benchmark": "Aider Polyglot 55.1, LiveCodeBench v6 45.2, GPQA 68.4",
+      "benchmark_source": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "active_ratio": 0.1
+    },
+    {
       "name": "Devstral Small 1.1 24B, Q4_K_S",
       "repo": "unsloth/Devstral-Small-2507-GGUF",
       "file": "Devstral-Small-2507-Q4_K_S.gguf",
@@ -47,20 +61,6 @@
       "head_dim": 128,
       "benchmark": "SWE-bench Verified 53.6%",
       "benchmark_source": "https://huggingface.co/mistralai/Devstral-Small-2507",
-      "active_ratio": 1.0
-    },
-    {
-      "name": "Qwen3.8-27B, Q4_K_M",
-      "repo": "unsloth/Qwen3.8-27B-GGUF",
-      "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-      "alias": "qwen38-27b",
-      "source": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
-      "model_bytes": 16464440224,
-      "n_layers": 64,
-      "n_kv_heads": 4,
-      "head_dim": 256,
-      "benchmark": "SWE-bench Pro 61.7, Terminal Bench 2.1 73.0",
-      "benchmark_source": "https://huggingface.co/Qwen/Qwen3.8-27B",
       "active_ratio": 1.0
     }
   ]

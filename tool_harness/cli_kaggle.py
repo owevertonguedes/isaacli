@@ -376,7 +376,14 @@ def models_for_accelerator(machine_shape, catalog_path=MODEL_CATALOG_PATH):
                 "kv_bytes": kv_bytes,
             })
             selected.append(model)
-    return sorted(selected, key=lambda item: (item["active_ratio"], item["model_bytes"]))
+    # Order is a recommendation whether or not it means to be, so it follows the
+    # curated order rather than bytes per token. Sorting by speed buried the
+    # strongest model in the list: on the two benchmarks both publish,
+    # Qwen3.8-27B scores 90.3 and 89.2 against 45.2 and 68.4 for the mixture of
+    # experts that reads a tenth of the bytes. Cheap to run is not the same as
+    # good, the user said so plainly, and the cost per token is on screen next
+    # to each option for whoever weighs it differently.
+    return selected
 
 
 def prepared_models(catalog_path=MODEL_CATALOG_PATH):
