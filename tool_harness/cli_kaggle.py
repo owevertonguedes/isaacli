@@ -103,17 +103,81 @@ def _account_dir(username, config_file=None):
 def _isolated_environment(account_dir):
     """A Kaggle environment that can only reach the credential in this folder.
 
-    Pointing `KAGGLE_CONFIG_DIR` at an empty folder is not enough on its own:
-    the CLI authenticated anyway from a token cached elsewhere and answered with
-    another account's quota, which would have spent the first account's hours
-    while displaying the second account's name. The ambient variables have to be
-    cleared as well, and that is what makes the selection real.
+    `KAGGLE_CONFIG_DIR` is not enough, and believing it was is what made account
+    selection look real without being real. Read from the CLI 2.2.4 source and
+    then confirmed by running it: `authenticate` tries the access token first,
+    the legacy API key second and the OAuth credentials third, and both the
+    token and the OAuth credentials are read from `~/.kaggle/access_token` and
+    `~/.kaggle/credentials.json` through `expanduser`, which `KAGGLE_CONFIG_DIR`
+    does not touch. Measured on this machine: an account folder holding a
+    deliberately invalid credential still answered with the ambient account's
+    real quota. Selecting the second account would have spent the first
+    account's hours under the second account's name.
+
+    `expanduser` does follow `HOME`, so the account folder becomes the home the
+    CLI sees, and with it the credentials it can reach. `PYTHONUSERBASE` is
+    pinned to the real home because a CLI installed with `pip --user` resolves
+    its own package through `HOME`, and moving that without pinning stops the
+    program from importing itself.
     """
+    account_dir = Path(account_dir)
+    (account_dir / ".kaggle").mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
-    environment.pop("KAGGLE_USERNAME", None)
-    environment.pop("KAGGLE_KEY", None)
-    environment["KAGGLE_CONFIG_DIR"] = str(account_dir)
+    for name in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN"):
+        environment.pop(name, None)
+    environment.setdefault(
+        "PYTHONUSERBASE", str(Path(os.environ.get("HOME", Path.home())) / ".local"))
+    environment["HOME"] = str(account_dir)
+    environment["KAGGLE_CONFIG_DIR"] = str(account_dir / ".kaggle")
     return environment
+
+
+def _server_owner(executable, run_fn=subprocess.run, env=None):
+    """The account Kaggle itself attributes the assets to, or None if it has none.
+
+    `config view` cannot answer this. It prints the local configuration back,
+    so a folder holding a kaggle.json that names one account and a key
+    belonging to another reports the name in the file. A listing of what the
+    authenticated user owns comes from the server, and its refs are prefixed
+    with the real owner.
+    """
+    for noun in ("datasets", "kernels"):
+        result = _run_capture(
+            [str(executable), noun, "list", "--mine", "--csv",
+             "--page-size", "1"], run_fn, env)
+        if result.returncode != 0:
+            continue
+        for row in csv.DictReader(io.StringIO(result.stdout)):
+            ref = row.get("ref") or row.get("Ref") or ""
+            if "/" in ref:
+                return ref.split("/", 1)[0]
+    return None
+
+
+def _verify_account(executable, username, environment, run_fn=subprocess.run):
+    """Refuse to use an environment that does not answer as this account.
+
+    Isolation is an argument about environment variables, and an argument is not
+    evidence. Two things are checked, in this order. First the environment has
+    to authenticate at all, which is what catches a folder whose credential
+    expired or was revoked. Then, when the account owns anything at all, the
+    owner Kaggle reports has to be this account, which is what catches a
+    credential filed under the wrong name. An account that owns nothing yet
+    cannot be confirmed that way, and that says so rather than passing quietly.
+    """
+    try:
+        _quota(executable, run_fn, environment)
+    except RuntimeError as error:
+        raise RuntimeError(
+            t("cli.kaggle.accounts.unverified", username=username, error=error))
+    owner = _server_owner(executable, run_fn, environment)
+    if owner is None:
+        print(t("cli.kaggle.accounts.owner_unknown", username=username))
+        return None
+    if owner != username:
+        raise RuntimeError(t("cli.kaggle.accounts.mismatch",
+                             username=username, answered=owner))
+    return owner
 
 
 def _account_environment(username, config_file=None):
@@ -137,21 +201,21 @@ def _account_environment(username, config_file=None):
         credential = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(t("cli.kaggle.accounts.credential_invalid")) from error
-    account_dir.mkdir(parents=True, exist_ok=True)
     environment = _isolated_environment(account_dir)
+    # These are the exact paths the CLI reads through `expanduser`, which now
+    # resolves inside this account's folder. Nothing else has to be arranged,
+    # and in particular no empty file is planted to neutralise a cached token:
+    # an empty token file reads as no token at all and hands the decision
+    # straight back to the ambient account.
+    kaggle_dir = account_dir / ".kaggle"
     if credential.get("token"):
-        token_path = account_dir / "access_token"
+        token_path = kaggle_dir / "access_token"
         token_path.write_text(str(credential["token"]).strip() + "\n", encoding="utf-8")
         token_path.chmod(0o600)
-        environment["KAGGLE_API_TOKEN"] = str(token_path)
-        config.save({"username": username}, account_dir / "kaggle.json")
+        config.save({"username": username}, kaggle_dir / "kaggle.json")
     else:
         config.save({"username": username, "key": credential["key"]},
-                    account_dir / "kaggle.json")
-        empty_token = account_dir / "no-access-token"
-        empty_token.write_text("", encoding="utf-8")
-        empty_token.chmod(0o600)
-        environment["KAGGLE_API_TOKEN"] = str(empty_token)
+                    kaggle_dir / "kaggle.json")
     return environment
 
 
@@ -461,10 +525,12 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
         username = names[index]
     else:
         raise RuntimeError(t("cli.kaggle.accounts.invalid"))
+    environment = _account_environment(username, config_file)
+    _verify_account(executable, username, environment, run_fn)
     data = config.load(config_file)
     data.setdefault("kaggle", {})["selected_account"] = username
     config.save(data, config_file)
-    return username, _account_environment(username, config_file)
+    return username, environment
 
 
 def _kernel_refs(executable, run_fn=subprocess.run, env=None):

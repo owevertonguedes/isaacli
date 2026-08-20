@@ -435,5 +435,8 @@
   "cli.kaggle.accounts.forgotten": "{username} foi removida do isaacli.",
   "cli.kaggle.accounts.revoke_prompt": "Revogar também o token no Kaggle, o que não dá para desfazer daqui? [s/N]: ",
   "cli.kaggle.accounts.revoked": "O token de {username} foi revogado no Kaggle.",
-  "cli.kaggle.accounts.revoke_failed": "Não foi possível revogar o token no Kaggle: {error}"
+  "cli.kaggle.accounts.revoke_failed": "Não foi possível revogar o token no Kaggle: {error}",
+  "cli.kaggle.accounts.mismatch": "Recusando continuar: {username} foi selecionada, mas o CLI do Kaggle responde como {answered}. Seguir gastaria a quota da conta errada com o nome errado.",
+  "cli.kaggle.accounts.unverified": "Recusando continuar: o CLI do Kaggle não confirmou que está conectado como {username} ({error}).",
+  "cli.kaggle.accounts.owner_unknown": "NOTE: {username} ainda não tem dataset nem kernel, então o Kaggle não confirma a conta por trás desta credencial. O nome mostrado aqui é o que foi registrado, não um que o servidor confirmou."
 }

@@ -436,10 +436,24 @@ cli_kaggle.register_account("second-account", {"key": "second-key"}, accounts_fi
 account_calls = []
 
 
-def account_run(command, check=False, capture_output=False, text=False, env=None, **kwargs):
+def account_run(command, check=False, capture_output=False, text=False, env=None,
+                answers_as=None, **kwargs):
+    # The stand-in answers from the credential it can reach through the
+    # environment it was handed, which is the same thing the real CLI does and
+    # the only reason this proves anything about isolation.
     credential = json.loads(
         (Path(env["KAGGLE_CONFIG_DIR"]) / "kaggle.json").read_text())
-    account_calls.append((list(map(str, command)), credential))
+    parts = list(map(str, command))
+    account_calls.append((parts, credential, dict(env)))
+    if parts[1:3] == ["config", "view"]:
+        return SimpleNamespace(
+            returncode=0, stdout=f"- username: {credential['username']}\n", stderr="")
+    if parts[2:4] == ["list", "--mine"]:
+        # Kaggle prefixes what it owns with the real owner, which is the part a
+        # local config file cannot fake.
+        owner = answers_as or credential["username"]
+        return SimpleNamespace(
+            returncode=0, stdout=f"ref,title\n{owner}/thing,Thing\n", stderr="")
     return SimpleNamespace(
         returncode=0,
         stdout=f"GPU 1h used, {credential['username']} has 29h remaining\n",
@@ -461,6 +475,52 @@ check(selected_account == "second-account"
       and "first-account has 29h remaining" in accounts_output.getvalue()
       and "second-account has 29h remaining" in accounts_output.getvalue(),
       "every account shows quota and selecting the second uses its credential")
+
+# Read from the CLI 2.2.4 source and then confirmed by running it: the access
+# token and the OAuth credentials come from `~/.kaggle/`, through `expanduser`,
+# which KAGGLE_CONFIG_DIR does not redirect. An account folder holding a
+# deliberately invalid credential still answered with the ambient account's real
+# quota on this machine. Only HOME moves those two files.
+check(selected_env["HOME"] == str(
+          cli_kaggle._account_dir("second-account", accounts_file))
+      and selected_env["KAGGLE_CONFIG_DIR"].startswith(selected_env["HOME"])
+      and "KAGGLE_API_TOKEN" not in selected_env,
+      "the account folder becomes the home the CLI sees, which is what moves its token")
+check(selected_env.get("PYTHONUSERBASE"),
+      "moving HOME keeps a pip --user CLI able to import itself")
+
+# Isolation is an argument about environment variables, and an argument is not
+# evidence. What makes the selection real is asking the CLI who it is.
+mismatch_error = None
+try:
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle._select_account(
+            Path("/fake/kaggle"), lambda _prompt: "2",
+            lambda *a, **k: account_run(*a, answers_as="someone-else", **k),
+            accounts_file)
+except RuntimeError as error:
+    mismatch_error = str(error)
+check(mismatch_error and "someone-else" in mismatch_error
+      and "second-account" in mismatch_error,
+      "an account that answers as somebody else is refused, not quietly used")
+
+
+def empty_account_run(command, check=False, capture_output=False, text=False,
+                      env=None, **kwargs):
+    parts = list(map(str, command))
+    if parts[2:4] == ["list", "--mine"]:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    return account_run(command, check, capture_output, text, env, **kwargs)
+
+
+# A brand new account owns nothing, so the server has nothing to attribute and
+# the identity cannot be confirmed. A layer that cannot run has to say so.
+fresh_output = io.StringIO()
+with redirect_stdout(fresh_output):
+    fresh_account, _fresh_env = cli_kaggle._select_account(
+        Path("/fake/kaggle"), lambda _prompt: "2", empty_account_run, accounts_file)
+check(fresh_account == "second-account" and "NOTE:" in fresh_output.getvalue(),
+      "an account Kaggle cannot attribute anything to is announced, not confirmed")
 
 private_dir = root / "private-dataset"
 private_dir.mkdir()
@@ -542,17 +602,20 @@ check(bool(carrying_secret)
 check("SECRET-UNDER-TEST" not in credential_config.read_text(encoding="utf-8"),
       "a Kaggle credential never reaches the config file that carries no secrets")
 
-# Pointing KAGGLE_CONFIG_DIR somewhere else is not enough on its own: measured
-# on 2026-08-20, the CLI still authenticated from a cached token when only that
-# variable was set, which would have run against whichever account happened to
-# be cached instead of the selected one. Neutralising KAGGLE_API_TOKEN and the
-# two KAGGLE_ variables is what makes the selection real, so none of them may
-# quietly disappear from the environment the flow builds.
-check(account_env.get("KAGGLE_CONFIG_DIR")
-      and account_env.get("KAGGLE_API_TOKEN")
+# This check used to require KAGGLE_API_TOKEN to be set, on the belief that
+# pointing it at an empty file neutralised the cached token. Reading the CLI
+# 2.2.4 source and then running it showed the opposite: an empty token file
+# reads as no token at all, so the lookup falls through to
+# `~/.kaggle/access_token`, which `expanduser` resolves from HOME and which
+# KAGGLE_CONFIG_DIR never touches. Measured here: an account folder holding a
+# deliberately invalid credential still answered with the ambient account's real
+# quota. HOME is the variable that moves those files, so HOME is what this pins.
+check(account_env.get("HOME")
+      and account_env.get("KAGGLE_CONFIG_DIR", "").startswith(account_env["HOME"])
+      and "KAGGLE_API_TOKEN" not in account_env
       and "KAGGLE_USERNAME" not in account_env
       and "KAGGLE_KEY" not in account_env,
-      "account selection pins the config dir and the token, and clears the rest")
+      "account selection moves HOME, which is what the CLI reads its token through")
 
 # `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
 # it must call cli_kaggle.run_kaggle itself, the same function object imported
@@ -654,14 +717,15 @@ check(login_env["KAGGLE_CONFIG_DIR"].startswith(
           str(cli_kaggle._accounts_root(login_file)))
       and "KAGGLE_USERNAME" not in login_env and "KAGGLE_KEY" not in login_env,
       "the sign-in runs in a folder of its own with the ambient account cleared")
-check((session_dir / "kaggle-session").exists(),
+check((session_dir / ".kaggle" / "kaggle-session").exists(),
       "the session the CLI wrote is kept, under the folder for that account")
 check(not secrets_file.exists()
       or "kaggle:browser-user" not in json.loads(secrets_file.read_text()),
       "a browser session is not copied into secrets.json in a shape we invented")
 
 browser_env = cli_kaggle._account_environment("browser-user", login_file)
-check(browser_env["KAGGLE_CONFIG_DIR"] == str(session_dir)
+check(browser_env["HOME"] == str(session_dir)
+      and browser_env["KAGGLE_CONFIG_DIR"] == str(session_dir / ".kaggle")
       and "KAGGLE_API_TOKEN" not in browser_env,
       "using a browser account points the CLI at its own session and adds nothing")
 
