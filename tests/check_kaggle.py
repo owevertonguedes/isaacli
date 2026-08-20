@@ -454,9 +454,19 @@ def account_run(command, check=False, capture_output=False, text=False, env=None
         owner = answers_as or credential["username"]
         return SimpleNamespace(
             returncode=0, stdout=f"ref,title\n{owner}/thing,Thing\n", stderr="")
+    # The real `kaggle quota` answers with a four line table. Standing in with
+    # a friendly sentence would have this check pass against a parser that
+    # cannot read what Kaggle actually sends.
+    hours = "1.00" if credential["username"] == "first-account" else "5.00"
+    remaining = "29.00" if credential["username"] == "first-account" else "25.00"
     return SimpleNamespace(
         returncode=0,
-        stdout=f"GPU 1h used, {credential['username']} has 29h remaining\n",
+        stdout=(
+            "resource  used    remaining  total   refreshAt\n"
+            "--------  ------  ---------  ------  -------------------\n"
+            f"GPU       {hours}h  {remaining}h    30.00h  2026-08-22T00:00:00\n"
+            "TPU       0.00h   20.00h     20.00h  2026-08-22T00:00:00\n"
+        ),
         stderr="",
     )
 
@@ -472,9 +482,10 @@ check(selected_account == "second-account"
       and account_calls[-1][1]["username"] == "second-account"
       and "KAGGLE_USERNAME" not in selected_env
       and "KAGGLE_KEY" not in selected_env
-      and "first-account has 29h remaining" in accounts_output.getvalue()
-      and "second-account has 29h remaining" in accounts_output.getvalue(),
-      "every account shows quota and selecting the second uses its credential")
+      and "29.00" in accounts_output.getvalue()
+      and "25.00" in accounts_output.getvalue()
+      and "refreshAt" not in accounts_output.getvalue(),
+      "every account shows its own hours left, not the raw table mashed onto one line")
 
 # Read from the CLI 2.2.4 source and then confirmed by running it: the access
 # token and the OAuth credentials come from `~/.kaggle/`, through `expanduser`,
@@ -805,6 +816,54 @@ with redirect_stdout(io.StringIO()):
         Path("/fake/kaggle"), root / "silent" / "config.json", login_run)
 check(silent == "browser-user", "signing in never asks the user for a username")
 del refuse_input
+
+# A notebook that never opened a session answers 404 on GetKernelSessionStatus.
+# Treating that as fatal aborted the whole flow against a real account that had
+# such notebooks, before it could list anything at all.
+def dormant_run(command, check=False, capture_output=False, text=False, env=None,
+                **kwargs):
+    parts = list(map(str, command))
+    if parts[1:3] == ["kernels", "list"]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ref,title\nuser/dormant,Dormant\nuser/running,Running\n",
+            stderr="")
+    if parts[1:3] == ["kernels", "status"]:
+        if parts[3] == "user/dormant":
+            return SimpleNamespace(
+                returncode=1, stdout="",
+                stderr="404 Client Error: Not Found for url: "
+                       "https://api.kaggle.com/v1/kernels.KernelsApiService/"
+                       "GetKernelSessionStatus")
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    dormant_live = cli_kaggle.live_kernels(Path("/fake/kaggle"), dormant_run)
+check([ref for ref, _state in dormant_live] == ["user/running"],
+      "a notebook with no session counts as not running, not as a failure")
+
+
+def refused_run(command, check=False, capture_output=False, text=False, env=None,
+                **kwargs):
+    parts = list(map(str, command))
+    if parts[1:3] == ["kernels", "list"]:
+        return SimpleNamespace(returncode=0, stdout="ref,title\nuser/one,One\n", stderr="")
+    return SimpleNamespace(returncode=1, stdout="", stderr="403 Forbidden")
+
+
+# A kernel we cannot ask about might be spending quota right now, so anything
+# that is not the session-less answer still stops the flow.
+still_raises = False
+try:
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.live_kernels(Path("/fake/kaggle"), refused_run)
+except RuntimeError:
+    still_raises = True
+check(still_raises,
+      "a status failure that is not a missing session still stops the flow")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")

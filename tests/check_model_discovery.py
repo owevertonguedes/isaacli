@@ -306,6 +306,65 @@ check(model_discovery.matched_ruler(
       "the ruler a model is judged by is reported, or None when it has no score")
 
 
+# ----------------------------------------------------------------------
+# A modified build does not inherit the score of the model it was built from.
+#
+# Seen on screen against the live API: an uncensored rebuild of Qwen3.8-27B
+# declared the official model as its base and was listed with the official
+# model's LiveCodeBench, GPQA and SWE-bench numbers, none of which had ever
+# been measured on it.
+# ----------------------------------------------------------------------
+catalogued = json.loads(Path(catalog).read_text(encoding="utf-8"))["kaggle"][0]
+official_gguf = catalogued["repo"]
+official_upstream = "/".join(
+    catalogued["benchmark_source"].split("huggingface.co/")[1].split("/")[:2])
+derivative = f"someone/{official_upstream.split('/')[-1]}-Uncensored-GGUF"
+attribution_repos = {
+    official_gguf: {
+        "id": official_gguf,
+        "cardData": {"base_model": official_upstream},
+        "siblings": [{"rfilename": "official-Q4_K_M.gguf"}],
+    },
+    derivative: {
+        "id": derivative,
+        "cardData": {"base_model": official_upstream},
+        "siblings": [{"rfilename": "derivative-Q4_K_M.gguf"}],
+    },
+}
+
+
+def attribution_urlopen(request, timeout=None):
+    url = request.full_url
+    prefix = model_discovery.HF_API + "/"
+    if url.startswith(prefix):
+        return FakeResponse(attribution_repos[url[len(prefix):]])
+    if url.endswith("/config.json"):
+        return FakeResponse({
+            "num_hidden_layers": 64, "num_key_value_heads": 4, "head_dim": 256,
+        })
+    if request.get_method() == "HEAD":
+        return FakeResponse(length=16 * GB)
+    raise AssertionError(f"unexpected fake URL {url}")
+
+
+official = model_discovery.resolve_hf_model(
+    official_gguf, catalog_path=catalog, urlopen_fn=attribution_urlopen)
+modified = model_discovery.resolve_hf_model(
+    derivative, catalog_path=catalog, urlopen_fn=attribution_urlopen)
+check(official["scores"] == catalogued["scores"] and official["scores"],
+      "a plain requantization of the catalogued model keeps its published score")
+check(modified["scores"] == {}
+      and modified["benchmark"] == model_discovery.NO_PUBLIC_SCORE,
+      "a modified build reports no public score instead of borrowing the original's")
+check(modified["n_layers"] == official["n_layers"],
+      "the modified build still reads its geometry from the base architecture")
+check(model_discovery._is_plain_quantization("unsloth/Model-X-GGUF", "org/Model-X")
+      and not model_discovery._is_plain_quantization(
+          "someone/Model-X-abliterated-GGUF", "org/Model-X")
+      and not model_discovery._is_plain_quantization("unsloth/Model-X-GGUF", None),
+      "only a name that adds nothing but the format counts as the same weights")
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

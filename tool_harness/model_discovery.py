@@ -218,6 +218,20 @@ def _seed_maps(catalog_path):
     return by_gguf, by_upstream
 
 
+def _is_plain_quantization(repo, upstream):
+    """Whether `repo` is just `upstream` requantized, rather than a new model.
+
+    A repackaging keeps the model name and adds only a format suffix, so
+    `unsloth/Qwen3.8-27B-GGUF` is the same weights as `Qwen/Qwen3.8-27B`. Any
+    extra word, `Uncensored`, `abliterated`, `MTP` and the rest, describes a
+    model that was changed and therefore was never the one that was measured.
+    """
+    if not upstream:
+        return False
+    name = re.sub(r"[-_.]?gguf$", "", str(repo).split("/")[-1], flags=re.I)
+    return name.casefold() == str(upstream).split("/")[-1].casefold()
+
+
 def resolve_hf_model(reference, file_name=None, catalog_path=None,
                      urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT):
     """Resolve one exact GGUF without downloading its body."""
@@ -243,6 +257,14 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
     config_url = f"{HF_ROOT}/{urllib.parse.quote(config_repo, safe='/')}/resolve/main/config.json"
     config_payload = _json_request(config_url, timeout=timeout, urlopen_fn=urlopen_fn)
     layers, kv_heads, head_dim, active_ratio = _geometry(config_payload)
+    # Geometry may come from the upstream model, because a derivative keeps the
+    # architecture. A score may not. An uncensored or otherwise modified build
+    # declares the official model as its base, and inheriting the base model's
+    # numbers would put "LiveCodeBench v6 90.3" next to a model nobody measured.
+    # Seen on screen against the live Hugging Face API, which is how it was
+    # caught. Only a plain quantization of the catalogued model keeps the score.
+    if evidence is None and not _is_plain_quantization(repo, upstream):
+        upstream = None
     file_url = (f"{HF_ROOT}/{quoted_repo}/resolve/main/"
                 f"{urllib.parse.quote(selected_file, safe='/')}")
     model_bytes = _content_length(file_url, timeout=timeout, urlopen_fn=urlopen_fn)

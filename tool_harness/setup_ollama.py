@@ -711,11 +711,17 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         )
     except model_discovery.DiscoveryError as error:
         discovered, errors = [], [str(error)]
+    # A repository that publishes no Q4_K_M is not a problem the user has to
+    # read about while choosing a model. It is why one candidate is missing from
+    # a list they never saw, which is exactly what --debug is for.
     for error in errors:
-        print(model_discovery.text("model.discovery.failed", error=error))
+        debug.note("setup_ollama._dynamic_kaggle_selector discovery", error)
     merged = {}
     for item in [*seeded, *discovered]:
-        merged[(item["repo"].casefold(), item["file"].casefold())] = item
+        # The curated entry wins a collision. It carries the reviewed name and
+        # the benchmark evidence, and letting live discovery overwrite it
+        # replaced a curated row with a duplicate of itself under a repo path.
+        merged.setdefault((item["repo"].casefold(), item["file"].casefold()), item)
     accelerator = cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]
     models = []
     for item in merged.values():

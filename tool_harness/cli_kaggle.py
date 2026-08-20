@@ -19,6 +19,7 @@ from pathlib import Path
 import config
 import debug
 import hardware
+import terminal_ui
 from cli_i18n import t
 from installation import _package_owns
 
@@ -333,15 +334,11 @@ def forget_account(username, config_file=None, executable=None,
 def _register_account_interactive(input_fn, config_file=None, executable=None,
                                   run_fn=subprocess.run):
     """Add an account the way the CLI supports, never by typing a username."""
-    options = [
-        t("cli.kaggle.accounts.add_browser"),
-        t("cli.kaggle.accounts.add_api_key"),
-    ]
-    print(t("cli.kaggle.accounts.add_title"))
-    for index, option in enumerate(options, 1):
-        print(f"  {index}. {option}")
-    answer = input_fn(t("cli.kaggle.accounts.add_prompt")).strip() or "1"
-    if answer == "2":
+    index = _choose(
+        t("cli.kaggle.accounts.add_title"),
+        [t("cli.kaggle.accounts.add_browser"), t("cli.kaggle.accounts.add_api_key")],
+        input_fn)
+    if index == 1:
         print(t("cli.kaggle.accounts.api_key_explain"))
         source = input_fn(t("cli.kaggle.accounts.api_key_prompt")).strip()
         return register_api_key_file(source, config_file)
@@ -468,21 +465,58 @@ def _quota(executable, run_fn=subprocess.run, env=None):
     return result.stdout.strip()
 
 
+def _quota_summary(text):
+    """The one number that decides anything, out of the CLI's quota table.
+
+    The raw table is four lines of column headers and dashes. Folding it into a
+    single line with separators produced a wall nobody can read, and the only
+    figure that changes a decision is how many GPU hours are left.
+    """
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].upper() == "GPU":
+            return t("cli.kaggle.accounts.quota_gpu",
+                     remaining=parts[2], total=parts[3])
+    return " ".join((text or "").split())
+
+
+def _choose(title, options, input_fn, initial=0):
+    """One selection screen, drawn the way the rest of isaacli draws them."""
+    return terminal_ui.select(
+        title, options, input_fn=input_fn,
+        prompt=t("select.prompt"), invalid=t("select.invalid"), initial=initial,
+        more_above=t("ui.more_above", count="{count}"),
+        more_below=t("ui.more_below", count="{count}"),
+    )
+
+
 def _forget_account_interactive(names, input_fn, config_file=None, executable=None,
                                 run_fn=subprocess.run):
     """Sign out of one registered account, and say what that does and does not do."""
-    print(t("cli.kaggle.accounts.forget_title"))
-    for index, username in enumerate(names, 1):
-        print(f"  {index}. {username}")
-    answer = input_fn(t("cli.kaggle.accounts.forget_prompt")).strip()
-    try:
-        username = names[int(answer) - 1]
-    except (ValueError, IndexError) as error:
-        raise RuntimeError(t("cli.kaggle.accounts.invalid")) from error
-    print(t("cli.kaggle.accounts.forget_explain", username=username))
-    revoke = input_fn(t("cli.kaggle.accounts.revoke_prompt")).strip().lower() == t(
-        "cli.kaggle.confirm_yes")
+    index = _choose(
+        t("cli.kaggle.accounts.forget_title"),
+        [*names, t("navigation.back")], input_fn)
+    if index >= len(names):
+        return None
+    username = names[index]
+    revoke = _choose(
+        t("cli.kaggle.accounts.forget_explain", username=username),
+        [t("cli.kaggle.accounts.forget_local"),
+         t("cli.kaggle.accounts.forget_revoke")], input_fn) == 1
     return forget_account(username, config_file, executable, run_fn, revoke)
+
+
+def _account_options(executable, names, run_fn, config_file):
+    labels = []
+    for username in names:
+        try:
+            quota = _quota_summary(
+                _quota(executable, run_fn,
+                       _account_environment(username, config_file)))
+        except RuntimeError as error:
+            quota = t("cli.kaggle.accounts.quota_unavailable", error=error)
+        labels.append(t("cli.kaggle.accounts.option", username=username, quota=quota))
+    return labels
 
 
 def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=None):
@@ -491,40 +525,38 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
     accounts = ((data.get("kaggle") or {}).get("accounts") or {})
     if not accounts:
         print(t("cli.kaggle.accounts.none"))
-        _register_account_interactive(input_fn, config_file, executable, run_fn)
-        data = config.load(config_file)
-        accounts = ((data.get("kaggle") or {}).get("accounts") or {})
+        # Somebody who just signed in has already answered which account to use.
+        # Drawing the picker at them again, with "add another account" on it,
+        # reads as the sign-in not having worked.
+        username = _register_account_interactive(
+            input_fn, config_file, executable, run_fn)
+        return _use_account(executable, username, run_fn, config_file)
     names = list(accounts)
-    print(t("cli.kaggle.accounts.title"))
-    for index, username in enumerate(names, 1):
-        environment = _account_environment(username, config_file)
-        try:
-            quota = _quota(executable, run_fn, environment).replace("\n", " | ")
-        except RuntimeError as error:
-            quota = t("cli.kaggle.accounts.quota_unavailable", error=error)
-        print(t("cli.kaggle.accounts.option", index=index, username=username,
-                quota=quota))
-    print(t("cli.kaggle.accounts.add_option", index=len(names) + 1))
-    print(t("cli.kaggle.accounts.forget_option", index=len(names) + 2))
+    options = [
+        *_account_options(executable, names, run_fn, config_file),
+        t("cli.kaggle.accounts.add_option"),
+        t("cli.kaggle.accounts.forget_option"),
+    ]
     selected = ((data.get("kaggle") or {}).get("selected_account"))
-    default = names.index(selected) + 1 if selected in names else 1
-    answer = input_fn(t("cli.kaggle.accounts.prompt", default=default)).strip()
-    try:
-        index = int(answer or default) - 1
-    except ValueError as error:
-        raise RuntimeError(t("cli.kaggle.accounts.invalid")) from error
+    index = _choose(
+        t("cli.kaggle.accounts.title"), options, input_fn,
+        initial=names.index(selected) if selected in names else 0)
     if index == len(names):
         username = _register_account_interactive(
             input_fn, config_file, executable, run_fn)
-    elif index == len(names) + 1:
+        return _use_account(executable, username, run_fn, config_file)
+    if index == len(names) + 1:
         _forget_account_interactive(names, input_fn, config_file, executable, run_fn)
         # Signing out changes the list this screen just printed, so it is drawn
         # again rather than acting on the stale numbering the user saw.
         return _select_account(executable, input_fn, run_fn, config_file)
-    elif 0 <= index < len(names):
-        username = names[index]
-    else:
+    if not 0 <= index < len(names):
         raise RuntimeError(t("cli.kaggle.accounts.invalid"))
+    return _use_account(executable, names[index], run_fn, config_file)
+
+
+def _use_account(executable, username, run_fn=subprocess.run, config_file=None):
+    """Check the account really answers as itself, then record it as selected."""
     environment = _account_environment(username, config_file)
     _verify_account(executable, username, environment, run_fn)
     data = config.load(config_file)
@@ -557,12 +589,22 @@ def live_kernels(executable, run_fn=subprocess.run, env=None):
     for ref in _kernel_refs(executable, run_fn, env):
         result = _run_capture(
             [str(executable), "kernels", "status", ref], run_fn, env)
+        output = (result.stdout + " " + result.stderr).strip()
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout).strip())
-        output = (result.stdout + " " + result.stderr).upper()
-        state = next((name for name in TERMINAL_STATES if name in output), None)
+            # A kernel that never opened a session answers 404 on
+            # GetKernelSessionStatus. That is the answer to the question being
+            # asked, not a failure: it is not running. Measured against a real
+            # account, where notebooks with no session made the whole flow abort
+            # before it could list anything. Anything else really is a failure
+            # and still stops the flow, because a kernel we cannot ask about
+            # might be spending quota right now.
+            if "GetKernelSessionStatus" in output and "404" in output:
+                debug.note(f"cli_kaggle.live_kernels {ref}", output)
+                continue
+            raise RuntimeError(output)
+        state = next((name for name in TERMINAL_STATES if name in output.upper()), None)
         if state is None:
-            live.append((ref, (result.stdout or result.stderr).strip()))
+            live.append((ref, output))
     return live
 
 
