@@ -300,14 +300,20 @@ def _reasoning_effort_rejected(error_text):
 
 
 def call_api(model, messages, use_tools=True, temperature=0.0,
-             tools_schema=None, thinking=None, api_key=None, base_url=None):
+             tools_schema=None, thinking=None, api_key=None, base_url=None,
+             response_format=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
         raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": False}
-    if use_tools:
+    if response_format:
+        # Constraining the decoding and offering the tools at the same time asks
+        # the server for two different output shapes. The caller that passes a
+        # response_format wants the object, not a native call.
+        payload["response_format"] = response_format
+    elif use_tools:
         payload.update({"tools": tools_schema or tools.SCHEMA,
                         "tool_choice": "auto", "parallel_tool_calls": False})
     if thinking in ("low", "medium", "high"):
@@ -547,12 +553,136 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
 # dead code that MASKED failure: if one day the model stops emitting tool_call,
 # now we find out instead of the patch hiding it. If this is ever needed again,
 # the problem is the model, not the parser.
+#
+# It did come back as a problem (2026-08-20, Qwen2.5-Coder-3B on llama-server),
+# and the answer was NOT to restore this. See "Constrained retry" below: the
+# schema constrains the decoding, so nothing has to be fished out of prose.
 
 
 MUTATION_RETRY = """The user asked for a change, but no changing tool has succeeded, so no change is confirmed. If the task has enough information, call exactly one appropriate tool now and continue from its result. Do not present file contents as saved unless a tool saved them. If essential information is missing, ask one concise clarification question instead."""
 READ_ONLY_RESULT_NOTE = """NOTE: This tool only inspected state and changed nothing. Re-read the user's request before answering. If the requested outcome requires any persistent change, call an appropriate changing tool first; never describe an unsaved draft or a read result as a completed change."""
 FAILED_CHANGE_NOTE = """NOTE: This changing tool did not succeed, so no change from this call is confirmed. Do not claim completion. Correct the call or explain the failure."""
 CHANGING_TOOLS = {"write_file", "append_file", "replace_between", "replace_text"}
+
+# --- Constrained retry -------------------------------------------------------
+#
+# This is NOT the regex rescue removed above, and the difference is the whole
+# point. The rescue read loose text and guessed a call out of it, which meant
+# inventing a dialect no model declares. This constrains the decoding itself:
+# the server can only emit tokens the schema allows, so the output IS the
+# object. Nothing is parsed out of prose.
+#
+# It runs only on the correction turn that already exists, the one that fires
+# after the model failed to call a changing tool. Measured on 2026-08-20 with
+# Qwen2.5-Coder-3B on llama-server: 0/6 tool calls unconstrained, 6/6 correct
+# with the constraint plus the tool list below. The list is not decoration:
+# without it the same run scored 4/6, picking append_file for "create a file".
+CONSTRAINED_RETRY_HEADER = """Answer with a single JSON object describing the tool call: {"name": <tool name>, "arguments": {...}}. The available tools are:"""
+
+
+def constrained_call_schema(schema):
+    """A JSON schema matching one call to any tool in `schema`.
+
+    One branch per tool, with the name pinned by `const`, so a valid document
+    is always a call the harness can execute.
+    """
+    branches = []
+    for entry in schema:
+        fn = entry.get("function") or {}
+        branches.append({
+            "type": "object",
+            "properties": {
+                "name": {"const": fn.get("name")},
+                "arguments": fn.get("parameters") or {"type": "object"},
+            },
+            "required": ["name", "arguments"],
+            "additionalProperties": False,
+        })
+    return {"anyOf": branches}
+
+
+def constrained_tool_list(schema):
+    lines = [CONSTRAINED_RETRY_HEADER]
+    for entry in schema:
+        fn = entry.get("function") or {}
+        lines.append(f"- {fn.get('name')}: {fn.get('description', '')}")
+    return "\n".join(lines)
+
+
+def message_from_constrained(content, schema):
+    """Turn the constrained answer into the same shape a native call has.
+
+    Returns None when the answer is not a call to a tool the schema declares.
+    The caller must treat that as the failure it is: the point of the
+    constraint is that this cannot happen, so when it does, something upstream
+    ignored the schema and the error has to stay visible.
+    """
+    try:
+        parsed = json.loads(content or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    name = parsed.get("name")
+    known = {(e.get("function") or {}).get("name") for e in schema}
+    if name not in known:
+        return None
+    arguments = parsed.get("arguments")
+    if not isinstance(arguments, dict):
+        return None
+    return _normalize_msg({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": f"call_{name}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }],
+    })
+
+
+def _constrained_correction(model, msgs, schema, provider, provider_kind):
+    """The correction turn, with the output constrained to one tool call.
+
+    Returns None when the constraint could not be applied, and says why under
+    --debug. The caller then sends the correction the way it always did, so a
+    provider without schema support behaves exactly as before, with its own
+    failure still visible on screen.
+    """
+    if provider_kind != "openai_compatible":
+        debug.note("agent.constrained_retry",
+                   f"provider '{provider_kind}' has no measured schema support; "
+                   "the correction went out unconstrained")
+        return None
+    prompt = msgs + [{"role": "system", "content": constrained_tool_list(schema)}]
+    try:
+        answer = call_api(
+            model, prompt, use_tools=False,
+            api_key=(provider or {}).get("api_key"),
+            base_url=(provider or {}).get("base_url"),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "tool_call", "strict": True,
+                                "schema": constrained_call_schema(schema)},
+            })
+    except RuntimeError:
+        # The endpoint rejected the constraint (HTTP 400 on providers without
+        # json_schema) or could not be reached. Either way there is nothing to
+        # constrain, and the unconstrained correction below still shows the
+        # user whatever fails next.
+        debug.swallowed("agent._constrained_correction")
+        return None
+    msg = message_from_constrained(answer.get("content"), schema)
+    if msg is None:
+        debug.note("agent.constrained_retry.parse",
+                   "the endpoint accepted response_format but the answer was not "
+                   "a call to a declared tool")
+        return None
+    msg["_usage"] = answer.get("_usage")
+    debug.note("agent.constrained_retry",
+               "this tool call came from the schema-constrained correction, not "
+               "from a native tool_call: the model did not emit one")
+    return msg
 
 
 def run(request, model, max_steps=8, use_tools=True, verbose=True,
@@ -618,13 +748,20 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             return call(model, msgs, use_tools=use_tools,
                         tools_schema=schema, thinking=thinking, num_ctx=num_ctx)
 
+        call_via = "native"
         if correction_pending:
             msgs.append({"role": "system", "content": MUTATION_RETRY})
-        msg = query(active_schema)
-        if correction_pending:
+            constrained = _constrained_correction(
+                model, msgs, active_schema, provider, provider_kind)
+            if constrained is None:
+                msg = query(active_schema)
+            else:
+                msg, call_via = constrained, "constrained"
             msgs.pop()
             correction_pending = False
             correction_sent = True
+        else:
+            msg = query(active_schema)
         tc = msg.get("tool_calls")
         _add_usage(total_usage, msg.get("_usage"))
         if msg.pop("_thinking_rejected", False):
@@ -651,19 +788,19 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             name = c["function"]["name"]
             args = c["function"]["arguments"]
             if verbose:
-                print(f"[step {step}] NATIVE TOOL_CALL -> {name}({args})")
+                print(f"[step {step}] {call_via.upper()} TOOL_CALL -> {name}({args})")
             early_result = on_tool_before(name, args) if on_tool_before else None
             result = (early_result if isinstance(early_result, str)
                       else tools.execute(name, args))
             if verbose:
                 print(f"           <- {result[:200]}")
-            calls.append((name, args, result, "native"))
+            calls.append((name, args, result, call_via))
             changing = (is_changing_tool(name, args) if is_changing_tool
                         else name in CHANGING_TOOLS)
             if changing:
                 changing_calls += 1
             if on_tool:
-                on_tool(name, args, result, "native")
+                on_tool(name, args, result, call_via)
             succeeded = False
             if changing:
                 succeeded = (

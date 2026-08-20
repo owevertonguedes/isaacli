@@ -416,7 +416,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self._log("permission", cmd=cmd, rule=rule, decision=decision)
         return execution.run_command(cmd, authorized=True)
 
-    def _tool_after(self, name, args, result, _via):
+    def _tool_after(self, name, args, result, via):
         if name == "run_command":
             try:
                 data = json.loads(args) if isinstance(args, str) else (args or {})
@@ -448,13 +448,18 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             print(text, flush=True)
             if truncated:
                 print(_color(t("cli.command.truncated", id=item["id"]), "dim"), flush=True)
-            self._log("tool_result", name=name, cmd=cmd, code=code, result=result)
+            # `via` says how the call was obtained (native tool_call, or the
+            # schema-constrained correction). It stays out of the screen on
+            # purpose and lives in the log, which is where the question "which
+            # tools does this model actually pick" gets answered later.
+            self._log("tool_result", name=name, cmd=cmd, code=code, result=result,
+                      via=via)
         else:
             text, truncated = _preview(result)
             print(_color(f"[{name}] ← {text}", "tool"), flush=True)
             if truncated:
                 print(_color(t("cli.command.truncated_log"), "dim"), flush=True)
-            self._log("tool_result", name=name, result=result)
+            self._log("tool_result", name=name, result=result, via=via)
         self._output_block = True
         self._assistant_label_pending = True
 

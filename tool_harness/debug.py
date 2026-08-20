@@ -32,6 +32,22 @@ def enabled_from_environment():
     return os.environ.get("ISAACLI_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
+def note(site, message):
+    """Report something the flow did that the screen deliberately does not show.
+
+    Same category as `swallowed`, without an exception: how a tool call was
+    obtained, which strategy a step fell back on, a count that only matters to
+    whoever is debugging. The screen by default shows the work and the errors
+    that need action; this is neither. Same once-per-site rule, so a note
+    inside a loop cannot bury the terminal.
+    """
+    if not ENABLED or site in _reported:
+        return
+    _reported.add(site)
+    print(f"\n--- isaacli --debug: {site}: {message}", file=sys.stderr)
+    sys.stderr.flush()
+
+
 def swallowed(site):
     """Call from inside an except block, naming the site that absorbs it."""
     if not ENABLED or site in _reported:

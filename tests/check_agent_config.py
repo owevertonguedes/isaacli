@@ -566,3 +566,165 @@ print("AGENT LOCAL KEY OK: loopback needs no API key, remote still does, no empt
 
 print("AGENT NO HIDDEN FALLBACK OK: an empty answer surfaces as a real error, "
       "with no hidden retry")
+
+
+# --- Constrained correction (task 020) ---------------------------------------
+# Measured on 2026-08-20: Qwen2.5-Coder-3B emits the right call with the wrong
+# wrapper (markdown fence instead of its own <tool_call> tags), so the harness
+# discards it and nothing changes on disk. Constraining the decoding on the
+# correction turn turned 0/6 into 6/6. These tests check the effect (a tool
+# really ran, with the arguments the constrained answer carried), never the
+# wording of any message.
+
+def openai_provider():
+    return {"provider": "openai_compatible", "api_key": "k",
+            "base_url": "https://endpoint.example/v1"}
+
+
+def openai_response(message, tokens=7):
+    return Response(json.dumps({
+        "choices": [{"message": message}],
+        "usage": {"prompt_tokens": 20, "completion_tokens": tokens},
+    }).encode())
+
+
+constrained_payloads = []
+constrained_executed = []
+
+
+def urlopen_constrained(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    constrained_payloads.append(payload)
+    if "response_format" in payload:
+        return openai_response({
+            "role": "assistant",
+            "content": json.dumps({"name": "write_file", "arguments": {
+                "path": "index.html", "content": "<h1>hi</h1>"}}),
+        })
+    if len(constrained_payloads) == 1:
+        # What the weak model actually does: the right call, fenced as markdown.
+        return openai_response({
+            "role": "assistant",
+            "content": '```json\n{"name": "write_file", "arguments": {}}\n```',
+        })
+    return openai_response({"role": "assistant", "content": "done"})
+
+
+original_execute3 = agent.tools.execute
+try:
+    agent.urllib.request.urlopen = urlopen_constrained
+    agent.tools.execute = lambda name, args: (
+        constrained_executed.append((name, json.loads(args))) or "OK: wrote index.html"
+    )
+    constrained_result = agent.run(
+        "create index.html", "weak-local-model", verbose=False,
+        provider=openai_provider(), require_change=True,
+        is_changing_tool=lambda name, _args: name == "write_file",
+    )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.tools.execute = original_execute3
+
+assert constrained_executed == [("write_file", {"path": "index.html",
+                                                "content": "<h1>hi</h1>"})], (
+    "the constrained correction has to actually run the tool it described")
+assert constrained_result["successful_changes"] == 1
+assert [call[3] for call in constrained_result["calls"]] == ["constrained"], (
+    "a call obtained through the constraint must not be recorded as native")
+assert "response_format" in constrained_payloads[1], (
+    "the correction turn has to carry the schema constraint")
+assert "tools" not in constrained_payloads[1], (
+    "offering tools and a response_format at once asks for two output shapes")
+branches = constrained_payloads[1]["response_format"]["json_schema"]["schema"]["anyOf"]
+assert {branch["properties"]["name"]["const"] for branch in branches} == {
+    entry["function"]["name"] for entry in agent.tools.SCHEMA}, (
+    "every declared tool has to be reachable through the constrained schema")
+assert "tools" in constrained_payloads[0], "the first turn stays a normal tool call"
+print("AGENT CONSTRAINED RETRY OK: the correction turn constrains the output and "
+      "the described tool really runs")
+
+
+# A provider that rejects response_format must not silently lose the correction:
+# the retry still goes out the way it always did, and the failure stays visible.
+unsupported_payloads = []
+unsupported_executed = []
+
+
+def urlopen_unsupported(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    unsupported_payloads.append(payload)
+    if "response_format" in payload:
+        raise agent.urllib.error.HTTPError(
+            "https://endpoint.example/v1/chat/completions", 400, "Bad Request", {},
+            io.BytesIO(json.dumps(
+                {"error": {"message": "response_format is not supported"}}).encode()))
+    return openai_response({"role": "assistant", "content": "still just prose"})
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_unsupported
+    agent.tools.execute = lambda name, args: unsupported_executed.append(name)
+    unsupported_result = agent.run(
+        "create index.html", "weak-local-model", verbose=False,
+        provider=openai_provider(), require_change=True,
+        is_changing_tool=lambda name, _args: name == "write_file",
+    )
+finally:
+    agent.urllib.request.urlopen = original
+    agent.tools.execute = original_execute3
+
+assert unsupported_executed == [], "no tool ran, so none may be reported as run"
+assert unsupported_result["successful_changes"] == 0
+assert unsupported_result["final"] == "still just prose", (
+    "the model's own failed answer has to reach the user, not a swallowed error")
+assert "tools" in unsupported_payloads[-1] and "response_format" not in unsupported_payloads[-1], (
+    "after the rejection the correction has to go out unconstrained, as before")
+print("AGENT CONSTRAINED RETRY UNSUPPORTED OK: a provider without json_schema keeps "
+      "today's behaviour and today's visible failure")
+
+
+# The conversion refuses anything that is not a call to a declared tool. The
+# constraint is supposed to make this impossible; if it ever happens, the
+# harness must not invent a call out of it.
+assert agent.message_from_constrained("not json", agent.tools.SCHEMA) is None
+assert agent.message_from_constrained(
+    json.dumps({"name": "rm_rf", "arguments": {}}), agent.tools.SCHEMA) is None
+assert agent.message_from_constrained(
+    json.dumps({"name": "write_file", "arguments": "a string"}),
+    agent.tools.SCHEMA) is None
+accepted = agent.message_from_constrained(
+    json.dumps({"name": "read_file", "arguments": {"path": "a.py"}}),
+    agent.tools.SCHEMA)
+assert accepted["tool_calls"][0]["function"]["name"] == "read_file"
+assert json.loads(accepted["tool_calls"][0]["function"]["arguments"]) == {"path": "a.py"}
+print("AGENT CONSTRAINED PARSE OK: only a call to a declared tool is accepted")
+
+
+# --- debug.note --------------------------------------------------------------
+# Diagnostic detail belongs to --debug, never to the screen. Tested by effect on
+# stderr, not by reading the message text.
+import contextlib  # noqa: E402
+
+import debug  # noqa: E402
+
+quiet = io.StringIO()
+debug.enable(False)
+with contextlib.redirect_stderr(quiet):
+    debug.note("test.site", "should stay invisible")
+assert quiet.getvalue() == "", "with debug off a note must print nothing at all"
+
+loud = io.StringIO()
+debug.enable(True)
+try:
+    with contextlib.redirect_stderr(loud):
+        debug.note("test.site", "first")
+        debug.note("test.site", "second from the same site")
+        debug.note("other.site", "from another site")
+finally:
+    debug.enable(False)
+printed = loud.getvalue()
+assert printed.count("test.site") == 1, (
+    "a site reports once per run, so a note inside a loop cannot bury the terminal")
+assert "second from the same site" not in printed
+assert "other.site" in printed, "a different site still reports"
+print("DEBUG NOTE OK: silent by default, once per site when enabled")
