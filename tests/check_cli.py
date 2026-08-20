@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 import pty
+import re
 import select
 import subprocess
 import sys
@@ -1229,6 +1230,42 @@ check(captured_temperature[:1] == [0.7],
       "the temperature a profile records is the temperature the request carries")
 check(captured_temperature[1:2] == ["__absent__"],
       "a profile without temperature leaves the agent default untouched")
+
+# ----------------------------------------------------------------------
+# The two catalogues have to stay one catalogue in two languages.
+#
+# Every screen goes through i18n, so a key added to one file and forgotten in
+# the other shows the raw key to whoever runs in the other language, and a
+# placeholder that survives in one file but not the other raises KeyError at the
+# moment the message is needed. Neither shows up until somebody switches
+# language, which is exactly when nobody is looking.
+# ----------------------------------------------------------------------
+locales = HERE.parent / "tool_harness" / "locales"
+catalogues = {
+    path.stem: json.loads(path.read_text(encoding="utf-8"))
+    for path in sorted(locales.glob("*.json"))
+}
+english = catalogues["en"]
+missing = {
+    name: sorted(set(english) ^ set(catalogue))
+    for name, catalogue in catalogues.items() if set(english) != set(catalogue)
+}
+
+
+def placeholders(text):
+    return sorted(re.findall(r"\{([a-z_]+)\}", str(text)))
+
+
+mismatched = {
+    f"{name}:{key}": (placeholders(english[key]), placeholders(catalogue[key]))
+    for name, catalogue in catalogues.items()
+    for key in set(english) & set(catalogue)
+    if placeholders(english[key]) != placeholders(catalogue[key])
+}
+check(len(catalogues) > 1 and not missing,
+      f"every language catalogue holds the same keys ({missing or 'aligned'})")
+check(not mismatched,
+      f"a message takes the same placeholders in every language ({mismatched or 'aligned'})")
 
 print()
 if failures:
