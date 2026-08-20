@@ -47,16 +47,16 @@ worked on.
 | --- | --- | --- |
 | `tool_harness/cli.py` | arguments, REPL, `/` commands, sessions, presentation, permissions and the Ollama lifecycle | The largest coupling point, and the first target for a responsibility inventory. |
 | `tool_harness/terminal_ui.py` | alternate screen, menus, busy prompt | Must not enable mouse reporting: that breaks the terminal's native selection and copy. |
-| `tool_harness/setup_ollama.py` | local setup, curated catalog, local models, context, reasoning and OpenAI-compatible API | Context is per-request configuration; it must not create `16k`/`32k` Ollama copies. |
+| `tool_harness/setup_ollama.py` | shared engine selection, local setup, local models, context, reasoning and OpenAI-compatible API | Kaggle entries delegate to `cli_kaggle.run_kaggle`; context must not create `16k`/`32k` Ollama copies. |
 | `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
 | `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
 | `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. |
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
 | `tool_harness/installation.py` | per-user launcher install, uninstall and explicitly confirmed purge | It never removes a launcher owned by another checkout or an unrecognised Ollama installation. |
-| `tool_harness/cli_kaggle.py` | installs a private Kaggle CLI, authenticates, checks quota and live kernels, pushes a generated kernel, discovers the tunnel and saves a profile | Kernel orchestration ends at a generic `openai_compatible` profile. The request adapter has no Kaggle branch. |
+| `tool_harness/cli_kaggle.py` | installs a private Kaggle CLI, authenticates, filters benchmark-backed models with `hardware.fits`, selects the exact accelerator, pushes a generated kernel, discovers the tunnel and saves a profile | Setup, `isaacli kaggle`, `/model` and `/kaggle` call this one flow. Kernel orchestration ends at a generic `openai_compatible` profile. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
-| `tool_harness/model_catalog.json` | small curation of recommendations | It does not represent installed models; those come live from the local Ollama. |
+| `tool_harness/model_catalog.json` | curated Ollama and Kaggle candidates with public evidence and exact GGUF metadata | It does not represent installed models. Kaggle candidates are filtered by hardware at runtime. |
 
 ## Language boundary
 
@@ -192,9 +192,12 @@ reachable over the network still requires one.
 - Providers with their own incompatible native formats will need explicit
   adapters; do not scatter provider-name conditionals through the REPL.
 
-The `/model` menu separates source, model, context and effort. Recommended is
-not a synonym for installed: recommendations come from the curated JSON,
-installed models come from querying the Ollama server.
+The `/model` menu separates source, model, context and effort. Kaggle appears as
+a provider even before configuration and delegates to the same explicit setup
+used by the top-level command. Recommended is not a synonym for installed:
+Ollama installations come from its live server, while Kaggle candidates come
+from the curated JSON and only appear when `hardware.fits` accepts their exact
+weights and 16K KV cache for the selected accelerator.
 
 When a provider rejects `reasoning_effort`, that rejection is the source of
 truth: the agent retries without the parameter, stops sending it for the rest of

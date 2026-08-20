@@ -192,7 +192,7 @@ try:
     )
     with redirect_stdout(io.StringIO()):
         swap_result = setup_ollama._select_configured_api(
-            answers("2", "2", "1"), api_config, "pt-BR", pt,
+            answers("3", "2", "1"), api_config, "pt-BR", pt,
         )
     _, swapped_profile = config.profile(config.load(api_config))
     check(swap_result == 0 and swapped_profile["model"] == "qwen/qwen3.6-27b",

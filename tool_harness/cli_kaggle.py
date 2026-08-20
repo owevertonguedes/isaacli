@@ -15,30 +15,30 @@ from pathlib import Path
 
 import config
 import debug
+import hardware
 from cli_i18n import t
 from installation import _package_owns
 
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE_DIR = HERE.parent / "contrib" / "kaggle"
+MODEL_CATALOG_PATH = HERE / "model_catalog.json"
 TERMINAL_STATES = {"COMPLETE", "ERROR", "CANCELLED"}
 URL_PATTERN = re.compile(r"TUNNEL_URL=(https://[-a-z0-9]+\.trycloudflare\.com)")
-MODELS = (
-    {
-        "label_key": "cli.kaggle.model.qwen_coder",
-        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-        "file": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-        "alias": "qwen3-coder-30b-a3b",
-        "source": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+MODEL_CONTEXT = 16384
+ACCELERATORS = {
+    "NvidiaTeslaP100": {
+        "label": "P100 16 GB", "vram_mb": 16384,
+        "overhead_mb": hardware.DEFAULT_OVERHEAD_MB, "cuda_arch": "60",
+        "gpu_count": 1,
     },
-    {
-        "label_key": "cli.kaggle.model.qwen_instruct",
-        "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
-        "file": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
-        "alias": "qwen3-30b-a3b-2507",
-        "source": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+    "NvidiaTeslaT4": {
+        "label": "T4 x2, 2 x 16 GB", "vram_mb": 32768,
+        "overhead_mb": hardware.DEFAULT_OVERHEAD_MB * 2, "cuda_arch": "75",
+        "gpu_count": 2,
     },
-)
+}
+ACCELERATOR_PREFERENCE = ("NvidiaTeslaP100", "NvidiaTeslaT4")
 
 
 def _home(home_dir=None):
@@ -216,14 +216,81 @@ def live_kernels(executable, run_fn=subprocess.run):
     return live
 
 
-def _select_model(input_fn):
+def _load_model_candidates(path=MODEL_CATALOG_PATH):
+    """Load benchmark-backed candidates before hardware fit is applied."""
+    required = {
+        "name", "repo", "file", "alias", "source", "model_bytes",
+        "n_layers", "n_kv_heads", "head_dim", "benchmark",
+        "benchmark_source",
+    }
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        candidates = data["kaggle"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError(t("cli.kaggle.catalog.invalid", error=error)) from error
+    if (not isinstance(candidates, list) or not candidates
+            or any(not isinstance(item, dict) or not required <= item.keys()
+                   for item in candidates)):
+        raise RuntimeError(t("cli.kaggle.catalog.invalid", error="invalid entries"))
+    return candidates
+
+
+def models_for_accelerator(machine_shape, catalog_path=MODEL_CATALOG_PATH):
+    """Benchmark-backed candidates that fit this exact Kaggle accelerator."""
+    accelerator = ACCELERATORS[machine_shape]
+    selected = []
+    for candidate in _load_model_candidates(catalog_path):
+        kv_bytes = hardware.kv_cache_bytes(
+            candidate["n_layers"], candidate["n_kv_heads"],
+            candidate["head_dim"], MODEL_CONTEXT,
+        )
+        if hardware.fits(
+                candidate["model_bytes"], kv_bytes, accelerator["vram_mb"],
+                overhead_mb=accelerator["overhead_mb"]):
+            model = dict(candidate)
+            model.update({
+                "machine_shape": machine_shape,
+                "machine_label": accelerator["label"],
+                "cuda_arch": accelerator["cuda_arch"],
+                "gpu_count": accelerator["gpu_count"],
+                "kv_bytes": kv_bytes,
+            })
+            selected.append(model)
+    return selected
+
+
+def recommended_models(catalog_path=MODEL_CATALOG_PATH):
+    """Assign every fitting candidate to the smallest preferred accelerator."""
+    candidates = _load_model_candidates(catalog_path)
+    by_alias = {item["alias"]: item for item in candidates}
+    selected = []
+    assigned = set()
+    for machine_shape in ACCELERATOR_PREFERENCE:
+        for model in models_for_accelerator(machine_shape, catalog_path):
+            alias = model["alias"]
+            if alias in by_alias and alias not in assigned:
+                selected.append(model)
+                assigned.add(alias)
+    return selected
+
+
+def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH):
+    models = recommended_models(catalog_path)
+    if not models:
+        raise RuntimeError(t("cli.kaggle.models.none"))
     print(t("cli.kaggle.models.title"))
-    for index, model in enumerate(MODELS, 1):
-        print(f"  {index}. {t(model['label_key'])}")
+    for index, model in enumerate(models, 1):
+        size_gib = model["model_bytes"] / 1024 ** 3
+        print(t(
+            "cli.kaggle.models.option", index=index, name=model["name"],
+            size=f"{size_gib:.1f}", machine=model["machine_label"],
+            benchmark=model["benchmark"],
+        ))
         print(f"     {model['source']}")
+        print(f"     {model['benchmark_source']}")
     answer = input_fn(t("cli.kaggle.models.prompt")).strip()
     try:
-        return MODELS[int(answer) - 1]
+        return models[int(answer) - 1]
     except (ValueError, IndexError):
         raise RuntimeError(t("cli.kaggle.models.invalid"))
 
@@ -236,6 +303,9 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False):
         "__MODEL_FILE__": model["file"],
         "__MODEL_ALIAS__": model["alias"],
         "__API_KEY__": api_key,
+        "__CUDA_ARCH__": model.get("cuda_arch", ""),
+        "__MACHINE_SHAPE__": model.get("machine_shape", ""),
+        "__GPU_COUNT__": str(model.get("gpu_count", 0)),
     }
     for marker, value in values.items():
         template = template.replace(marker, value)
@@ -257,6 +327,8 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False):
         "competition_sources": [],
         "model_sources": [],
     }
+    if not validation_cpu:
+        metadata["machine_shape"] = model["machine_shape"]
     (folder / "kernel-metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8",
     )

@@ -5,5 +5,46 @@
     "granite4.1:3b",
     "phi4-mini:latest",
     "gpt-oss:20b"
+  ],
+  "kaggle": [
+    {
+      "name": "Devstral Small 1.1 24B, Q4_K_S",
+      "repo": "unsloth/Devstral-Small-2507-GGUF",
+      "file": "Devstral-Small-2507-Q4_K_S.gguf",
+      "alias": "devstral-small-2507",
+      "source": "https://huggingface.co/unsloth/Devstral-Small-2507-GGUF",
+      "model_bytes": 13549288672,
+      "n_layers": 40,
+      "n_kv_heads": 8,
+      "head_dim": 128,
+      "benchmark": "SWE-bench Verified 53.6%",
+      "benchmark_source": "https://huggingface.co/mistralai/Devstral-Small-2507"
+    },
+    {
+      "name": "Qwen3 Coder 30B A3B Instruct, Q4_K_M",
+      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "file": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "alias": "qwen3-coder-30b-a3b",
+      "source": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "model_bytes": 18556689568,
+      "n_layers": 48,
+      "n_kv_heads": 4,
+      "head_dim": 128,
+      "benchmark": "no public score at this size",
+      "benchmark_source": "https://qwenlm.github.io/blog/qwen3-coder/"
+    },
+    {
+      "name": "Qwen3 30B A3B Instruct 2507, Q4_K_M",
+      "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+      "file": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+      "alias": "qwen3-30b-a3b-2507",
+      "source": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+      "model_bytes": 18556686752,
+      "n_layers": 48,
+      "n_kv_heads": 4,
+      "head_dim": 128,
+      "benchmark": "Aider Polyglot 55.1, LiveCodeBench v6 45.2",
+      "benchmark_source": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507"
+    }
   ]
 }

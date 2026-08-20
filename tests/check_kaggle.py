@@ -20,6 +20,7 @@ os.environ["XDG_CONFIG_HOME"] = str(root / "config")
 import cli_kaggle
 import cli
 import config
+import setup_ollama
 
 
 failures = []
@@ -138,17 +139,43 @@ check('"sudo"' not in module_source and "'sudo'" not in module_source,
       "no Kaggle orchestration command can invoke sudo")
 
 gpu_dir = root / "gpu-render"
+gpu_t4_dir = root / "gpu-t4-render"
 cpu_dir = root / "cpu-render"
 gpu_dir.mkdir()
+gpu_t4_dir.mkdir()
 cpu_dir.mkdir()
-cli_kaggle._render_kernel(gpu_dir, "user/gpu", cli_kaggle.MODELS[0], "key", False)
+recommended = cli_kaggle.recommended_models()
+p100_model = next(
+    model for model in recommended
+    if model["machine_shape"] == "NvidiaTeslaP100"
+)
+t4_model = next(
+    model for model in recommended
+    if model["machine_shape"] == "NvidiaTeslaT4"
+)
+cli_kaggle._render_kernel(gpu_dir, "user/gpu", p100_model, "key", False)
+cli_kaggle._render_kernel(gpu_t4_dir, "user/gpu-t4", t4_model, "key", False)
 cli_kaggle._render_kernel(
     cpu_dir, "user/cpu", {"repo": "", "file": "", "alias": "probe"}, "key", True,
 )
 gpu_metadata = json.loads((gpu_dir / "kernel-metadata.json").read_text())
+t4_metadata = json.loads((gpu_t4_dir / "kernel-metadata.json").read_text())
 cpu_metadata = json.loads((cpu_dir / "kernel-metadata.json").read_text())
 check(gpu_metadata["enable_gpu"] is True and cpu_metadata["enable_gpu"] is False,
       "the normal template always requests GPU and only flow validation requests CPU")
+check(gpu_metadata["machine_shape"] == "NvidiaTeslaP100"
+      and t4_metadata["machine_shape"] == "NvidiaTeslaT4",
+      "kernel metadata requests the accelerator derived from the selected model")
+
+p100_models = cli_kaggle.models_for_accelerator("NvidiaTeslaP100")
+t4_models = cli_kaggle.models_for_accelerator("NvidiaTeslaT4")
+p100_aliases = {model["alias"] for model in p100_models}
+t4_aliases = {model["alias"] for model in t4_models}
+check(t4_model["alias"] not in p100_aliases,
+      "a model that does not fit the selected accelerator is not offered")
+check(len(recommended) > 2 and p100_aliases != t4_aliases
+      and p100_aliases < t4_aliases,
+      "the catalog is larger than two and changing accelerator changes the fit list")
 
 # `TUNNEL_URL=` is what isaacli turns into a ready profile, so the GPU template
 # must not print it until the server answers. cloudflared publishes its URL in
@@ -158,11 +185,52 @@ check(gpu_metadata["enable_gpu"] is True and cpu_metadata["enable_gpu"] is False
 # order in the rendered file, not a live run.
 gpu_code = next(path for path in gpu_dir.iterdir() if path.suffix == ".py")
 gpu_source = gpu_code.read_text(encoding="utf-8")
+t4_code = next(path for path in gpu_t4_dir.iterdir() if path.suffix == ".py")
+t4_source = t4_code.read_text(encoding="utf-8")
+check('CUDA_ARCH = "60"' in gpu_source and 'MACHINE_SHAPE = "NvidiaTeslaP100"' in gpu_source
+      and 'CUDA_ARCH = "75"' in t4_source
+      and 'MACHINE_SHAPE = "NvidiaTeslaT4"' in t4_source,
+      "the rendered CUDA architecture matches each requested machine shape")
+check("-DCUDA_cuda_driver_LIBRARY=" in gpu_source
+      and "/usr/local/nvidia/lib64/libcuda.so.1" in gpu_source,
+      "the GPU build passes the mounted CUDA driver library explicitly to CMake")
+check("/kaggle/temp" not in gpu_source and "tempfile.gettempdir()" in gpu_source,
+      "the GPU template uses Kaggle's writable temporary mount")
 check("/v1/models" in gpu_source
       and gpu_source.index("/v1/models") < gpu_source.index('"TUNNEL_URL="'),
       "the GPU template probes the server before publishing the tunnel URL")
 check(compile(gpu_source, str(gpu_code), "exec") is not None,
       "the rendered GPU kernel is valid Python before it ever reaches Kaggle")
+check(compile(t4_source, str(t4_code), "exec") is not None,
+      "the rendered T4 kernel is valid Python before it ever reaches Kaggle")
+
+# `/model` always shows Kaggle, even before a Kaggle profile exists. Selecting
+# it must call cli_kaggle.run_kaggle itself, the same function object imported
+# by the top-level `isaacli kaggle` command, rather than a copied flow.
+selector_config = root / "selector" / "config.json"
+config.save({"language": "en", "profiles": {}, "default_profile": None}, selector_config)
+original_select = setup_ollama._select
+original_run_kaggle = cli_kaggle.run_kaggle
+kaggle_setup_calls = []
+try:
+    setup_ollama._select = lambda _tr, _title, options, *_args, **_kwargs: (
+        check(any("Kaggle" in option and "not installed" in option for option in options),
+              "Kaggle appears in /model before it is configured"),
+        1,
+    )[-1]
+    cli_kaggle.run_kaggle = lambda **kwargs: (
+        kaggle_setup_calls.append(kwargs), 130,
+    )[-1]
+    selector_result = setup_ollama._select_configured_api(
+        lambda _prompt: "", selector_config, "en", setup_ollama.Translator("en"),
+    )
+finally:
+    setup_ollama._select = original_select
+    cli_kaggle.run_kaggle = original_run_kaggle
+check(selector_result == 130 and len(kaggle_setup_calls) == 1
+      and kaggle_setup_calls[0]["config_file"] == selector_config
+      and cli._run_kaggle is original_run_kaggle,
+      "/model and isaacli kaggle reach the same configuration implementation")
 
 original_launcher_uninstall = cli._uninstall_launcher
 original_kaggle_uninstall = cli._uninstall_managed_kaggle

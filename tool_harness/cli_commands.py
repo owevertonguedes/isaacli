@@ -45,6 +45,7 @@ COMMANDS = (
     ("/score", "cli.cmd.score"),
     ("/workspace", "cli.cmd.workspace"),
     ("/model", "cli.cmd.model"),
+    ("/kaggle", "cli.cmd.kaggle"),
     ("/permissions", "cli.cmd.permissions"),
     ("/mode", "cli.cmd.mode"),
     ("/language", "cli.cmd.language"),
@@ -234,6 +235,31 @@ class CommandsMixin:
                 self._log("meta", event="model", model=self.model,
                           thinking=self.thinking)
                 print(t("cli.model.set", model=self.model, source=source))
+            return True
+        if cmd == "/kaggle":
+            import cli_kaggle
+
+            code = cli_kaggle.run_kaggle(config_file=self.config_file)
+            if code == 0:
+                try:
+                    data = config.load(self.config_file)
+                    name, item = config.profile(data)
+                except ValueError as e:
+                    self.redraw_session(t("cli.setup.reread_failed", error=e))
+                    return True
+                if item:
+                    self.model = item["model"]
+                    self.thinking = item.get("thinking")
+                    self.num_ctx = item.get("num_ctx")
+                    self.provider = self._provider_from_profile(item)
+                    self._log("meta", event="kaggle", profile=name,
+                              model=self.model, thinking=self.thinking)
+                    self.redraw_session(
+                        t("cli.setup.profile_loaded", name=name, model=self.model))
+            else:
+                self.redraw_session(
+                    t("cli.setup.cancelled") if code == 130
+                    else t("cli.setup.incomplete"))
             return True
         if cmd == "/mode":
             self.permission_mode = (

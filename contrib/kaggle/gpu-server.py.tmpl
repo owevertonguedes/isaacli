@@ -1,8 +1,9 @@
-"""Kaggle GPU server for isaacli. Requires T4 x2 and internet access."""
+"""Kaggle GPU server for isaacli. Requires the selected GPU and internet."""
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -12,12 +13,15 @@ MODEL_REPO = "__MODEL_REPO__"
 MODEL_FILE = "__MODEL_FILE__"
 MODEL_ALIAS = "__MODEL_ALIAS__"
 API_KEY = "__API_KEY__"
+CUDA_ARCH = "__CUDA_ARCH__"
+MACHINE_SHAPE = "__MACHINE_SHAPE__"
+GPU_COUNT = __GPU_COUNT__
 PORT = 8080
 # `/kaggle/working` is the persisted output directory and is capped well below
 # what this needs: the weights alone are around 18 GB and the CUDA build adds
-# several more. Scratch space is not persisted and not capped that way, so
-# everything that is thrown away at the end of the session lives here.
-SCRATCH = "/kaggle/temp" if os.path.isdir("/kaggle/temp") else "/tmp"
+# several more. Kaggle mounts /tmp as writable session scratch, so ask Python
+# for that mounted temporary directory instead of inventing another path.
+SCRATCH = tempfile.gettempdir()
 
 
 def run(command):
@@ -39,8 +43,25 @@ print("Building llama.cpp with CUDA", flush=True)
 source_dir = f"{SCRATCH}/llama.cpp"
 run(["git", "clone", "--depth", "1", "--branch", "b10502",
      "https://github.com/ggml-org/llama.cpp", source_dir])
+
+# nvcc and the runtime libraries come from the toolkit, while libcuda is
+# mounted by the NVIDIA container runtime outside it. Resolve the real driver
+# explicitly because CMake does not search every runtime mount. The toolkit
+# stub remains a last resort for images that expose the driver through ld.so.
+cuda_driver_candidates = [
+    "/usr/local/nvidia/lib64/libcuda.so.1",
+    "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+    "/usr/local/cuda/lib64/stubs/libcuda.so",
+]
+cuda_driver = next(
+    (path for path in cuda_driver_candidates if os.path.isfile(path)), None)
+if not cuda_driver:
+    raise RuntimeError(
+        "CUDA driver library not found in: " + ", ".join(cuda_driver_candidates))
+print(f"CUDA driver library: {cuda_driver}", flush=True)
 run(["cmake", "-S", source_dir, "-B", f"{source_dir}/build",
-     "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=75"])
+     "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={CUDA_ARCH}",
+     f"-DCUDA_cuda_driver_LIBRARY={cuda_driver}"])
 run(["cmake", "--build", f"{source_dir}/build", "--config",
      "Release", "-j4", "--target", "llama-server"])
 
@@ -48,12 +69,15 @@ print("Downloading the selected model weights", flush=True)
 model_path = f"{SCRATCH}/{MODEL_FILE}"
 run(["curl", "-fL", "-o", model_path,
      f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
-server = subprocess.Popen([
+server_command = [
     f"{source_dir}/build/bin/llama-server",
     "-m", model_path, "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
-    "--split-mode", "layer", "--host", "127.0.0.1", "--port", str(PORT),
+    "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
-])
+]
+if GPU_COUNT > 1:
+    server_command.extend(["--split-mode", "layer"])
+server = subprocess.Popen(server_command)
 
 cloudflared = f"{SCRATCH}/cloudflared"
 run(["curl", "-fL", "-o", cloudflared,

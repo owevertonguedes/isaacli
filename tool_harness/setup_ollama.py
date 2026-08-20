@@ -412,6 +412,18 @@ def _setup_api(language, input_fn, config_file, tr):
     return 0
 
 
+def _setup_kaggle(language, input_fn, config_file):
+    """One Kaggle configuration path shared by setup and the model selector."""
+    from cli_i18n import set_language
+    import cli_kaggle
+
+    data = config.load(config_file)
+    data["language"] = language
+    config.save(data, config_file)
+    set_language(language)
+    return cli_kaggle.run_kaggle(input_fn=input_fn, config_file=config_file)
+
+
 def _run_setup(input_fn=input, config_file=None, initial_language=None,
                     ollama_only=False):
     if initial_language:
@@ -429,7 +441,8 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         if not ollama_only:
             engine = _select(
                 tr, tr.t("engine.title"),
-                [tr.t("engine.ollama"), tr.t("engine.api")], input_fn,
+                [tr.t("engine.ollama"), tr.t("engine.api"),
+                 tr.t("engine.kaggle")], input_fn,
                 tr.t("engine.explain"),
             )
             if engine == 1:
@@ -437,6 +450,8 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                 if api_result == "__engine__":
                     return _run_setup(input_fn, config_file, initial_language=language)
                 return api_result
+            if engine == 2:
+                return _setup_kaggle(language, input_fn, config_file)
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
         print(tr.t("setup.error", error=e))
         return 1
@@ -585,31 +600,46 @@ def run_setup(input_fn=input, config_file=None):
 
 def _select_configured_api(input_fn, config_file, language, tr):
     data = config.load(config_file)
+    kaggle_profiles = [
+        (name, item) for name, item in (data.get("profiles") or {}).items()
+        if item.get("provider") == "openai_compatible"
+        and item.get("provider_name") == "Kaggle"
+    ]
     api_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
         if item.get("provider") == "openai_compatible"
+        and item.get("provider_name") != "Kaggle"
     ]
-    options = [tr.t("engine.ollama")]
+    kaggle_state = "model.configured" if kaggle_profiles else "model.not_installed"
+    options = [
+        tr.t("engine.ollama"),
+        tr.t("engine.kaggle.state", state=tr.t(kaggle_state)),
+    ]
     options.extend(
         f"{item.get('provider_name') or 'API'} · {item.get('model')}"
         for _nome, item in api_profiles
     )
     options.append(tr.t("api.configure.new"))
     current = data.get("default_profile")
-    initial = next(
-        (i + 1 for i, (name, _item) in enumerate(api_profiles) if name == current),
-        0,
-    )
+    if any(name == current for name, _item in kaggle_profiles):
+        initial = 1
+    else:
+        initial = next(
+            (i + 2 for i, (name, _item) in enumerate(api_profiles) if name == current),
+            0,
+        )
     index = _select(
         tr, tr.t("model.source.title"), options, input_fn,
         tr.t("model.source.explain"), initial=initial,
     )
     if index == 0:
         return "__ollama__"
+    if index == 1:
+        return _setup_kaggle(language, input_fn, config_file)
     if index == len(options) - 1:
         return _setup_api(language, input_fn, config_file, tr)
 
-    name, original = api_profiles[index - 1]
+    name, original = api_profiles[index - 2]
     item = dict(original)
     secret_path = Path(config_file).with_name("secrets.json") if config_file else None
     try:
