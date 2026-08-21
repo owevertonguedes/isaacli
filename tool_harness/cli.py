@@ -44,28 +44,24 @@ import tools
 import workspace_instructions
 from cli_i18n import set_language, t
 from cli_permissions import (
-    DESTRUCTIVE_COMMANDS, DESTRUCTIVE_GIT, READ_ONLY_COMMANDS, READ_ONLY_GH,
-    READ_ONLY_GIT, _command_parts, _command_rule, _destructive_command,
-    _safe_read_command,
+    _command_rule, _destructive_command, _safe_read_command,
 )
 from cli_presentation import (
-    ANSI, APP_VERSION, WORDMARK_ISAAC, _color, _colored_prompt,
-    _format_markdown_terminal, _friendly_path, _markdown_inline, _pad_visual,
-    _print_welcome, _short_context, _shorten, _terminal_safe_text,
-    _uses_color, _visual_width, _welcome_lines,
+    APP_VERSION, WORDMARK_ISAAC, _color, _colored_prompt,
+    _format_markdown_terminal, _print_welcome, _terminal_safe_text,
+    _visual_width, _welcome_lines,
 )
 from cli_sessions import (
-    CLI_KNOWLEDGE, FEEDBACK_DIR, SESSION_ID_LEGACY, SESSION_ID_UUID,
-    SESSIONS_DIR, SessionsMixin, _build_history, _load_session, _new_session_id,
-    _now, _resume_command, _valid_session_id, _workspace_transition,
+    FEEDBACK_DIR, SESSION_ID_UUID, SESSIONS_DIR, SessionsMixin, _build_history,
+    _load_session, _new_session_id, _resume_command, _workspace_transition,
 )
 from cli_commands import (
-    COMMAND_ALIASES, COMMANDS, SLASH_COMMANDS, CommandsMixin, _CommandCompleter,
-    _filter_commands, _install_autocomplete, _score_command,
+    COMMANDS, SLASH_COMMANDS, CommandsMixin, _CommandCompleter,
+    _filter_commands, _install_autocomplete,
 )
 from cli_ollama import (
-    OllamaMixin, _close_without_interruption, _install_signals, _ollama_ok,
-    _pid_identity, _shared_ollama_state, _without_interruption,
+    OllamaMixin, _close_without_interruption, _install_signals,
+    _pid_identity, _without_interruption,
 )
 from cli_kaggle import (
     ensure_profile_session as _kaggle_ensure_session,
