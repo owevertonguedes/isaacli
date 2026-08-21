@@ -2227,6 +2227,45 @@ finally:
 check(gave_up,
       "a kernel that really ended stops the wait instead of burning the deadline")
 
+# A fixed 16384 ceiling is a floor dressed as a measurement: a model reaches
+# the list only if it fits at that size, so any room left on the cards was
+# thrown away. Reading this project's own documentation set asked for 18075
+# tokens on 2026-08-21 and died against the ceiling with the whole load already
+# paid for. The kernel and the profile must agree on whatever the fit allows.
+roomy_model = {
+    "repo": "vendor/model", "file": "model.gguf", "alias": "model",
+    "machine_shape": "NvidiaTeslaT4", "cuda_arch": "75", "gpu_count": 2,
+    "model_bytes": 8 * 1024 ** 3, "n_layers": 32, "n_kv_heads": 4,
+    "head_dim": 128,
+}
+roomy_context = cli_kaggle._context_for_model(roomy_model)
+check(roomy_context > cli_kaggle.MODEL_CONTEXT,
+      f"a model with room to spare is given more than the floor: {roomy_context}")
+
+with tempfile.TemporaryDirectory() as rendered_folder:
+    folder = Path(rendered_folder)
+    cli_kaggle._render_kernel(folder, "owner/isaacli-gpu-ctx", roomy_model,
+                              "key", dataset_sources=[])
+    rendered_kernel = (folder / "isaacli-gpu-ctx.py").read_text(encoding="utf-8")
+check(f"CONTEXT = {roomy_context}" in rendered_kernel
+      and "16384" not in rendered_kernel,
+      "the rendered kernel starts llama-server at the context that fits")
+
+context_config = Path(tempfile.mkdtemp()) / "context-config.json"
+config.save(config.empty_config(), context_config)
+with redirect_stdout(io.StringIO()):
+    context_profile = cli_kaggle.save_kaggle_profile(
+        "https://example.trycloudflare.com", "owner/isaacli-gpu-ctx",
+        roomy_model, "key", context_config)
+check(config.load(context_config)["profiles"][context_profile]["num_ctx"]
+      == roomy_context,
+      "the saved profile promises exactly the context the kernel was given")
+
+blind_model = {**roomy_model}
+del blind_model["n_kv_heads"]
+check(cli_kaggle._context_for_model(blind_model) == cli_kaggle.MODEL_CONTEXT,
+      "a model whose geometry is unknown keeps the floor instead of guessing")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)

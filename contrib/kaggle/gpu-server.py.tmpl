@@ -18,6 +18,7 @@ CUDA_ARCH = "__CUDA_ARCH__"
 MACHINE_SHAPE = "__MACHINE_SHAPE__"
 GPU_COUNT = __GPU_COUNT__
 SPLIT_MODE = "__SPLIT_MODE__"
+CONTEXT = __CONTEXT__
 PORT = 8080
 # The attached inputs are read-only and already expanded by Kaggle.
 SCRATCH = tempfile.gettempdir()
@@ -42,13 +43,25 @@ def optional_input(name):
     return matches[0] if len(matches) == 1 else None
 
 
+# Every step below is minutes long and used to print nothing at all, so an
+# empty log looked exactly like a dead kernel. It is not: reading a 24 GB
+# weight off the attached dataset is silent work that bills GPU time. Two
+# kernels were deleted on 2026-08-21 for being "stuck" while they were loading,
+# so each stage now names itself before it starts.
+def stage(message):
+    print(f"[setup] {message}", flush=True)
+
+
 archive = optional_input(f"llama-cuda-sm{CUDA_ARCH}-b10502.tar.gz")
 mounted_server = optional_input("llama-server")
 if archive:
+    stage("extracting the prepared runtime archive")
     run(["tar", "-xzf", str(archive), "-C", SCRATCH])
 elif mounted_server:
+    stage("copying the prepared runtime from the attached dataset")
     shutil.copytree(mounted_server.parent.parent, runtime_root, dirs_exist_ok=True)
 else:
+    stage("no prepared runtime attached, building llama.cpp from source")
     source_dir = Path(SCRATCH) / "llama.cpp"
     run(["git", "clone", "--depth", "1", "--branch", "b10502",
          "https://github.com/ggml-org/llama.cpp", str(source_dir)])
@@ -73,9 +86,16 @@ server_binary = runtime_root / "bin" / "llama-server"
 server_binary.chmod(0o755)
 model_path = optional_input(MODEL_FILE)
 if model_path is None:
+    # This branch is the expensive one and it is chosen silently by a name that
+    # did not match. Say so, because downloading the weight inside the kernel
+    # has been measured as low as 5.7 MB/s and can cost more quota than the
+    # whole session that follows it.
+    stage(f"{MODEL_FILE} is not attached, downloading it from {MODEL_REPO}")
     model_path = Path(SCRATCH) / MODEL_FILE
     run(["curl", "-fL", "-o", str(model_path),
          f"https://huggingface.co/{MODEL_REPO}/resolve/main/{MODEL_FILE}"])
+else:
+    stage(f"using the attached weight at {model_path}")
 def library_path(root):
     """Every directory of the prepared runtime that holds a shared object.
 
@@ -97,7 +117,8 @@ server_env["LD_LIBRARY_PATH"] = os.pathsep.join(
                       server_env.get("LD_LIBRARY_PATH", "")) if part)
 server_command = [
     str(server_binary),
-    "-m", str(model_path), "--alias", MODEL_ALIAS, "-ngl", "99", "-c", "16384",
+    "-m", str(model_path), "--alias", MODEL_ALIAS, "-ngl", "99",
+    "-c", str(CONTEXT),
     "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
 ]
@@ -106,6 +127,7 @@ if GPU_COUNT > 1:
     # at a time, one card computes while the other waits. It is asked for only
     # when the weights plus cache do not fit on a single card.
     server_command.extend(["--split-mode", SPLIT_MODE])
+stage("starting llama-server, which reads the whole weight before it answers")
 server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"

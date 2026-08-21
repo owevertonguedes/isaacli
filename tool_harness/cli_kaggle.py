@@ -889,7 +889,41 @@ KERNEL_VALUE_PATTERNS = {
     "__MACHINE_SHAPE__": re.compile(r"[A-Za-z0-9]+"),
     "__GPU_COUNT__": re.compile(r"[0-9]+"),
     "__SPLIT_MODE__": re.compile(r"[a-z]+"),
+    "__CONTEXT__": re.compile(r"[0-9]+"),
 }
+
+# 16384 is what every launch used to get, and it is a floor rather than a
+# measurement: a model only enters the list at all if it fits at that size. A
+# real task can exceed it without the model being at fault. Reading this
+# project's own documentation set and then answering asked for 18075 tokens on
+# 2026-08-21 and died against the ceiling, having already paid the whole load.
+# So when the cards still have room after the weights, the ceiling rises to the
+# largest rung that fits, decided by the same fit function that chose the model.
+MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
+
+
+def _context_for_model(model):
+    """The largest catalogued context this model still fits into on its cards."""
+    accelerator = ACCELERATORS.get(model.get("machine_shape"))
+    required = ("n_layers", "n_kv_heads", "head_dim", "model_bytes")
+    if not accelerator or any(model.get(key) is None for key in required):
+        return MODEL_CONTEXT
+    # Splitting puts part of the layers on each card, so the budget is the whole
+    # machine only when every card is actually used.
+    cards = accelerator["gpu_count"] if _needs_every_gpu(model) else 1
+    vram_mb = accelerator["vram_mb"] // max(1, accelerator["gpu_count"]) * cards
+    best = MODEL_CONTEXT
+    for context in MODEL_CONTEXT_LADDER:
+        kv_bytes = hardware.kv_cache_bytes(
+            model["n_layers"], model["n_kv_heads"], model["head_dim"], context)
+        if hardware.fits(model["model_bytes"], kv_bytes, vram_mb,
+                         overhead_mb=accelerator["overhead_mb"]):
+            best = max(best, context)
+        else:
+            break
+    debug.note("cli_kaggle._context_for_model",
+               f"{model.get('alias')} fits {best} tokens on {cards} card(s)")
+    return best
 
 
 def _kernel_value(marker, value):
@@ -921,6 +955,7 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
         "__MACHINE_SHAPE__": model.get("machine_shape", ""),
         "__GPU_COUNT__": str(model.get("gpu_count", 0)),
         "__SPLIT_MODE__": "layer" if _needs_every_gpu(model) else "none",
+        "__CONTEXT__": str(_context_for_model(model)),
     }
     values = {marker: _kernel_value(marker, value)
               for marker, value in values.items()}
@@ -1189,7 +1224,10 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
         "base_url": url.rstrip("/") + "/v1",
         "model": model["alias"],
         "credential": credential,
-        "num_ctx": 16384,
+        # The same ceiling the kernel was started with. A profile promising more
+        # than llama-server was given fails at the end of a long turn, which is
+        # the most expensive moment to find out.
+        "num_ctx": _context_for_model(model),
         "thinking": False,
     }
     data["default_profile"] = profile_name
