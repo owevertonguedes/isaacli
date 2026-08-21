@@ -2047,6 +2047,32 @@ check(honest_preference is not None
       and honest_preference["model"]["file"] == "Model-Q4_K_M.gguf",
       "the preference this program actually wrote is still offered back")
 
+# A window can arrive between the moment the last holder steps out and the
+# moment the kernel is really deleted. Adopting a record in that window means
+# believing a kernel is live while the delete for it is already on the wire.
+adopt_file = session_config(root / "session-adopt" / "config.json")
+adopt_commands = []
+adopted_slug = []
+
+
+def adopting_run(command, check=False, capture_output=False, text=False,
+                 env=None, **kwargs):
+    adopt_commands.append(list(map(str, command)))
+    if "delete" in adopt_commands[-1]:
+        adopted_slug.append(cli_kaggle.hold_profile_session(
+            "kaggle-one", config_file=adopt_file, pid=os.getpid()))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.hold_profile_session("kaggle-one", config_file=adopt_file)
+    adopt_stop = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=adopt_file, run_fn=adopting_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+check(adopt_stop == "owner/isaacli-gpu-1" and adopted_slug == [None]
+      and not (config.load(adopt_file)["kaggle"] or {}).get("kernels"),
+      "a window arriving mid-delete cannot adopt the kernel being ended")
+
 # Cleanup a keypress can abort is not cleanup, and here it is not tidiness that
 # is lost: the kernel keeps spending quota by wall clock until it is deleted.
 interrupt_file = session_config(root / "session-interrupt" / "config.json")

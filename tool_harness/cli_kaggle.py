@@ -1530,10 +1530,13 @@ def _kernel_lock(config_file=None):
     handle = open(path, "a+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    except OSError:
+    except OSError as error:
         # A filesystem with no working locks is worse served by refusing to
-        # close the session than by the race this was guarding against.
-        debug.swallowed("cli_kaggle._kernel_lock flock")
+        # close the session than by the race this was guarding against. But a
+        # layer that disappears in silence is worse than no layer, because
+        # nobody goes looking for it afterwards, so it says so on the way past.
+        debug.note("cli_kaggle._kernel_lock flock", error)
+        print(t("cli.kaggle.session.no_lock", path=str(path)))
     return handle
 
 
@@ -1562,7 +1565,19 @@ def _holder_alive(pid):
     return True
 
 
-def _update_holders(profile_name, config_file, change):
+def _being_ended(record):
+    """Whether a live process has already claimed the ending of this record.
+
+    The claim is the pid that made it, not a flag, because a window killed
+    between the claim and the delete would otherwise leave a record no window
+    can ever adopt again, with the kernel behind it still spending.
+    """
+    claim = record.get("ending")
+    return bool(claim) and _holder_alive(claim)
+
+
+def _update_holders(profile_name, config_file, change, adopting=False,
+                    after=None):
     """Apply `change` to one record's holder list under the cross-process lock."""
     handle = _kernel_lock(config_file)
     try:
@@ -1570,16 +1585,53 @@ def _update_holders(profile_name, config_file, change):
         for record in reversed((data.get("kaggle") or {}).get("kernels") or []):
             if record.get("profile") != profile_name or not record.get("slug"):
                 continue
+            if adopting and _being_ended(record):
+                # The last window out has already stepped away from this record
+                # and the delete for it is on the wire. Joining now would be
+                # holding a kernel that is being ended.
+                debug.note("cli_kaggle._update_holders",
+                           f"{record['slug']} is being ended, so it is not adopted")
+                return None, []
             holders = [
                 number for number in record.get("holders") or []
                 if _holder_alive(number)
             ]
             record["holders"] = change(holders)
+            if after is not None:
+                after(record)
             config.save(data, config_file)
             return record["slug"], record["holders"]
         return None, []
     finally:
         handle.close()
+
+
+def claim_session_end(profile_name, config_file=None, pid=None):
+    """Step out of the record and, when nobody is left, claim its ending.
+
+    Deciding that nobody holds the record and deleting the kernel afterwards are
+    two operations, and between them the lock is open. A window opening in that
+    gap read a record with an empty holder list, added itself, and went on
+    talking to a kernel whose delete was already on its way. The emptiness and
+    the claim are one locked write, so the other window either arrives first and
+    is seen, or arrives second and finds the record already spoken for.
+    """
+    pid = os.getpid() if pid is None else int(pid)
+
+    def claim(record):
+        if not record["holders"]:
+            record["ending"] = pid
+
+    return _update_holders(
+        profile_name, config_file,
+        lambda holders: [number for number in holders if number != pid],
+        after=claim)
+
+
+def drop_session_claim(profile_name, config_file=None):
+    """Give the record back when the ending did not happen after all."""
+    _update_holders(profile_name, config_file, lambda holders: holders,
+                    after=lambda record: record.pop("ending", None))
 
 
 def hold_profile_session(profile_name, config_file=None, pid=None):
@@ -1593,7 +1645,8 @@ def hold_profile_session(profile_name, config_file=None, pid=None):
     pid = os.getpid() if pid is None else int(pid)
     slug, _holders = _update_holders(
         profile_name, config_file,
-        lambda holders: [*[n for n in holders if n != pid], pid])
+        lambda holders: [*[n for n in holders if n != pid], pid],
+        adopting=True)
     return slug
 
 
@@ -1623,9 +1676,16 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
     if not profile or not profile.get("base_url"):
         return None
     if _endpoint_answers(profile, _secret_path(config_file), urlopen_fn):
+        if hold_profile_session(profile_name, config_file, pid) is None:
+            # The endpoint answered, and between that answer and this claim the
+            # window that owns the record started ending it. Reporting it as
+            # live would hand this session a kernel that is going away.
+            debug.note("cli_kaggle.ensure_profile_session",
+                       f"{record['slug']} is being ended by the window that "
+                       "holds it, so it was not reused")
+            return None
         debug.note("cli_kaggle.ensure_profile_session",
                    f"{record['slug']} is still serving, nothing was pushed")
-        hold_profile_session(profile_name, config_file, pid)
         return "live"
     print(t("cli.kaggle.session.gone", slug=record["slug"]))
     _forget_kernel_record(record["slug"], config_file)
@@ -1667,13 +1727,16 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
     record = profile_kernel_record(profile_name, config_file)
     if record is None:
         return None
-    _slug, holders = release_profile_session(profile_name, config_file, pid)
+    _slug, holders = claim_session_end(profile_name, config_file, pid)
     if holders:
         print(t("cli.kaggle.session.still_used",
                 slug=record["slug"], count=len(holders)))
         return None
     executable = _existing_executable(which_fn, home_dir)
     if executable is None:
+        # Nothing is going to be deleted, so the record has to go back to being
+        # adoptable instead of staying spoken for by an ending that never ran.
+        drop_session_claim(profile_name, config_file)
         print(t("cli.kaggle.session.no_cli", slug=record["slug"]))
         return None
     print(t("cli.kaggle.session.stopping", slug=record["slug"]))
@@ -1683,6 +1746,7 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
     except RuntimeError as error:
         # Saying nothing here would leave quota draining behind a screen that
         # already said goodbye.
+        drop_session_claim(profile_name, config_file)
         print(t("cli.kaggle.session.stop_failed", slug=record["slug"], error=error))
         return None
     _forget_kernel_record(record["slug"], config_file)

@@ -466,6 +466,7 @@
   "cli.kaggle.session.stopped": "Sessão encerrada e kernel {slug} apagado. A quota para aqui.",
   "cli.kaggle.session.stop_failed": "Não consegui encerrar a sessão do Kaggle {slug}: {error}. Ela pode continuar gastando quota. Pare com: isaacli kaggle --stop",
   "cli.kaggle.session.no_cli": "O CLI do Kaggle não está mais nesta máquina, então a sessão {slug} não pôde ser encerrada daqui. Ela pode continuar gastando quota: pare pela página do Kaggle.",
+  "cli.kaggle.session.no_lock": "NOTE: este sistema de arquivos não conseguiu travar {path}, então duas janelas do isaacli não estão sendo separadas aqui. Feche uma janela por vez, ou uma delas pode encerrar um kernel que a outra ainda usa.",
   "cli.kaggle.session.still_used": "Deixando o kernel {slug} no ar: outra janela do isaacli ainda está usando ele ({count}). A última a fechar encerra.",
   "cli.kaggle.switch.title": "O kernel {slug} está servindo {model}. O que você quer fazer?",
   "cli.kaggle.switch.keep": "Continuar com {model} no ar · não gasta nada",
