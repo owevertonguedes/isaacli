@@ -1273,6 +1273,32 @@ check(len(catalogues) > 1 and not missing,
 check(not mismatched,
       f"a message takes the same placeholders in every language ({mismatched or 'aligned'})")
 
+# `--help` is the first thing anybody sees of this program, and every row of the
+# commands section ran past 80 columns, the longest at 132. A terminal that
+# narrow wraps them itself, wherever the character happens to land, which breaks
+# the very column the alignment exists to make.
+import importlib as _importlib
+import os as _os
+import re as _re
+
+_cli_module = _importlib.import_module("cli")
+
+_ANSI = _re.compile(r"\033\[[0-9;]*m")
+for _width in (80, 100, 132):
+    _os.environ["COLUMNS"] = str(_width)
+    _too_wide = [
+        line for line in _cli_module._commands_epilog().splitlines()
+        if len(_ANSI.sub("", line)) > _width
+    ]
+    check(not _too_wide,
+          f"the commands section of --help fits {_width} columns "
+          f"({_too_wide[:1] or 'fits'})")
+_os.environ["COLUMNS"] = "100"
+_epilog = _cli_module._commands_epilog()
+check("isaacli uninstall --purge --kaggle" in _ANSI.sub("", _epilog)
+      and "authentication files" in _epilog,
+      "wrapping the commands section keeps every command and its whole description")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

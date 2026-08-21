@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import textwrap
 import subprocess
 import sys
 import time
@@ -723,10 +724,18 @@ def _commands_epilog():
     header = _color(t("cli.args.commands_header"), "help_header")
     rows = [row.split("|", 1) for row in t("cli.args.commands").split("\n")]
     width = max(len(command) for command, _ in rows) + 3
-    lines = [
-        f"  {_color_command(command)}{' ' * (width - len(command))}{description}"
-        for command, description in rows
-    ]
+    # This is the first thing anybody sees of the program, and every row of it
+    # ran past 80 columns, the longest at 132. A terminal that narrow wraps them
+    # itself, at whatever character lands there, which breaks the column the
+    # alignment exists to make. Wrapping deliberately keeps the column.
+    available = max(shutil.get_terminal_size((80, 24)).columns, 40)
+    body = max(available - width - 2, 24)
+    lines = []
+    for command, description in rows:
+        wrapped = textwrap.wrap(description.strip(), body) or [""]
+        pad = " " * (width - len(command))
+        lines.append(f"  {_color_command(command)}{pad}{wrapped[0]}")
+        lines.extend(f"  {' ' * width}{piece}" for piece in wrapped[1:])
     return "\n".join([t("cli.args.epilog"), "", header, *lines])
 
 
