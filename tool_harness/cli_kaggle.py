@@ -1,5 +1,6 @@
 """Kaggle CLI installation and explicit remote-kernel orchestration."""
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -1077,6 +1078,9 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
         "slug": slug, "url": url,
         "web_url": f"https://www.kaggle.com/code/{slug}",
         "profile": profile_name, "model": model["alias"], "account": account,
+        # The window that spent the quota is holding it from this moment on, so
+        # a second window opening later adds itself rather than inheriting it.
+        "holders": [os.getpid()],
     })
     config.save(data, config_file)
     secret_path = Path(config_file).with_name("secrets.json") if config_file else None
@@ -1408,8 +1412,100 @@ def _record_environment(record, config_file=None):
     return _account_environment(account, config_file)
 
 
+def _kernel_lock(config_file=None):
+    """Serialise the read, change and write of the holder list across processes.
+
+    Two windows opening at the same moment both read the record, both add
+    themselves and one of the two writes last, so one holder is silently lost
+    and the kernel it was using can be deleted underneath it. `config.save` is
+    atomic, which keeps the file whole, and that is a different guarantee from
+    keeping the update whole.
+    """
+    path = (Path(config_file) if config_file else config.config_path()).with_name(
+        "kaggle-kernels.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        # A filesystem with no working locks is worse served by refusing to
+        # close the session than by the race this was guarding against.
+        debug.swallowed("cli_kaggle._kernel_lock flock")
+    return handle
+
+
+def _holder_alive(pid):
+    """Whether the window that wrote this number is still running.
+
+    A window that was killed rather than closed never removes itself, and
+    treating its number as live would pin the kernel, and the quota it spends,
+    on a process that no longer exists.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # It exists and belongs to somebody else. Existing is the question.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _update_holders(profile_name, config_file, change):
+    """Apply `change` to one record's holder list under the cross-process lock."""
+    handle = _kernel_lock(config_file)
+    try:
+        data = config.load(config_file)
+        for record in reversed((data.get("kaggle") or {}).get("kernels") or []):
+            if record.get("profile") != profile_name or not record.get("slug"):
+                continue
+            holders = [
+                number for number in record.get("holders") or []
+                if _holder_alive(number)
+            ]
+            record["holders"] = change(holders)
+            config.save(data, config_file)
+            return record["slug"], record["holders"]
+        return None, []
+    finally:
+        handle.close()
+
+
+def hold_profile_session(profile_name, config_file=None, pid=None):
+    """Record this window as a user of the kernel behind `profile_name`.
+
+    Reusing an endpoint that already answers is free, so every window does it,
+    and the first one to close used to delete the kernel the others were still
+    talking to. Holding is what tells the last window out that it really is the
+    last, which is also what keeps the quota brake inside the program.
+    """
+    pid = os.getpid() if pid is None else int(pid)
+    slug, _holders = _update_holders(
+        profile_name, config_file,
+        lambda holders: [*[n for n in holders if n != pid], pid])
+    return slug
+
+
+def release_profile_session(profile_name, config_file=None, pid=None):
+    """Drop this window from the record, and answer who is still holding it."""
+    pid = os.getpid() if pid is None else int(pid)
+    slug, holders = _update_holders(
+        profile_name, config_file,
+        lambda holders: [n for n in holders if n != pid])
+    return slug, holders
+
+
 def ensure_profile_session(profile_name, input_fn=None, config_file=None,
-                           urlopen_fn=urllib.request.urlopen, run_kaggle_fn=None):
+                           urlopen_fn=urllib.request.urlopen, run_kaggle_fn=None,
+                           pid=None):
     """Reopen the saved Kaggle kernel, or ask before spending quota on another.
 
     Reactivating a kernel that is still serving costs nothing, so it happens
@@ -1426,6 +1522,7 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
     if _endpoint_answers(profile, _secret_path(config_file), urlopen_fn):
         debug.note("cli_kaggle.ensure_profile_session",
                    f"{record['slug']} is still serving, nothing was pushed")
+        hold_profile_session(profile_name, config_file, pid)
         return "live"
     print(t("cli.kaggle.session.gone", slug=record["slug"]))
     _forget_kernel_record(record["slug"], config_file)
@@ -1449,7 +1546,7 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
 
 
 def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
-                         which_fn=shutil.which, home_dir=None):
+                         which_fn=shutil.which, home_dir=None, pid=None):
     """End the kernel this program launched for the profile it just used.
 
     What isaacli starts, isaacli stops. A Kaggle session spends quota by wall
@@ -1458,9 +1555,19 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
     the profile this process opened is touched: a second isaacli serving from
     another kernel of the same account must not have it deleted underneath it,
     and `isaacli kaggle --stop` is how those are reached.
+
+    Two windows can be talking to the same kernel, because reusing an endpoint
+    that already answers is free and both of them do it. Closing one of them
+    stops nothing while the other still holds the record; the last one out is
+    what ends the session, so the brake stays inside the program either way.
     """
     record = profile_kernel_record(profile_name, config_file)
     if record is None:
+        return None
+    _slug, holders = release_profile_session(profile_name, config_file, pid)
+    if holders:
+        print(t("cli.kaggle.session.still_used",
+                slug=record["slug"], count=len(holders)))
         return None
     executable = _existing_executable(which_fn, home_dir)
     if executable is None:

@@ -465,6 +465,7 @@
   "cli.kaggle.session.stopped": "Session ended and kernel {slug} deleted. The quota stops here.",
   "cli.kaggle.session.stop_failed": "Could not end the Kaggle session {slug}: {error}. It may still be spending quota. Stop it with: isaacli kaggle --stop",
   "cli.kaggle.session.no_cli": "The Kaggle CLI is not on this machine any more, so the session {slug} could not be ended from here. It may still be spending quota: stop it on the Kaggle page.",
+  "cli.kaggle.session.still_used": "Leaving kernel {slug} running: {count} other isaacli window is still using it. The last one to close ends it.",
   "model.origin.curated": "reviewed here",
   "model.origin.scored": "public score",
   "model.origin.discovered": "found live, no evidence",

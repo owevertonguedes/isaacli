@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -1565,6 +1566,83 @@ check(not wrong_key_live,
       "a saved endpoint holding the wrong key is not reported as live")
 check(probe_paths and not any(path.endswith("/v1/models") for path in probe_paths),
       "the liveness probe uses a route the server refuses without the key")
+
+# Two isaacli windows on the same kernel. Reusing an endpoint that already
+# answers costs nothing, so both of them do it, and the one that closes first
+# used to delete the kernel underneath the other. Proven by effect: the delete
+# command is not issued while somebody else still holds the record.
+shared_file = session_config(root / "session-shared" / "config.json")
+other_process = subprocess.Popen(["sleep", "120"])
+shared_commands = []
+
+
+def shared_run(command, check=False, capture_output=False, text=False, env=None,
+               **kwargs):
+    shared_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.hold_profile_session(
+        "kaggle-one", config_file=shared_file, pid=other_process.pid)
+    held_state = cli_kaggle.ensure_profile_session(
+        "kaggle-one", input_fn=refuse_typing, config_file=shared_file,
+        urlopen_fn=answering_endpoint,
+        run_kaggle_fn=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("a live kernel was relaunched")))
+with redirect_stdout(io.StringIO()) as shared_output:
+    shared_stop = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=shared_file, run_fn=shared_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+shared_state = config.load(shared_file)
+check(held_state == "live" and shared_stop is None
+      and not any("kernels delete" in " ".join(command)
+                  for command in shared_commands)
+      and (shared_state["kaggle"]["kernels"] or [{}])[0]["slug"]
+      == "owner/isaacli-gpu-1",
+      "closing one window leaves the kernel another window is still using")
+
+# And the last one out does end it, otherwise the brake on quota is gone.
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.release_profile_session(
+        "kaggle-one", config_file=shared_file, pid=other_process.pid)
+    last_stop = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=shared_file, run_fn=shared_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+other_process.kill()
+other_process.wait()
+check(last_stop == "owner/isaacli-gpu-1"
+      and any("kernels delete" in " ".join(command)
+              for command in shared_commands)
+      and not (config.load(shared_file)["kaggle"] or {}).get("kernels"),
+      "the last window out ends the kernel and forgets it")
+
+# A window that was killed rather than closed leaves its number behind. Holding
+# the kernel forever because of a process that no longer exists would put the
+# quota brake back out of reach.
+stale_file = session_config(root / "session-stale" / "config.json")
+stale_commands = []
+
+
+def stale_run(command, check=False, capture_output=False, text=False, env=None,
+              **kwargs):
+    stale_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+dead_process = subprocess.Popen(["sleep", "0.01"])
+dead_pid = dead_process.pid
+dead_process.wait()
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.hold_profile_session(
+        "kaggle-one", config_file=stale_file, pid=dead_pid)
+    cli_kaggle.hold_profile_session("kaggle-one", config_file=stale_file)
+    stale_stop = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=stale_file, run_fn=stale_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+check(stale_stop == "owner/isaacli-gpu-1"
+      and any("kernels delete" in " ".join(command) for command in stale_commands),
+      "a window that was killed does not keep the kernel alive forever")
 
 config.save_secret("probe-key", "right", probe_file.with_name("secrets.json"))
 with redirect_stdout(io.StringIO()):

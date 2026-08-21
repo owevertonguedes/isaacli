@@ -259,7 +259,10 @@ class CommandsMixin:
                     # end, exactly like one opened from the command line.
                     import cli_kaggle
 
-                    if cli_kaggle.profile_kernel_record(name, self.config_file):
+                    # Holding it is what makes this window one of its users
+                    # rather than its owner: another window may be talking to
+                    # the same kernel, and the last one out is what ends it.
+                    if cli_kaggle.hold_profile_session(name, self.config_file):
                         self.kaggle_profile = name
                     self._log("meta", event="kaggle", profile=name,
                               model=self.model, thinking=self.thinking)
