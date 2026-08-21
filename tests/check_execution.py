@@ -519,6 +519,31 @@ print('python3 fine', seen)
               and "(exit code: 0)" in out,
               f"pytest still runs under the filter: {out[:300]!r}")
 
+print("\n=== 10c. a layer that goes missing has to say so ===")
+# A layer that disappears in silence is worse than no layer, because we stop
+# looking for it. Both of these are absences the program is designed to survive,
+# and the notice is the whole safeguard, so the notice itself is tested.
+original_cgroup_prefix = execution._cgroup_prefix
+original_seccomp_fd = execution._seccomp_fd
+try:
+    execution._cgroup_prefix = lambda: None
+    without_cgroup = execution.run_command("ls")
+    check("NOTE:" in without_cgroup and "systemd-run" in without_cgroup
+          and "ceilings" in without_cgroup,
+          "a command that ran without the cgroup ceilings says so, and names what restores them")
+finally:
+    execution._cgroup_prefix = original_cgroup_prefix
+try:
+    execution._seccomp_fd = lambda: None
+    without_seccomp = execution.run_command("ls")
+    check("NOTE:" in without_seccomp and "seccomp" in without_seccomp,
+          "a command that ran without the seccomp filter says so")
+finally:
+    execution._seccomp_fd = original_seccomp_fd
+intact = execution.run_command("ls")
+check("NOTE:" not in intact,
+      "with every layer present nothing is announced, so a NOTE always means something")
+
 print("\n=== 11. the bait is still intact after everything ===")
 check(bait.exists(), "the bait exists")
 check(bait.read_text() == bait_original, "the bait was not modified")
