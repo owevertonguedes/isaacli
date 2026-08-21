@@ -628,6 +628,59 @@ check([row.split(" ")[0] for row in rows]
 check(picked["file"] == "Model-Q4_K_M.gguf" and cursor == 3,
       "the cursor starts on the heaviest precision that still leaves room")
 
+# Picking a precision the account has no dataset for silently changes the alias,
+# so the prepared input stops matching and the kernel goes back to downloading
+# tens of gigabytes with nothing on screen saying so. The row that is already
+# prepared says so and is where the cursor starts.
+def quantization_screen(prepared_fn, vram_mb=24576, overhead_mb=768):
+    screens = []
+    original = setup_ollama.terminal_ui.select
+    try:
+        setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
+            screens.append((options, kwargs.get("initial")))
+            or kwargs.get("initial", 0))
+        with redirect_stdout(io.StringIO()):
+            picked = setup_ollama._choose_quantization(
+                shelf_model, lambda _prompt="": "", setup_ollama.Translator("en"),
+                shelf_urlopen, vram_mb=vram_mb, overhead_mb=overhead_mb,
+                prepared_fn=prepared_fn)
+    finally:
+        setup_ollama.terminal_ui.select = original
+    return picked, screens[-1][0], screens[-1][1]
+
+
+# On 24 GiB the headroom rule alone would stop on Q6_K_L, so a cursor that lands
+# on Q4_K_M is the prepared weight winning and not a coincidence of ordering.
+_default_pick, _default_rows, default_cursor = quantization_screen(None)
+prepared_pick, prepared_rows, prepared_cursor = quantization_screen(
+    lambda item: item["file"] == "Model-Q4_K_M.gguf")
+check(default_cursor == 1 and prepared_pick["file"] == "Model-Q4_K_M.gguf"
+      and prepared_cursor == 3,
+      "the cursor starts on the precision this account already has prepared")
+check(sum(1 for row in prepared_rows if "prepared" in row) == 1
+      and "prepared" in prepared_rows[3],
+      "only the prepared precision is marked as prepared")
+
+# A prepared weight that will not load is still worth marking and is the wrong
+# place to leave the cursor: the launch would spend the hour and fail.
+too_big_pick, too_big_rows, too_big_cursor = quantization_screen(
+    lambda item: item["file"] == "Model-Q8_0.gguf", vram_mb=16384)
+check(too_big_pick["file"] == "Model-Q4_K_M.gguf" and too_big_cursor == 3
+      and "prepared" in too_big_rows[0],
+      "a prepared precision that does not fit is marked but not preselected")
+
+# A lookup that cannot answer is unknown, not an error: the screen still draws,
+# and it falls back to the rule it had before anybody asked about datasets.
+def refusing_lookup(_item):
+    raise RuntimeError("kaggle is unreachable")
+
+
+unknown_pick, unknown_rows, unknown_cursor = quantization_screen(
+    refusing_lookup, vram_mb=16384)
+check(unknown_pick["file"] == "Model-Q4_K_M.gguf" and unknown_cursor == 3
+      and not any("prepared" in row for row in unknown_rows),
+      "a lookup that fails leaves the screen unmarked instead of breaking it")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

@@ -1567,6 +1567,41 @@ check(not wrong_key_live,
 check(probe_paths and not any(path.endswith("/v1/models") for path in probe_paths),
       "the liveness probe uses a route the server refuses without the key")
 
+# The quantization screen has to know which precision this account already has,
+# because the alias is built from the file name: moving one row unhooks the
+# prepared dataset and the kernel goes back to downloading the weight.
+probe_calls = []
+
+
+def dataset_listing_run(command, check=False, capture_output=False, text=False,
+                        env=None, **kwargs):
+    probe_calls.append(list(map(str, command)))
+    return SimpleNamespace(
+        returncode=0,
+        stdout="ref,title\nowner/isaacli-model-qwen38-27b-ud-q4-k-m,Weight\n",
+        stderr="")
+
+
+weight_probe = cli_kaggle.prepared_weight_probe(
+    "/fake/kaggle", "owner", dataset_listing_run, {})
+check(weight_probe({"alias": "qwen38-27b-ud-q4-k-m", "cuda_arch": "75"})
+      and not weight_probe({"alias": "qwen38-27b-ud-q8-0", "cuda_arch": "75"})
+      and sum(1 for command in probe_calls if "datasets" in command) == 1,
+      "the account is asked once which precisions it already has prepared")
+
+
+def refusing_listing_run(command, check=False, capture_output=False, text=False,
+                         env=None, **kwargs):
+    return SimpleNamespace(returncode=1, stdout="", stderr="503")
+
+
+refusing_probe = cli_kaggle.prepared_weight_probe(
+    "/fake/kaggle", "owner", refusing_listing_run, {})
+with redirect_stdout(io.StringIO()) as refusing_output:
+    refused = refusing_probe({"alias": "qwen38-27b-ud-q4-k-m", "cuda_arch": "75"})
+check(refused is False and refusing_output.getvalue() == "",
+      "an account that cannot be asked answers unknown, quietly")
+
 # Two isaacli windows on the same kernel. Reusing an endpoint that already
 # answers costs nothing, so both of them do it, and the one that closes first
 # used to delete the kernel underneath the other. Proven by effect: the delete

@@ -419,14 +419,38 @@ def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
     return report if answer == model_discovery.text("model.discovery.yes") else None
 
 
+def _is_prepared(prepared_fn, item):
+    """Whether this exact file is already a dataset on the selected account.
+
+    A lookup that cannot answer is unknown, not a failure. The screen exists to
+    choose a precision, and losing it because Kaggle was unreachable would trade
+    a missing mark for a missing screen.
+    """
+    if prepared_fn is None:
+        return False
+    try:
+        return bool(prepared_fn(item))
+    except (RuntimeError, OSError) as error:
+        debug.note("setup_ollama._is_prepared", str(error))
+        return False
+
+
 def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
-                         vram_mb=None, overhead_mb=None):
+                         vram_mb=None, overhead_mb=None, prepared_fn=None):
     """Offer the other precisions of the model that was just chosen.
 
     Which model and how much of it are two different questions, and only the
     first was being asked. Fewer bits mean fewer bytes read per token and less
     memory, at a cost in quality nobody here has measured, so the screen states
     size and fit and says nothing about quality.
+
+    Precision is also what decides whether the prepared weight on the Kaggle
+    account still matches: the alias is built from the file name, so moving one
+    row changes it, the attached dataset stops being found and the kernel goes
+    back to downloading tens of gigabytes. That download has been measured at
+    both 50 MB/s and 5.7 MB/s on the same day, so it is the difference between
+    minutes and more than an hour of somebody's quota. The row that is already
+    prepared says so, and is where the cursor starts.
     """
     try:
         if "files" not in model and model.get("repo") and model.get("file"):
@@ -453,7 +477,7 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
     # per token, so the row says the size and the fit and nothing about speed.
     ranked = sorted([model, *variants],
                     key=lambda item: -item["model_bytes"])
-    options, entries, initial, tight = [], [], None, None
+    options, entries, initial, tight, ready = [], [], None, None, None
     for item in ranked:
         report = model_discovery.fit_report(
             item, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB)
@@ -470,9 +494,13 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
                 initial = len(entries)
             if tight is None:
                 tight = len(entries)
+        prepared = _is_prepared(prepared_fn, item)
+        if prepared and report["fits"] and ready is None:
+            ready = len(entries)
         entries.append(item)
         options.append(tr.t(
-            "model.quantization.option",
+            "model.quantization.option_prepared" if prepared
+            else "model.quantization.option",
             quantization=model_discovery.quantization_label(item["file"]),
             size=f"{item['model_bytes'] / 1024 ** 3:.2f}",
             fit=tr.t("model.fit.fits") if report["fits"]
@@ -480,9 +508,12 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
     index = _select(
         tr, tr.t("model.quantization.title"), options, input_fn,
         tr.t("model.quantization.explain"),
-        # Nothing leaves room: fall back to whatever fits at all, and if not
-        # even that, to the smallest, which is the only one with a chance.
-        initial=(initial if initial is not None
+        # A precision this account already has prepared wins the cursor, because
+        # moving off it is what silently turns a five minute launch back into a
+        # download. Otherwise the heaviest that leaves room, then whatever fits
+        # at all, then the smallest, which is the only one with a chance.
+        initial=(ready if ready is not None
+                 else initial if initial is not None
                  else tight if tight is not None else len(entries) - 1))
     return entries[index]
 
@@ -851,7 +882,8 @@ def _kaggle_accelerators():
 
 
 def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
-                             urlopen_fn=urllib.request.urlopen, onboarding_task=None):
+                             urlopen_fn=urllib.request.urlopen, onboarding_task=None,
+                             prepared_fn=None):
     """Combine the offline seed with live GGUF discovery for Kaggle."""
     import cli_kaggle
 
@@ -914,7 +946,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         model = _choose_quantization(
             models[selected], input_fn, Translator(), urlopen_fn,
             vram_mb=accelerator["vram_mb"],
-            overhead_mb=accelerator["overhead_mb"])
+            overhead_mb=accelerator["overhead_mb"], prepared_fn=prepared_fn)
         model = _kaggle_fit(model, accelerator)
         cli_kaggle.print_model_evidence(model)
         return model
@@ -932,7 +964,8 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         raise RuntimeError(str(error)) from error
     model = _choose_quantization(
         model, input_fn, Translator(), urlopen_fn,
-        vram_mb=accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"])
+        vram_mb=accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
+        prepared_fn=prepared_fn)
     report = model_discovery.fit_report(
         model, accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
     )
@@ -997,10 +1030,11 @@ def _with_dynamic_selector(entry, kwargs, urlopen_fn):
         except ValueError:
             debug.swallowed("setup_ollama._with_dynamic_selector onboarding")
             onboarding_task = None
-    cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH: (
+    cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH, \
+            prepared_fn=None: (
         _dynamic_kaggle_selector(
             _input, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
-            onboarding_task=onboarding_task,
+            onboarding_task=onboarding_task, prepared_fn=prepared_fn,
         )
     )
     try:
