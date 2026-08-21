@@ -1411,6 +1411,43 @@ check(len(catalogues) > 1 and not missing,
 check(not mismatched,
       f"a message takes the same placeholders in every language ({mismatched or 'aligned'})")
 
+# ----------------------------------------------------------------------
+# A key nobody asks for is translated text that no screen can ever show. The
+# comparison above keeps the two catalogues equal to each other, so an orphan
+# stays perfectly aligned in both files and reads as supported wording to
+# whoever writes the next screen. One did live that way, in both files, from the
+# commit that introduced it until a repository-wide sweep in 2026-08-22. Naming
+# it here would have put it back in the sources this check reads.
+#
+# Some keys are assembled at the call site (`t(f"model.origin.{name}")`), and a
+# literal search cannot see those. Every such call in this repository builds the
+# key from a literal prefix, so the prefixes are collected from the sources
+# themselves rather than listed here, where the list would drift.
+# ----------------------------------------------------------------------
+sources = {}
+for path in sorted((HERE.parent).rglob("*")):
+    if not path.is_file() or "locales" in path.parts or ".git" in path.parts:
+        continue
+    if path.suffix not in (".py", ".tmpl", ".sh") and path.name != "isaacli":
+        continue
+    if "tasks" in path.parts or "__pycache__" in path.parts:
+        continue
+    try:
+        sources[path] = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        continue
+source_blob = "\n".join(sources.values())
+dynamic_prefixes = tuple(
+    prefix for prefix in
+    set(re.findall(r"""t\(\s*f["']([a-z0-9_.]+\.)\{""", source_blob))
+)
+orphan_keys = sorted(
+    key for key in english
+    if key not in source_blob and not key.startswith(dynamic_prefixes)
+)
+check(not orphan_keys,
+      f"every catalogue key is asked for by some screen ({orphan_keys or 'all used'})")
+
 # `--help` is the first thing anybody sees of this program, and every row of the
 # commands section ran past 80 columns, the longest at 132. A terminal that
 # narrow wraps them itself, wherever the character happens to land, which breaks

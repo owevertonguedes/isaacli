@@ -398,7 +398,6 @@
   "model.discovery.ollama_unresolved": "esta referência do Ollama não identifica um arquivo GGUF no Hugging Face",
   "model.discovery.not_selected": "o modelo não foi selecionado",
   "model.discovery.scope": "pesos originais, não o GGUF quantizado",
-  "model.discovery.template_changed": "o gabarito de GPU do Kaggle não expõe mais a entrada de modelo",
   "model.discovery.error.http": "HTTP {code} em {url}",
   "model.discovery.error.request": "{reason} em {url}",
   "model.discovery.error.size_http": "HTTP {code} ao ler o tamanho do arquivo",
