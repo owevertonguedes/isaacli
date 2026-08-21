@@ -666,7 +666,15 @@ with redirect_stdout(out):
         app.main(["--help"])
     except SystemExit:
         pass
-check("--max-steps" not in out.getvalue(), "--max-steps stays hidden in the normal help")
+# The step-limit message tells the user to raise the ceiling with this exact
+# flag. While it was suppressed, --help denied that the flag existed, so the two
+# halves of the program disagreed in front of whoever had just hit the ceiling.
+# Whatever the message names, the help has to admit.
+check("--max-steps" in out.getvalue(),
+      "--max-steps appears in the help that the step-limit message sends people to")
+check("--max-steps" in EN.t("cli.error.step_limit", steps=12)
+      and "--max-steps" in PT.t("cli.error.step_limit", steps=12),
+      "both languages point at the flag by the name the parser accepts")
 
 out = io.StringIO()
 with redirect_stdout(out):

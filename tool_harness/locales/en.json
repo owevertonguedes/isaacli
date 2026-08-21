@@ -359,6 +359,7 @@
   "cli.args.commands": "isaacli setup|interactive first-run configuration\nisaacli kaggle|install/login, choose a GPU model, push a kernel and save its endpoint\nisaacli kaggle --prepare-assets|build the reusable CUDA runtime and weight assets; requests no GPU\nisaacli kaggle --flow-validation-cpu|plumbing validation only; never runs a model\nisaacli kaggle --stop|end a running Kaggle session, which is what stops the quota\nisaacli install|install the per-user launcher (./isaacli install)\nisaacli uninstall|remove the launcher only; config, sessions, Ollama and models are kept\nisaacli uninstall --purge|also delete isaacli config, API keys, sessions and feedback; third-party CLIs are preserved\nisaacli uninstall --purge --ollama|DANGER: also removes Ollama itself and every downloaded model (~/.ollama)\nisaacli uninstall --purge --kaggle|DANGER: also removes a Kaggle CLI installed by isaacli and Kaggle authentication files",
   "cli.args.request": "single request; without it the REPL opens",
   "cli.args.debug": "Show tracebacks for exceptions the normal flow absorbs",
+  "cli.args.max_steps": "how many tool steps one request may take before it stops unfinished (default 12)",
   "cli.args.resume": "resume a saved session",
   "ui.more_above": "↑ {count} more above",
   "ui.more_below": "↓ {count} more below",

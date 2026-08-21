@@ -359,6 +359,7 @@
   "cli.args.commands": "isaacli setup|configuração interativa do primeiro uso\nisaacli kaggle|instala e autentica, seleciona modelo de GPU, envia kernel e grava o endpoint\nisaacli kaggle --prepare-assets|constrói os assets reutilizáveis (runtime CUDA e peso); não pede GPU\nisaacli kaggle --flow-validation-cpu|somente validação do encanamento, nunca executa modelo\nisaacli kaggle --stop|encerra uma sessão do Kaggle em execução, que é o que para a quota\nisaacli install|instala o launcher do usuário (./isaacli install)\nisaacli uninstall|remove só o launcher; config, sessões, Ollama e modelos ficam intactos\nisaacli uninstall --purge|também apaga config do isaacli, chaves de API, sessões e feedback; CLIs de terceiros são preservados\nisaacli uninstall --purge --ollama|PERIGO: também remove o Ollama inteiro e todo modelo baixado (~/.ollama)\nisaacli uninstall --purge --kaggle|PERIGO: também remove um CLI do Kaggle instalado pelo isaacli e os arquivos de autenticação do Kaggle",
   "cli.args.request": "pedido único; sem ele o REPL abre",
   "cli.args.debug": "Mostra o traceback de exceções que o fluxo normal absorve",
+  "cli.args.max_steps": "quantos passos de ferramenta um pedido pode dar antes de parar inacabado (padrão 12)",
   "cli.args.resume": "retoma uma sessão salva",
   "ui.more_above": "↑ {count} acima",
   "ui.more_below": "↓ {count} abaixo",

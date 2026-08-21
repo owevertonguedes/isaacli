@@ -886,7 +886,10 @@ def main(argv=None):
     ap.add_argument("--model", dest="model", default=None)
     ap.add_argument("--resume", metavar="ID", help=t("cli.args.resume"))
     ap.add_argument("--workspace", "--dir", default=os.getcwd())
-    ap.add_argument("--max-steps", type=int, default=12, help=argparse.SUPPRESS)
+    # The step-limit message tells the user to raise the ceiling with this
+    # exact flag, so hiding it from --help made the program contradict itself.
+    ap.add_argument("--max-steps", type=int, default=12,
+                    help=t("cli.args.max_steps"))
     ap.add_argument("--debug", action="store_true", help=t("cli.args.debug"))
     args = ap.parse_args(arguments)
     debug.enable(args.debug or debug.enabled_from_environment())
