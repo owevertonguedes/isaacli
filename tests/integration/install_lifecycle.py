@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pwd
+import re
 import grp
 import shutil
 import stat
@@ -226,7 +227,15 @@ def lifecycle():
           and launcher.resolve() == CLONE / "isaacli",
           "install creates exactly one idempotent per-user symlink")
     version = run(["isaacli", "--version"], cwd="/tmp")
-    check(version.returncode == 0 and "Isaac CLI v0.4.0-dev" in version.stdout,
+    # The number is read from the archive being tested, not written here. A
+    # literal froze at 0.4.0-dev and would have failed every run since, which
+    # is a test that only ever reports the day somebody edited one constant.
+    declared = re.search(
+        r'APP_VERSION\s*=\s*"([^"]+)"',
+        (CLONE / "tool_harness" / "cli_presentation.py").read_text(
+            encoding="utf-8"))
+    check(version.returncode == 0 and declared
+          and f"Isaac CLI v{declared.group(1)}" in version.stdout,
           "the PATH launcher works outside the clone and preserves arguments")
 
     launcher.unlink()
@@ -394,9 +403,48 @@ def lifecycle():
           "moving a clone leaves a broken link that currently needs manual cleanup")
 
 
+def kaggle_new_user():
+    """A user who has never touched Kaggle, reaching a real account from zero.
+
+    This is the one path that cannot be faked and cannot be run for free by
+    anybody: it needs a real credential, so it is skipped, loudly, when
+    `ISAACLI_KAGGLE_TOKEN` is absent, and the credential arrives through the
+    environment because it must never enter the repository. Only the CPU flow
+    validation is exercised, never a GPU launch: this test must be repeatable
+    without spending a weekly quota that does not come back.
+    """
+    token = os.environ.get("ISAACLI_KAGGLE_TOKEN")
+    if not token:
+        print("NOTE: ISAACLI_KAGGLE_TOKEN is not set, so the Kaggle path from a "
+              "clean machine was not exercised. Set it to a real access token "
+              "to run it. No GPU quota is spent either way.")
+        return
+    environment = {**ENV, "ISAACLI_KAGGLE_TOKEN": token}
+    # Installing the CLI, registering the account and running the flow probe are
+    # three answers on three screens: confirm the install, paste the token, and
+    # confirm the push.
+    result = run(["isaacli", "kaggle", "--flow-validation-cpu"],
+                 env=environment, input_text=f"yes\n{token}\nyes\n")
+    config_file = CONFIG / "config.json"
+    saved = json.loads(config_file.read_text(encoding="utf-8")) if (
+        config_file.exists()) else {}
+    accounts = ((saved.get("kaggle") or {}).get("accounts") or {})
+    check(result.returncode == 0 and accounts,
+          "a machine with no Kaggle at all reaches a real account and pushes a probe")
+    check(token not in config_file.read_text(encoding="utf-8"),
+          "the credential never lands in the config file")
+    # Whatever that probe left on the account is this program's to remove, and
+    # the uninstall is the only place that offers it.
+    purge = run(["isaacli", "uninstall", "--purge", "--kaggle"],
+                env=environment, input_text="uninstall kaggle\nyes\n")
+    check(purge.returncode == 0 and not config_file.exists(),
+          "the Kaggle purge reaches the account and then clears the machine")
+
+
 if __name__ == "__main__":
     try:
         lifecycle()
+        kaggle_new_user()
     finally:
         remove_official_fixture()
     print()

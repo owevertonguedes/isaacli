@@ -85,6 +85,7 @@ done
     --env HOME=/home/isaac \
     --env PATH=/home/isaac/.local/bin:/usr/local/bin:/usr/bin:/bin \
     --env ISAACLI_RUNTIME_DIR=/tmp/isaacli-runtime \
+    --env "ISAACLI_KAGGLE_TOKEN=${ISAACLI_KAGGLE_TOKEN:-}" \
     "$container" python3 /opt/isaacli/tests/integration/install_lifecycle.py \
     | tee "$log"
 
