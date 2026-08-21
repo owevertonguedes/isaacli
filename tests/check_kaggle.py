@@ -1567,6 +1567,140 @@ check(not wrong_key_live,
 check(probe_paths and not any(path.endswith("/v1/models") for path in probe_paths),
       "the liveness probe uses a route the server refuses without the key")
 
+# Changing model while a kernel is serving used to be impossible from inside the
+# program: the flow reactivated the saved profile and returned before the model
+# list was ever drawn, so the only way through was to guess that
+# `isaacli kaggle --stop` had to be run first.
+def switch_config(path):
+    config.save({
+        "language": "en", "default_profile": "kaggle-live",
+        "profiles": {"kaggle-live": {
+            "provider": "openai_compatible", "provider_name": "Kaggle",
+            "base_url": "https://switch.trycloudflare.com/v1",
+            "model": "qwen38-27b", "credential": "switch-key"}},
+        "kaggle": {"kernels": [{
+            "slug": "user/isaacli-gpu-live",
+            "url": "https://switch.trycloudflare.com",
+            "profile": "kaggle-live", "model": "qwen38-27b", "account": "user"}]},
+    }, path)
+    config.save_secret("switch-key", "k", path.with_name("secrets.json"))
+    cli_kaggle.register_account("user", {"key": "account-key"}, path)
+    return path
+
+
+def switch_run_factory(commands):
+    def run(command, check=False, capture_output=False, text=False, env=None,
+            **kwargs):
+        commands.append(list(map(str, command)))
+        joined = " ".join(map(str, command))
+        if " quota" in joined:
+            return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+        if "kernels list" in joined:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ref,title\nuser/isaacli-gpu-live,Live\n", stderr="")
+        if "kernels status" in joined:
+            return SimpleNamespace(
+                returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+        if "config view" in joined:
+            return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
+        if "datasets list" in joined:
+            return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    return run
+
+
+switch_screens = []
+original_switch_select = cli_kaggle.terminal_ui.select
+
+
+def recording_select(title, options, **kwargs):
+    # Only the switch screen is being answered here. Every other screen keeps
+    # its real behaviour, otherwise this would be answering the account picker
+    # too and testing something nobody wrote.
+    if "serving" not in title:
+        return original_switch_select(title, options, **kwargs)
+    switch_screens.append((title, list(options), kwargs.get("disabled")))
+    return switch_choice[0]
+
+
+keep_file = switch_config(root / "switch-keep" / "config.json")
+keep_commands = []
+switch_choice = [0]
+try:
+    cli_kaggle.terminal_ui.select = recording_select
+    with redirect_stdout(io.StringIO()):
+        keep_code = cli_kaggle.run_kaggle(
+            input_fn=lambda _prompt: "1", run_fn=switch_run_factory(keep_commands),
+            which_fn=lambda _name: "/fake/kaggle", config_file=keep_file,
+            home_dir=home, urlopen_fn=lambda _r, timeout=0: HealthyAnswer())
+finally:
+    cli_kaggle.terminal_ui.select = original_switch_select
+check(keep_code == 0
+      and not any("kernels delete" in " ".join(c) for c in keep_commands)
+      and not any("kernels push" in " ".join(c) for c in keep_commands)
+      and switch_screens
+      and config.load(keep_file)["default_profile"] == "kaggle-live",
+      "a live kernel offers a choice, and keeping it spends nothing")
+
+replace_file = switch_config(root / "switch-replace" / "config.json")
+replace_commands = []
+switch_screens.clear()
+switch_choice = [1]
+pushed_models = []
+original_select_model = cli_kaggle._select_model
+try:
+    cli_kaggle.terminal_ui.select = recording_select
+    cli_kaggle._select_model = lambda _input, catalog_path=None, prepared_fn=None: (
+        pushed_models.append(prepared_fn) or {
+            "repo": "org/Repo-GGUF", "file": "Model-Q4_K_M.gguf",
+            "alias": "model-q4-k-m", "name": "Model", "model_bytes": 10 * 1024 ** 3,
+            "machine_shape": "NvidiaTeslaT4", "cuda_arch": "75", "gpu_count": 2})
+    with redirect_stdout(io.StringIO()) as replace_output:
+        replace_code = cli_kaggle.run_kaggle(
+            # Only the push is being answered yes here. Preparing assets is a
+            # different question with its own cost, and answering it by accident
+            # would send a CPU kernel this check never meant to send.
+            input_fn=lambda prompt: (
+                "y" if "Push" in prompt
+                else "1" if "Select" in prompt
+                else "n"),
+            run_fn=switch_run_factory(replace_commands),
+            which_fn=lambda _name: "/fake/kaggle", config_file=replace_file,
+            home_dir=home, urlopen_fn=lambda _r, timeout=0: HealthyAnswer(),
+            popen_fn=lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("tunnel discovery not exercised here")))
+finally:
+    cli_kaggle.terminal_ui.select = original_switch_select
+    cli_kaggle._select_model = original_select_model
+check(any("kernels delete" in " ".join(c) for c in replace_commands)
+      and any("kernels push" in " ".join(c) for c in replace_commands)
+      and pushed_models,
+      "choosing another model ends the live kernel and offers the model list")
+
+# Ending it would take the session away from a window that is still using it, so
+# that option is shown and refused rather than quietly missing.
+held_file = switch_config(root / "switch-held" / "config.json")
+held_commands = []
+switch_screens.clear()
+switch_choice = [0]
+held_process = subprocess.Popen(["sleep", "120"])
+try:
+    cli_kaggle.hold_profile_session(
+        "kaggle-live", config_file=held_file, pid=held_process.pid)
+    cli_kaggle.terminal_ui.select = recording_select
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.run_kaggle(
+            input_fn=lambda _prompt: "1", run_fn=switch_run_factory(held_commands),
+            which_fn=lambda _name: "/fake/kaggle", config_file=held_file,
+            home_dir=home, urlopen_fn=lambda _r, timeout=0: HealthyAnswer())
+finally:
+    cli_kaggle.terminal_ui.select = original_switch_select
+    held_process.kill()
+    held_process.wait()
+check(switch_screens and switch_screens[0][2] == {1},
+      "replacing is refused while another window is using that kernel")
+
 # The quantization screen has to know which precision this account already has,
 # because the alias is built from the file name: moving one row unhooks the
 # prepared dataset and the kernel goes back to downloading the weight.

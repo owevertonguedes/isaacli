@@ -519,11 +519,12 @@ def _quota_summary(text):
     return " ".join((text or "").split())
 
 
-def _choose(title, options, input_fn, initial=0):
+def _choose(title, options, input_fn, initial=0, disabled=None):
     """One selection screen, drawn the way the rest of isaacli draws them."""
     return terminal_ui.select(
         title, options, input_fn=input_fn,
         prompt=t("select.prompt"), invalid=t("select.invalid"), initial=initial,
+        disabled=disabled,
         more_above=t("ui.more_above", count="{count}"),
         more_below=t("ui.more_below", count="{count}"),
     )
@@ -1664,6 +1665,44 @@ def _reactivate_live_profile(live, config_file=None, account=None,
     return None, None
 
 
+def _live_holders(profile_name, config_file=None, pid=None):
+    """The other windows holding this record right now, this one aside."""
+    pid = os.getpid() if pid is None else int(pid)
+    record = profile_kernel_record(profile_name, config_file)
+    if record is None:
+        return []
+    return [
+        number for number in record.get("holders") or []
+        if number != pid and _holder_alive(number)
+    ]
+
+
+def _offer_switch(record, profile_name, input_fn, config_file=None):
+    """Keep the kernel that is serving, or end it and choose another model.
+
+    Reactivating whatever was already up and returning made changing model from
+    inside the program impossible: the model list was never drawn, so the only
+    way through was to know that `isaacli kaggle --stop` had to be run first.
+    Both answers cost something and the screen says which: keeping it spends
+    nothing, replacing it deletes a running kernel and pushes one that starts
+    spending quota again.
+    """
+    holders = _live_holders(profile_name, config_file)
+    index = _choose(
+        t("cli.kaggle.switch.title",
+          model=record.get("model", "?"), slug=record.get("slug", "?")),
+        [t("cli.kaggle.switch.keep", model=record.get("model", "?")),
+         t("cli.kaggle.switch.replace") if not holders
+         else t("cli.kaggle.switch.replace_held", count=len(holders))],
+        input_fn,
+        # Ending it would take the session away from a window that is still
+        # using it. The option stays visible, refusing with its reason, because
+        # an option that quietly disappears reads as a program that forgot.
+        disabled={1} if holders else None,
+    )
+    return index == 0
+
+
 def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 popen_fn=subprocess.Popen, config_file=None, home_dir=None,
                 record_path=None, which_fn=shutil.which,
@@ -1703,9 +1742,19 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 live, config_file, account=account, urlopen_fn=urlopen_fn,
             )
             if profile:
-                print(t("cli.kaggle.reused", profile=profile,
-                        url=record["url"] + "/v1"))
-                return 0
+                keep = _offer_switch(record, profile, input_fn, config_file)
+                if keep:
+                    print(t("cli.kaggle.reused", profile=profile,
+                            url=record["url"] + "/v1"))
+                    return 0
+                try:
+                    stop_kernel(executable, record["slug"], run_fn, environment)
+                except RuntimeError as error:
+                    print(t("cli.kaggle.failed", error=error))
+                    return 1
+                _forget_kernel_record(record["slug"], config_file)
+                print(t("cli.kaggle.switch.stopped", slug=record["slug"]))
+                live = [item for item in live if item[0] != record["slug"]]
             saved_refs = {
                 item.get("slug") for item in
                 (config.load(config_file).get("kaggle") or {}).get("kernels", [])
@@ -1714,8 +1763,11 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             if any(ref in saved_refs for ref, _state in live):
                 print(t("cli.kaggle.unresponsive"))
                 return 1
-        print(t("cli.kaggle.second_refused"))
-        return 1
+        # Ending the one kernel that was serving can leave the account with
+        # nothing running, and then this is an ordinary first launch.
+        if live:
+            print(t("cli.kaggle.second_refused"))
+            return 1
     if validation_cpu:
         print(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}
