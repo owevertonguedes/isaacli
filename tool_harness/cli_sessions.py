@@ -17,6 +17,7 @@ from pathlib import Path
 
 import agent
 import terminal_ui
+import workspace_instructions
 from cli_i18n import t
 from cli_presentation import _color, _format_markdown_terminal
 
@@ -106,11 +107,22 @@ def _resume_command(session_id):
     return f"{shlex.quote(str(launcher))} --resume {session_id}"
 
 
-def _build_history(workspace):
-    return [{"role": "system", "content": (
+def _build_history(workspace, instructions=None):
+    instructions = instructions or workspace_instructions.load_workspace_instructions(workspace)
+    content = (
         agent.TOOLS_KNOWLEDGE + "\n\n" +
         CLI_KNOWLEDGE.format(workspace=str(workspace))
-    )}]
+    )
+    if instructions.prompt:
+        content += "\n\n" + instructions.prompt
+    return [{"role": "system", "content": content}]
+
+
+def _workspace_transition(workspace):
+    return {"role": "system", "content": (
+        f"The working directory is now: {workspace}\n"
+        "Instructions from the previous workspace no longer apply."
+    )}
 
 
 def _load_session(session_id):
@@ -147,14 +159,15 @@ def _load_session(session_id):
 
     model = next((field(e, "model", "modelo") for e in reversed(events)
                   if field(e, "model", "modelo")), None)
-    history = _build_history(workspace)
+    instructions = workspace_instructions.load_workspace_instructions(workspace)
+    history = _build_history(workspace, instructions)
     transcript = []
     pending_tool = None
     tool_number = 0
     for event in events:
         kind = field(event, "type", "tipo")
         if kind == "meta" and field(event, "event", "evento") == "clear":
-            history = _build_history(workspace)
+            history = _build_history(workspace, instructions)
             transcript = []
         elif kind == "user" and isinstance(event.get("content"), str):
             history.append({"role": "user", "content": event["content"]})
@@ -194,7 +207,8 @@ def _load_session(session_id):
             if event["content"]:
                 transcript.append(("assistant", event["content"]))
     return {"id": session_id, "path": path, "workspace": workspace,
-            "model": model, "history": history, "transcript": transcript}
+            "model": model, "history": history, "transcript": transcript,
+            "workspace_instructions": instructions}
 
 
 class SessionsMixin:
@@ -240,6 +254,7 @@ class SessionsMixin:
         print(_color(t("cli.new.session", id=new_id), "assistant"))
         print(_color(t("cli.new.previous", path=previous_path), "dim"))
         print(_color(t("cli.new.resume", command=_resume_command(previous_id)), "dim"))
+        self._show_workspace_instruction_warning()
 
     def list_sessions(self):
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)

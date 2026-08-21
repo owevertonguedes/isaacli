@@ -41,6 +41,7 @@ import config
 import debug
 import terminal_ui
 import tools
+import workspace_instructions
 from cli_i18n import set_language, t
 from cli_permissions import (
     DESTRUCTIVE_COMMANDS, DESTRUCTIVE_GIT, READ_ONLY_COMMANDS, READ_ONLY_GH,
@@ -56,7 +57,7 @@ from cli_presentation import (
 from cli_sessions import (
     CLI_KNOWLEDGE, FEEDBACK_DIR, SESSION_ID_LEGACY, SESSION_ID_UUID,
     SESSIONS_DIR, SessionsMixin, _build_history, _load_session, _new_session_id,
-    _now, _resume_command, _valid_session_id,
+    _now, _resume_command, _valid_session_id, _workspace_transition,
 )
 from cli_commands import (
     COMMAND_ALIASES, COMMANDS, SLASH_COMMANDS, CommandsMixin, _CommandCompleter,
@@ -211,7 +212,7 @@ def _read_input():
 class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
                  thinking=None, num_ctx=None, config_file=None, provider=None,
-                 temperature=None):
+                 temperature=None, workspace_instructions_snapshot=None):
         self.model = model
         self.thinking = thinking
         self.num_ctx = num_ctx
@@ -260,11 +261,16 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self._stream_started = False
         self._output_block = False
         self.resume_transcript = []
-        self.set_workspace(self.workspace, reset=True)
+        self.workspace_instructions = None
+        self._pending_workspace_instruction_warning = ""
+        self.set_workspace(
+            self.workspace, reset=True,
+            instructions=workspace_instructions_snapshot,
+        )
         self._log("meta", event="start", pid=os.getpid(), model=self.model,
                   workspace=str(self.workspace))
 
-    def set_workspace(self, path, reset=False):
+    def set_workspace(self, path, reset=False, instructions=None):
         new = Path(path).expanduser().resolve()
         if not new.exists():
             raise FileNotFoundError(t("cli.workspace.missing", path=new))
@@ -272,15 +278,29 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             raise NotADirectoryError(t("cli.workspace.not_dir", path=new))
         self.workspace = new
         tools.SANDBOX_ROOT = new
+        self.workspace_instructions = (
+            instructions or workspace_instructions.load_workspace_instructions(new)
+        )
+        self._pending_workspace_instruction_warning = ""
+        if self.workspace_instructions.warning_key:
+            self._pending_workspace_instruction_warning = t(
+                "cli.workspace.instructions_warning",
+                path=new / workspace_instructions.INSTRUCTIONS_NAME,
+                reason=t(self.workspace_instructions.warning_key,
+                         **self.workspace_instructions.warning_values),
+            )
         if reset or not self.history:
-            self.history = _build_history(new)
+            self.history = _build_history(new, self.workspace_instructions)
         else:
-            # Model-facing, so it stays English regardless of the interface language.
-            self.history.append({
-                "role": "system",
-                "content": f"The working directory is now: {new}",
-            })
+            self.history[0] = _build_history(new, self.workspace_instructions)[0]
+            self.history.append(_workspace_transition(new))
             self._log("meta", event="workspace", workspace=str(new))
+
+    def _show_workspace_instruction_warning(self):
+        if not self._pending_workspace_instruction_warning:
+            return
+        print(_color(self._pending_workspace_instruction_warning, "warn"))
+        self._pending_workspace_instruction_warning = ""
 
     def _show_working(self):
         continuing = self._working_visible
@@ -480,6 +500,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self._assistant_label_pending = True
 
     def ask(self, request):
+        self._show_workspace_instruction_warning()
         if not self.ensure_ollama(warn=True):
             if self.provider.get("provider") == "ollama":
                 print(t("cli.error.ollama_unavailable"))
@@ -624,6 +645,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         terminal_ui.clear()
         _print_welcome(self.model, self._engine_label(), self.workspace,
                        self.session_id)
+        self._show_workspace_instruction_warning()
         print()
 
         if self.resume_transcript:
@@ -999,6 +1021,7 @@ def main(argv=None):
         model, workspace, args.max_steps, thinking=thinking,
         num_ctx=(model_profile or {}).get("num_ctx"),
         temperature=(model_profile or {}).get("temperature"),
+        workspace_instructions_snapshot=(resumed or {}).get("workspace_instructions"),
     )
     cli.provider = cli._provider_from_profile(model_profile)
     cli.kaggle_profile = kaggle_profile

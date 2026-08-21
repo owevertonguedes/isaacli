@@ -188,6 +188,22 @@ BASE_MODEL=granite4:micro NUM_CTX=16384 ./scripts/build-model.sh
 `/bom`, `/ruim` and `/nota` still work as aliases for `/good`, `/bad` and
 `/score`.
 
+### Workspace instructions
+
+When a session starts, isaacli reads `<workspace>/AGENTS.md` before the first
+turn. Version 1 uses that exact filename at the workspace root: it does not walk
+parent directories and does not treat `CLAUDE.md` as an alias. The file must be
+UTF-8, regular, no larger than 32768 bytes and remain inside the workspace after
+symlinks are resolved. A missing file is normal; an invalid or unreadable one
+produces a warning and does not block the session.
+
+The contents are project conventions, not part of isaacli's safety policy. They
+are placed after the built-in tool, approval and sandbox rules and cannot
+replace them. Instructions are snapshotted at session start. `/workspace`,
+`/new` and `--resume` load the current file; `/clear` keeps the current session's
+snapshot. isaacli does not store a separate automatic copy in the JSONL session
+log, although model answers and tool results can repeat text from the file.
+
 Typing `/` on an empty prompt opens the command palette. Results filter while
 you type; arrow keys select and `Tab` inserts. When `prompt_toolkit` is not
 installed, GNU Readline `Tab` completion is the fallback. `Alt+Enter` inserts a

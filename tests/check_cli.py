@@ -15,6 +15,7 @@ import termios
 import time
 from contextlib import redirect_stdout, nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
@@ -266,6 +267,7 @@ if app.PromptSession is not None:
 
 sub = root / "project"
 sub.mkdir()
+(sub / "AGENTS.md").write_text("project-one-rule", encoding="utf-8")
 
 cli = app.IsaacCLI("isaac-granite", sub, 4, autostart_ollama=False)
 check(bool(app.SESSION_ID_UUID.fullmatch(cli.session_id)),
@@ -275,6 +277,8 @@ check(str(sub.resolve()) in cli.history[0]["content"],
       "the system prompt states the workspace")
 check("same language" in cli.history[0]["content"],
       "the system prompt requires answering in the user's language")
+check("project-one-rule" in cli.history[0]["content"],
+      "startup injects the workspace-root AGENTS.md")
 check(cli.session_path.exists(), "the CLI creates the session's JSONL log")
 
 out = io.StringIO()
@@ -283,10 +287,71 @@ with redirect_stdout(out):
 check(str(sub.resolve()) in out.getvalue(), "/workspace with no argument shows the folder")
 
 out = io.StringIO()
+(root / "AGENTS.md").write_text("project-two-rule", encoding="utf-8")
 with redirect_stdout(out):
     cli.internal_command(f"/workspace {root}")
 check(tools.SANDBOX_ROOT == root.resolve(), "/workspace swaps SANDBOX_ROOT")
 check(str(root.resolve()) in out.getvalue(), "/workspace echoes the new folder")
+check("project-two-rule" in cli.history[0]["content"]
+      and "project-one-rule" not in cli.history[0]["content"],
+      "/workspace replaces the previous project instructions")
+check("previous workspace no longer apply" in cli.history[-1]["content"],
+      "/workspace explicitly retires the previous instructions")
+
+bad_workspace = root / "bad-workspace"
+bad_workspace.mkdir()
+(bad_workspace / "AGENTS.md").write_bytes(b"\xff")
+bad_out = io.StringIO()
+with redirect_stdout(bad_out):
+    bad_cli = app.IsaacCLI("model", bad_workspace, 4, autostart_ollama=False)
+    bad_cli._engine_label = lambda: "test"
+    original_clear_bad = app.terminal_ui.clear
+    app.terminal_ui.clear = lambda: None
+    try:
+        bad_cli._initialize_repl()
+    finally:
+        app.terminal_ui.clear = original_clear_bad
+check(EN.t("cli.workspace.instructions_warning", path=bad_workspace / "AGENTS.md",
+           reason=EN.t("cli.workspace.instructions.invalid_utf8")) in bad_out.getvalue()
+      and len(bad_cli.history) == 1,
+      "an invalid AGENTS.md remains visible after REPL startup")
+
+pt_warning_config = root / "config-pt-warning.json"
+pt_warning_data = config.empty_config()
+pt_warning_data["language"] = "pt-BR"
+config.save(pt_warning_data, pt_warning_config)
+pt_warning_out = io.StringIO()
+with redirect_stdout(pt_warning_out):
+    pt_warning_cli = app.IsaacCLI(
+        "model", bad_workspace, 4, autostart_ollama=False,
+        config_file=pt_warning_config,
+    )
+    pt_warning_cli._show_workspace_instruction_warning()
+check(PT.t("cli.workspace.instructions.invalid_utf8") in pt_warning_out.getvalue(),
+      "the workspace instruction warning is rendered in Portuguese")
+app.set_language("en")
+
+empty_workspace = root / "empty-workspace"
+empty_workspace.mkdir()
+switch_cli = app.IsaacCLI("model", sub, 4, autostart_ollama=False)
+switch_cli.set_workspace(empty_workspace)
+check("project-one-rule" not in switch_cli.history[0]["content"],
+      "/workspace to a folder without AGENTS.md removes the previous instructions")
+invalid_switch_out = io.StringIO()
+with redirect_stdout(invalid_switch_out):
+    switch_cli.internal_command(f"/workspace {bad_workspace}")
+check(EN.t("cli.workspace.instructions.invalid_utf8") in invalid_switch_out.getvalue(),
+      "/workspace shows an instruction warning immediately")
+
+snapshot = app.workspace_instructions.load_workspace_instructions(sub)
+with patch.object(app.workspace_instructions, "load_workspace_instructions",
+                  side_effect=AssertionError("unexpected second load")):
+    resumed_constructor = app.IsaacCLI(
+        "model", sub, 4, autostart_ollama=False,
+        workspace_instructions_snapshot=snapshot,
+    )
+check(resumed_constructor.workspace_instructions is snapshot,
+      "resume construction reuses exactly the snapshot already loaded")
 
 out = io.StringIO()
 with redirect_stdout(out):
@@ -459,6 +524,7 @@ previous_path = cli_new.session_path
 cli_new.history.append({"role": "user", "content": "old context"})
 cli_new.turns = 3
 cli_new.commands.append({"id": 1})
+(sub / "AGENTS.md").write_text("project-one-reloaded", encoding="utf-8")
 with redirect_stdout(io.StringIO()):
     cli_new.internal_command("/new")
 check(cli_new.session_id != previous_session and cli_new.session_path != previous_path,
@@ -468,6 +534,19 @@ check(len(cli_new.history) == 1 and cli_new.turns == 0 and not cli_new.commands,
 check(f'"next_session": "{cli_new.session_id}"' in previous_path.read_text()
       and cli_new.session_path.exists(),
       "/new closes the previous log and starts the new one with traceability")
+check("project-one-reloaded" in cli_new.history[0]["content"],
+      "/new reloads the current AGENTS.md")
+
+cli_bad_new = app.IsaacCLI(
+    "new-model", bad_workspace, 4, autostart_ollama=False,
+    config_file=root / "config-bad-new.json",
+)
+cli_bad_new._show_workspace_instruction_warning()
+bad_new_out = io.StringIO()
+with redirect_stdout(bad_new_out):
+    cli_bad_new.internal_command("/new")
+check(EN.t("cli.workspace.instructions.invalid_utf8") in bad_new_out.getvalue(),
+      "/new shows the reloaded instruction warning after clearing the screen")
 
 cli_api = app.IsaacCLI(
     "api-model", sub, 4, autostart_ollama=False,
@@ -898,10 +977,14 @@ check(cli_no_profile.thinking is None
 # remaining assertions read the English catalog.
 app.set_language("en")
 
+(root / "AGENTS.md").write_text("changed-after-workspace-switch", encoding="utf-8")
 cli.history.append({"role": "user", "content": "junk"})
 cli.internal_command("/clear")
 check(len(cli.history) == 1, "/clear clears the history")
 check(str(root.resolve()) in cli.history[0]["content"], "/clear keeps the current workspace")
+check("project-two-rule" in cli.history[0]["content"]
+      and "changed-after-workspace-switch" not in cli.history[0]["content"],
+      "/clear keeps the session's instruction snapshot")
 
 try:
     cli.internal_command("/exit")

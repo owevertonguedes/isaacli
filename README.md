@@ -52,6 +52,7 @@ See [Installation](docs/INSTALLATION.md) for Flatpak details, recovery and the e
 - English and Brazilian Portuguese interfaces, switchable with `/language`.
 - Model, context and reasoning selection without creating duplicate Ollama models.
 - Resumable JSONL sessions, command output history and task feedback.
+- Workspace-root `AGENTS.md` project instructions, bounded and subordinate to the built-in safety contract.
 - OpenAI-compatible remote profiles with a configurable endpoint and exact model ID.
 - Optional lifecycle management for a local OpenAI-compatible server, so a llama-server or equivalent starts with your session and stops with the last one.
 

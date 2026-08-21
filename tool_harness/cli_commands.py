@@ -210,6 +210,7 @@ class CommandsMixin:
                 print(self.workspace)
             else:
                 self.set_workspace(arg)
+                self._show_workspace_instruction_warning()
                 print(t("cli.workspace.now", path=self.workspace))
             return True
         if cmd == "/model":
@@ -333,7 +334,7 @@ class CommandsMixin:
                 t("cli.language.set", language=SUPPORTED_LANGUAGES[codes[index]]))
             return True
         if cmd == "/clear":
-            self.history = _build_history(self.workspace)
+            self.history = _build_history(self.workspace, self.workspace_instructions)
             self._log("meta", event="clear")
             print(t("cli.clear.done"))
             return True

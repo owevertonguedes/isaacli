@@ -72,6 +72,14 @@ but tool results included in the conversation can be sent on the next model
 request. Users must treat the remote provider's privacy and retention policy as
 part of their own threat model.
 
+The system prompt can include the current workspace-root `AGENTS.md`. Its
+contents are untrusted project instructions, bounded to 32768 bytes and placed
+after isaacli's built-in safety contract. isaacli does not add a separate copy
+to session logs, but model answers and tool results can repeat their contents
+and are persisted normally. A remote provider receives the file with the rest
+of the system prompt. Project owners should therefore treat it as disclosed when
+selecting a remote profile.
+
 The Kaggle path sends the generated notebook and selected model identifiers to Kaggle, and later sends model conversations through a public Cloudflare tunnel protected by a generated API key. The kernel is private, but the temporary tunnel hostname is public. Kaggle quota, availability, account security and terms remain part of the user's threat model. No remote kernel starts without an explicit confirmation for that push.
 
 Not every route behind that tunnel is behind the key. Measured against llama-server b10502 started with `--api-key`: `/health` and `/v1/models` answer HTTP 200 with no credential, while `/props` and `/v1/chat/completions` answer 401. So anybody who learns the tunnel hostname can read which model alias is being served, and cannot generate anything with it. That coverage is llama-server's to decide and this program does not widen it; what it does do is refuse to treat an unauthenticated 200 as proof that a saved session still belongs to us, which is why the liveness probe uses `/props`. Treat the hostname as the secret it is: it is minted per session, printed once, and dies with the kernel.

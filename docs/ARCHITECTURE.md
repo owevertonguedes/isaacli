@@ -26,6 +26,7 @@ install or any removal path.
 ```text
 isaacli (launcher)
   -> tool_harness/cli.py (arguments, REPL and session)
+     -> workspace_instructions.py (bounded workspace-root AGENTS.md loader)
      -> setup_ollama.py (models, context, effort and API keys)
      -> cli_kaggle.py (Kaggle CLI lifecycle, explicit kernel push and URL discovery)
      -> agent.py (loop: messages -> model -> tool calls -> model)
@@ -49,6 +50,7 @@ worked on.
 | `tool_harness/terminal_ui.py` | alternate screen, menus, busy prompt | Must not enable mouse reporting: that breaks the terminal's native selection and copy. |
 | `tool_harness/setup_ollama.py` | shared engine selection, local setup, local models, context, reasoning and OpenAI-compatible API | Kaggle entries delegate to `cli_kaggle.run_kaggle`; context must not create `16k`/`32k` Ollama copies. |
 | `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
+| `tool_harness/workspace_instructions.py` | loads the selected workspace's root `AGENTS.md` as bounded untrusted project text | It never walks above the workspace, loads `CLAUDE.md` or persists a copy. Built-in tool, approval, sandbox and safety rules stay first. |
 | `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
 | `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. |
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
