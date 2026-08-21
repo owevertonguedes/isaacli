@@ -59,6 +59,17 @@ repos = {
         "cardData": {"base_model": "source/Huge"},
         "siblings": [{"rfilename": "huge-Q4_K_M.gguf"}],
     },
+    # The catalogued Kaggle model, so the screens that offer its other
+    # precisions can be exercised against the shelf it really has.
+    "unsloth/Qwen3.8-27B-GGUF": {
+        "id": "unsloth/Qwen3.8-27B-GGUF", "downloads": 500,
+        "cardData": {"base_model": "Qwen/Qwen3.8-27B"},
+        "siblings": [
+            {"rfilename": "Qwen3.8-27B-UD-Q4_K_M.gguf"},
+            {"rfilename": "Qwen3.8-27B-UD-IQ4_XS.gguf"},
+            {"rfilename": "Qwen3.8-27B-BF16-00001-of-00003.gguf"},
+        ],
+    },
 }
 configs = {
     "source/MoE-30B": {
@@ -71,11 +82,17 @@ configs = {
     "source/Huge": {
         "num_hidden_layers": 64, "num_key_value_heads": 8, "head_dim": 128,
     },
+    "Qwen/Qwen3.8-27B": {
+        "num_hidden_layers": 64, "num_key_value_heads": 4, "head_dim": 256,
+    },
 }
 sizes = {
     "moe-Q4_K_M.gguf": 18 * GB,
     "dense-Q4_K_M.gguf": 12 * GB,
     "huge-Q4_K_M.gguf": 40 * GB,
+    "Qwen3.8-27B-UD-Q4_K_M.gguf": 16464440224,
+    "Qwen3.8-27B-UD-IQ4_XS.gguf": 14 * GB,
+    "Qwen3.8-27B-BF16-00001-of-00003.gguf": 18 * GB,
 }
 
 
@@ -291,10 +308,17 @@ try:
               for option in drawn[0][1][:-1])
           and "P100" not in drawn[0][0],
           "the screen describes the accelerator it actually requests")
-    check(len(drawn) == 1 and all("\n" not in option for option in drawn[0][1])
-          and task_model["name"] in drawn[0][1][0]
+    check(all("\n" not in option for option in drawn[0][1])
           and drawn[0][1][-1] == model_discovery.text("model.discovery.exact"),
           "the Kaggle discovery screen is drawn by the shared selector too")
+    # Choosing the model and choosing how much of it to keep are two questions.
+    # The second one only exists because the repository publishes more than one
+    # file, and a split weight is not one of the answers: its Content-Length is
+    # one part, so offering it would misstate both fit and speed.
+    check(len(drawn) == 2 and "IQ4_XS" in " ".join(drawn[1][1])
+          and not any("00001-of-00003" in option for option in drawn[1][1])
+          and task_model["file"] == "Qwen3.8-27B-UD-Q4_K_M.gguf",
+          "the other precisions of the chosen model are offered, split files aside")
     check(ruler in drawn[0][0],
           "the screen names the public ruler that decided the order it shows")
 

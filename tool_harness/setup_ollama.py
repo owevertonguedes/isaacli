@@ -416,18 +416,69 @@ def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
     return report if answer == model_discovery.text("model.discovery.yes") else None
 
 
+def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
+                         vram_mb=None, overhead_mb=None):
+    """Offer the other precisions of the model that was just chosen.
+
+    Which model and how much of it are two different questions, and only the
+    first was being asked. Fewer bits mean fewer bytes read per token and less
+    memory, at a cost in quality nobody here has measured, so the screen states
+    size and fit and says nothing about quality.
+    """
+    try:
+        if "files" not in model and model.get("repo") and model.get("file"):
+            # A curated row carries the one file that was reviewed, not the
+            # shelf it came from. The shelf is one request away, and the
+            # evidence stays the curated one.
+            live = model_discovery.resolve_hf_model(
+                model["repo"], model["file"], urlopen_fn=urlopen_fn)
+            model = {**model, "files": live.get("files") or []}
+        variants = model_discovery.quantization_variants(
+            model, urlopen_fn=urlopen_fn)
+    except model_discovery.DiscoveryError as error:
+        debug.note("setup_ollama._choose_quantization", str(error))
+        return model
+    if not variants:
+        return model
+    if vram_mb is None:
+        vram_mb, gpu_count = model_discovery.local_vram()
+        overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    options, entries = [], []
+    for item in [model, *variants]:
+        report = model_discovery.fit_report(
+            item, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB)
+        entries.append(item)
+        options.append(tr.t(
+            "model.quantization.option",
+            quantization=model_discovery.quantization_label(item["file"]),
+            size=f"{item['model_bytes'] / 1024 ** 3:.2f}",
+            fit=tr.t("model.fit.fits") if report["fits"]
+            else tr.t("model.fit.does_not_fit")))
+    index = _select(
+        tr, tr.t("model.quantization.title"), options, input_fn,
+        tr.t("model.quantization.explain"))
+    return entries[index]
+
+
 def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
-                           urlopen_fn=urllib.request.urlopen):
+                           urlopen_fn=urllib.request.urlopen, tr=None):
     """Resolve an Ollama reference before pull, or disclose what is unknown."""
     if reference.startswith(("hf.co/", "https://huggingface.co/",
                              "http://huggingface.co/")):
         model = model_discovery.resolve_hf_model(
             reference, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
         )
-        report = _confirm_model_fit(model, input_fn)
+        chosen = _choose_quantization(
+            model, input_fn, tr or Translator(), urlopen_fn)
+        report = _confirm_model_fit(chosen, input_fn)
         if report is None:
             return None
-        item = _model_item(reference)
+        # What the user typed is what they meant, and Ollama accepts it. Only a
+        # file changed on the quantization screen has to be renamed, because
+        # what they typed no longer names the file they picked.
+        item = _model_item(
+            reference if chosen["file"] == model["file"]
+            else model_discovery.ollama_reference(chosen))
         item["resolved"] = report
         return item
     print(model_discovery.text(
@@ -507,11 +558,12 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
             return None
         try:
             return _resolve_custom_ollama(
-                reference, input_fn, catalog_path, urlopen_fn,
+                reference, input_fn, catalog_path, urlopen_fn, tr,
             )
         except model_discovery.DiscoveryError as error:
             print(model_discovery.text("model.discovery.unresolved", error=error))
             return None
+    chosen = _choose_quantization(chosen, input_fn, tr, urlopen_fn)
     report = _confirm_model_fit(chosen, input_fn)
     if report is None:
         return None
@@ -750,6 +802,27 @@ def _setup_kaggle(language, input_fn, config_file, onboarding_task=_UNCHANGED):
     )
 
 
+def _kaggle_fit(model, accelerator):
+    """Restate fit for this accelerator after the file underneath changed."""
+    report = model_discovery.fit_report(
+        model, accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"])
+    report.update({
+        "machine_shape": next(
+            name for name, item in _kaggle_accelerators().items()
+            if item is accelerator),
+        "machine_label": accelerator["label"],
+        "cuda_arch": accelerator["cuda_arch"],
+        "gpu_count": accelerator["gpu_count"],
+    })
+    return report
+
+
+def _kaggle_accelerators():
+    import cli_kaggle
+
+    return cli_kaggle.ACCELERATORS
+
+
 def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
                              urlopen_fn=urllib.request.urlopen, onboarding_task=None):
     """Combine the offline seed with live GGUF discovery for Kaggle."""
@@ -811,8 +884,13 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         input_fn,
     )
     if selected < len(models):
-        cli_kaggle.print_model_evidence(models[selected])
-        return models[selected]
+        model = _choose_quantization(
+            models[selected], input_fn, Translator(), urlopen_fn,
+            vram_mb=accelerator["vram_mb"],
+            overhead_mb=accelerator["overhead_mb"])
+        model = _kaggle_fit(model, accelerator)
+        cli_kaggle.print_model_evidence(model)
+        return model
     reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
     try:
         repo, selected_file = model_discovery.parse_hf_reference(reference)
@@ -825,6 +903,9 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         )
     except model_discovery.DiscoveryError as error:
         raise RuntimeError(str(error)) from error
+    model = _choose_quantization(
+        model, input_fn, Translator(), urlopen_fn,
+        vram_mb=accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"])
     report = model_discovery.fit_report(
         model, accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
     )

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import agent
+import debug
 import hardware
 from cli_i18n import t
 
@@ -303,10 +304,75 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "upstream_repo": upstream,
         "downloads": repo_payload.get("downloads", 0),
         "file_url": file_url,
+        "files": _gguf_files(repo_payload),
         "curated": bool(by_gguf.get(repo.casefold())),
         "derived": derived,
         "derived_from": derived_from,
     }
+
+
+SPLIT_GGUF = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.I)
+QUANTIZATION = re.compile(
+    r"(?i)(?:^|[-_.])((?:ud[-_.])?i?q\d+[-_.][a-z0-9]+(?:[-_.]xl)?|f16|bf16|f32)"
+    r"(?:[-_.]|\.gguf$)")
+
+
+def quantization_label(file_name):
+    match = QUANTIZATION.search(file_name)
+    return match.group(1) if match else Path(file_name).stem
+
+
+def quantization_variants(model, urlopen_fn=urllib.request.urlopen,
+                          timeout=DEFAULT_TIMEOUT, limit=8):
+    """The same weights at the other precisions the repository publishes.
+
+    Choosing a model and choosing how much of it to keep are two questions, and
+    only the first was ever asked: discovery picked one Q4_K_M per repository
+    and the rest of the shelf was invisible unless the exact file name was
+    typed. Fewer bits is fewer bytes read per token and less memory, at a cost
+    in quality that this program has not measured and does not claim.
+
+    Geometry and evidence belong to the weights, so they are carried over
+    unchanged; only the file, its size and what follows from the size differ.
+    Split files are left out: their `Content-Length` is one part of a model, and
+    presenting a part as the whole would misstate both fit and speed.
+    """
+    others = [
+        name for name in model.get("files") or []
+        if name != model["file"] and not SPLIT_GGUF.search(name)
+    ][:limit]
+    if not others:
+        return []
+    repo = urllib.parse.quote(model["repo"], safe="/")
+    variants = []
+    with ThreadPoolExecutor(max_workers=min(6, len(others))) as executor:
+        pending = {}
+        for name in others:
+            url = f"{HF_ROOT}/{repo}/resolve/main/{urllib.parse.quote(name, safe='/')}"
+            pending[executor.submit(
+                _content_length, url, timeout=timeout, urlopen_fn=urlopen_fn,
+            )] = (name, url)
+        for future in as_completed(pending):
+            name, url = pending[future]
+            try:
+                size = future.result()
+            except DiscoveryError as error:
+                debug.note(f"model_discovery.quantization_variants {name}", str(error))
+                continue
+            variant = dict(model)
+            variant.update({
+                "file": name,
+                "file_url": url,
+                "model_bytes": size,
+                "name": f"{model['repo']}, {Path(name).stem}",
+                "alias": re.sub(
+                    r"[^a-z0-9]+", "-",
+                    f"{model['repo']}-{Path(name).stem}".casefold()).strip("-"),
+            })
+            variants.append(variant)
+    order = {name: position for position, name in enumerate(others)}
+    variants.sort(key=lambda item: order[item["file"]])
+    return variants
 
 
 def origin(model):
