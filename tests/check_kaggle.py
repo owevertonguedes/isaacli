@@ -1651,6 +1651,23 @@ with redirect_stdout(io.StringIO()):
 check(right_key_live,
       "a saved endpoint holding the right key is still reported as live")
 
+# The dataset name is the only thing that tells two prepared weights apart on
+# the account, and Kaggle caps it. Cutting from the end threw away the precision,
+# which is what identifies the file, so two precisions of one repository landed
+# on the same name and the second publication would sit on top of the first.
+long_alias = "unsloth-qwen3-8-27b-gguf-qwen3-8-27b-ud-{}"
+six = cli_kaggle._model_dataset_slug(long_alias.format("q6-k-l"))
+eight = cli_kaggle._model_dataset_slug(long_alias.format("q8-k-l"))
+check(six != eight and six.endswith("q6-k-l") and eight.endswith("q8-k-l")
+      and max(len(six), len(eight)) <= cli_kaggle.DATASET_SLUG_LIMIT,
+      "two precisions of one repository get two names, and both fit Kaggle's limit")
+check(cli_kaggle._model_dataset_slug("short-one") == "isaacli-model-short-one",
+      "a name that already fits is not mangled to make room it does not need")
+catalogued = {"alias": "qwen3-coder-30b-a3b", "cuda_arch": "75"}
+check(cli_kaggle._asset_refs("owner", catalogued)["model"]
+      == "owner/isaacli-model-qwen3-coder-30b-a3b",
+      "a catalogued alias keeps the exact name its dataset was published under")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)

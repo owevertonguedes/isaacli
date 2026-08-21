@@ -746,7 +746,29 @@ def print_model_evidence(model):
         print(f"{model['benchmark_source']} ({t('model.discovery.scope')})")
 
 
-def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH):
+def prepared_weight_probe(executable, username, run_fn=subprocess.run, env=None):
+    """Answer whether one exact weight file is already a dataset on this account.
+
+    Precision decides the alias, the alias decides the dataset ref, and moving
+    one row on the quantization screen therefore unhooks the prepared input with
+    nothing on screen saying so. The account is asked once, and an account that
+    cannot be asked answers unknown rather than stopping the screen.
+    """
+    cache = {}
+
+    def prepared(model):
+        if "refs" not in cache:
+            try:
+                cache["refs"] = _dataset_refs(executable, run_fn, env)
+            except RuntimeError as error:
+                debug.note("cli_kaggle.prepared_weight_probe", error)
+                cache["refs"] = set()
+        return _asset_refs(username, model)["model"] in cache["refs"]
+
+    return prepared
+
+
+def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH, prepared_fn=None):
     models = prepared_models(catalog_path)
     if not models:
         raise RuntimeError(t("cli.kaggle.models.none"))
@@ -758,18 +780,41 @@ def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH):
     return model
 
 
+DATASET_SLUG_LIMIT = 50
+
+
+def _model_dataset_slug(alias, limit=DATASET_SLUG_LIMIT):
+    """A dataset name short enough for Kaggle that still says what it holds.
+
+    The name was being cut at the limit from the end, and what lives at the end
+    of an alias is the precision. `...-Q6_K` and `...-Q8_0` of one repository
+    therefore collapsed onto the same name, so publishing the second would land
+    on top of the first and the launch would attach whichever was there. The cut
+    now happens in the middle, which is the only part that does not identify
+    anything.
+    """
+    prefix = "isaacli-model-"
+    slug = re.sub(r"[^a-z0-9-]+", "-", str(alias).lower()).strip("-")
+    room = limit - len(prefix)
+    if len(slug) <= room:
+        return prefix + slug
+    tail = slug[-min(len(slug) // 2, 20):]
+    tail = tail.split("-", 1)[1] if "-" in tail[1:] else tail.lstrip("-")
+    head = slug[:max(1, room - len(tail) - 1)]
+    head = head.rsplit("-", 1)[0] if "-" in head[1:] else head
+    return f"{prefix}{head.rstrip('-')}-{tail}"
+
+
 def _asset_refs(username, model):
     binary_slug = BINARY_DATASET_SLUGS.get(
         model.get("cuda_arch"),
         f"isaacli-llama-cuda-sm{model.get('cuda_arch', 'unknown')}-b10502",
     )
     model_slug = MODEL_DATASET_SLUGS.get(
-        model.get("alias"),
-        "isaacli-model-" + re.sub(r"[^a-z0-9-]+", "-", model["alias"].lower()),
-    )
+        model.get("alias"), _model_dataset_slug(model["alias"]))
     return {
         "binary": f"{username}/{binary_slug}",
-        "model": f"{username}/{model_slug}"[:50 + len(username) + 1],
+        "model": f"{username}/{model_slug}",
     }
 
 
@@ -1295,7 +1340,10 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
         _account, environment = _select_account(
             executable, input_fn, run_fn, config_file)
         username = _authenticated_username(executable, run_fn, environment)
-        model = _select_model(input_fn)
+        model = _select_model(
+            input_fn,
+            prepared_fn=prepared_weight_probe(
+                executable, username, run_fn, environment))
         available = _available_asset_refs(
             executable, username, model, run_fn, environment)
     except RuntimeError as error:
@@ -1673,7 +1721,10 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}
     else:
         try:
-            model = _select_model(input_fn)
+            model = _select_model(
+                input_fn,
+                prepared_fn=prepared_weight_probe(
+                    executable, username, run_fn, environment))
         except RuntimeError as error:
             print(error)
             return 1
