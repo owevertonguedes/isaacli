@@ -2072,6 +2072,22 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             executable, slug, popen_fn=popen_fn, env=environment)
         profile = save_kaggle_profile(
             url, slug, model, api_key, config_file, account=account)
+    except KeyboardInterrupt:
+        # Ctrl+C means the launch is cancelled, not that the already-pushed
+        # kernel should keep spending quota without a profile or owner in the
+        # local lifecycle. The user explicitly approved this exact kernel push,
+        # so cancelling its unfinished setup also ends that same kernel.
+        print()
+        try:
+            stop_kernel(executable, slug, run_fn, environment)
+        except (OSError, RuntimeError) as error:
+            print(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
+            print(t("cli.kaggle.stop_spending",
+                    url=f"https://www.kaggle.com/code/{slug}"))
+        else:
+            print(t("cli.kaggle.stop.stopped", slug=slug))
+        print(t("cli.kaggle.cancelled"))
+        return 130
     except (OSError, RuntimeError) as error:
         # Giving up here does not stop anything: the kernel was already pushed
         # and keeps spending quota that does not come back, so say that instead

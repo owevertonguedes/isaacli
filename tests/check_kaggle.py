@@ -1843,6 +1843,46 @@ check(len(repeat_screens) == 1
 check("12.18h" in repeat_output.getvalue(),
       "repeating still shows the quota before anything is spent")
 
+# Once a push has been approved, Ctrl+C during tunnel discovery must end that
+# exact unfinished kernel. Otherwise the command exits with a traceback while
+# the GPU quota keeps moving and no saved profile owns the cleanup.
+interrupted_launch_commands = []
+
+
+def interrupted_launch_run(command, check=False, capture_output=False, text=False,
+                           env=None, **kwargs):
+    interrupted_launch_commands.append(list(map(str, command)))
+    joined = " ".join(map(str, command))
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+    if "kernels list" in joined or "datasets list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+try:
+    # The selection screens have to be answered by the same stub the sibling
+    # check uses. Feeding the real screen an answer it never accepts loops
+    # forever inside terminal_ui.select, and the captured stdout grows until
+    # the machine runs out of memory instead of the check failing.
+    cli_kaggle.terminal_ui.select = preference_select
+    with redirect_stdout(io.StringIO()) as interrupted_launch_output:
+        interrupted_launch_code = cli_kaggle.run_kaggle(
+            input_fn=lambda prompt: "y" if "Push" in prompt else "n",
+            run_fn=interrupted_launch_run, which_fn=lambda _name: "/fake/kaggle",
+            config_file=preference_file, home_dir=home,
+            popen_fn=lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt),
+        )
+finally:
+    cli_kaggle.terminal_ui.select = original_preference_select
+check(interrupted_launch_code == 130
+      and any("kernels delete" in " ".join(command)
+              for command in interrupted_launch_commands)
+      and "cancelled" in interrupted_launch_output.getvalue().lower(),
+      "Ctrl+C during launch ends the pushed kernel without a traceback")
+
 # The quantization screen has to know which precision this account already has,
 # because the alias is built from the file name: moving one row unhooks the
 # prepared dataset and the kernel goes back to downloading the weight.
