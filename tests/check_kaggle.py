@@ -161,7 +161,7 @@ def push_run(command, check=False, capture_output=False, text=False, **kwargs):
 
 timeout_file = root / "timeout.json"
 add_account(timeout_file)
-answers = iter(["1", "1", "n", "y"])
+answers = iter(["1", "1", "1", "n", "y"])
 timeout_output = io.StringIO()
 with redirect_stdout(timeout_output):
     cli_kaggle.run_kaggle(
@@ -283,7 +283,7 @@ def rendered_sources_for_account(username):
             rendered.append(json.loads((folder / "kernel-metadata.json").read_text()))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    answers = iter(["1", "1", "y"])
+    answers = iter(["1", "1", "1", "y"])
     with redirect_stdout(io.StringIO()):
         cli_kaggle.run_kaggle(
             input_fn=lambda _prompt: next(answers), run_fn=authenticated_run,
@@ -524,7 +524,7 @@ summary = cli_kaggle._quota_summary(REAL_QUOTA_TABLE)
 check(summary == "GPU 12.18h left of 30.00h",
       "the quota summary carries Kaggle's own figures with one unit each")
 
-dead_answers = iter(["1", "1", "n", "n"])
+dead_answers = iter(["1", "1", "1", "n", "n"])
 dead_output = io.StringIO()
 with redirect_stdout(dead_output):
     dead_code = cli_kaggle.run_kaggle(
@@ -1840,6 +1840,11 @@ check(len(repeat_screens) == 1
       and any("kernels push" in " ".join(c) for c in repeat_commands)
       and "Model, Q4_K_M" in repeat_output.getvalue(),
       "repeating the last choice names it and asks once, not for account and model again")
+# The context screen is part of choosing, so whoever repeated a choice has
+# already answered it. It travels inside the remembered model, like the account
+# and the exact file do.
+check(not any("context" in title.lower() for title in repeat_screens),
+      "repeating the last choice does not ask about context again")
 check("12.18h" in repeat_output.getvalue(),
       "repeating still shows the quota before anything is spent")
 
@@ -2238,9 +2243,9 @@ roomy_model = {
     "model_bytes": 8 * 1024 ** 3, "n_layers": 32, "n_kv_heads": 4,
     "head_dim": 128,
 }
-roomy_context = cli_kaggle._context_for_model(roomy_model)
+roomy_context = cli_kaggle._context_ceiling(roomy_model)
 check(roomy_context > cli_kaggle.MODEL_CONTEXT,
-      f"a model with room to spare is given more than the floor: {roomy_context}")
+      f"a model with room to spare is allowed more than the floor: {roomy_context}")
 
 with tempfile.TemporaryDirectory() as rendered_folder:
     folder = Path(rendered_folder)
@@ -2263,8 +2268,82 @@ check(config.load(context_config)["profiles"][context_profile]["num_ctx"]
 
 blind_model = {**roomy_model}
 del blind_model["n_kv_heads"]
-check(cli_kaggle._context_for_model(blind_model) == cli_kaggle.MODEL_CONTEXT,
+check(cli_kaggle._context_ceiling(blind_model) == cli_kaggle.MODEL_CONTEXT,
       "a model whose geometry is unknown keeps the floor instead of guessing")
+
+# What the accelerator allows is the ceiling of a list, not the answer. The
+# local Ollama setup has offered 8K/16K/32K/64K with the machine as the ceiling
+# since it existed, and a launch that decides for the user is inconsistent with
+# the only other screen in the program about the same thing.
+context_titles = []
+
+
+def context_select(title, options, **kwargs):
+    context_titles.append((title, list(options)))
+    return context_choice
+
+
+original_context_select = cli_kaggle.terminal_ui.select
+try:
+    cli_kaggle.terminal_ui.select = context_select
+    context_choice = 0
+    with redirect_stdout(io.StringIO()):
+        smallest = cli_kaggle._choose_kernel_context(roomy_model, lambda _p: "")
+finally:
+    cli_kaggle.terminal_ui.select = original_context_select
+offered_title, offered_options = context_titles[0]
+check(smallest == 8192 and "8K" in offered_options[0],
+      f"the launch offers the same rungs the local setup offers, smallest first: {smallest}")
+check(all(str(rung) not in "".join(offered_options)
+          for rung in (98304, 131072) if rung > roomy_context),
+      "no rung above what the borrowed memory allows is on the screen")
+
+# The kernel's `-c` and the profile's `num_ctx` are one number read from one
+# place. A profile promising more than llama-server was started with fails at
+# the end of a long turn, which is the most expensive moment to find out.
+chosen_model = dict(roomy_model, context=smallest)
+with tempfile.TemporaryDirectory() as chosen_folder:
+    folder = Path(chosen_folder)
+    cli_kaggle._render_kernel(folder, "owner/isaacli-gpu-chosen", chosen_model,
+                              "key", dataset_sources=[])
+    chosen_kernel = (folder / "isaacli-gpu-chosen.py").read_text(encoding="utf-8")
+chosen_config = Path(tempfile.mkdtemp()) / "chosen-config.json"
+config.save(config.empty_config(), chosen_config)
+with redirect_stdout(io.StringIO()):
+    chosen_profile = cli_kaggle.save_kaggle_profile(
+        "https://example.trycloudflare.com", "owner/isaacli-gpu-chosen",
+        chosen_model, "key", chosen_config)
+saved_ctx = config.load(chosen_config)["profiles"][chosen_profile]["num_ctx"]
+check(f"CONTEXT = {smallest}" in chosen_kernel and saved_ctx == smallest
+      and str(roomy_context) not in chosen_kernel,
+      f"the kernel and the profile both get the chosen number, not the ceiling: {saved_ctx}")
+
+# Over the ceiling there is no warning to be had: the kernel dies allocating the
+# cache after the whole load has been paid for out of a weekly budget. So a
+# typed value above it is refused with the reason, not accepted because the user
+# asked for it.
+typed = [str(roomy_context * 2), "8K"]
+try:
+    cli_kaggle.terminal_ui.select = context_select
+    # The row before the way out is the one that takes a typed value.
+    context_choice = len(offered_options) - 2
+    with redirect_stdout(io.StringIO()) as refusal_output:
+        typed_context = cli_kaggle._choose_kernel_context(
+            roomy_model, lambda _prompt: typed.pop(0))
+finally:
+    cli_kaggle.terminal_ui.select = original_context_select
+check(typed_context == 8192 and not typed
+      and "kernel dies" in refusal_output.getvalue(),
+      "a typed value above what fits is refused with the reason, and a smaller one accepted")
+
+try:
+    cli_kaggle.terminal_ui.select = context_select
+    context_choice = len(offered_options) - 1
+    with redirect_stdout(io.StringIO()):
+        backed_out = cli_kaggle._choose_kernel_context(roomy_model, lambda _p: "")
+finally:
+    cli_kaggle.terminal_ui.select = original_context_select
+check(backed_out is None, "the last row of the context screen is a way back out")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")

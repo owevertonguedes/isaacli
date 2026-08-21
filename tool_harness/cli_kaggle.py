@@ -911,12 +911,13 @@ MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
 CONTEXT_CACHE_SHARE = 0.5
 
 
-def _context_for_model(model):
-    """The largest catalogued context that leaves the runtime room to work.
+def _context_ceiling(model):
+    """The largest context this model can be given on that accelerator.
 
-    Never below the floor every launch used to get, because a model only
-    reaches the list by fitting there, and never so high that the cache eats
-    the headroom the server needs to run.
+    A ceiling, not a decision: what the borrowed memory allows, which the user
+    then chooses inside. Never below the floor every launch used to get,
+    because a model only reaches the list by fitting there, and never so high
+    that the cache eats the headroom the server needs to run.
     """
     accelerator = ACCELERATORS.get(model.get("machine_shape"))
     required = ("n_layers", "n_kv_heads", "head_dim", "model_bytes")
@@ -932,10 +933,67 @@ def _context_for_model(model):
             best = max(best, context)
         else:
             break
-    debug.note("cli_kaggle._context_for_model",
-               f"{model.get('alias')} gets {best} tokens, cache budget "
+    debug.note("cli_kaggle._context_ceiling",
+               f"{model.get('alias')} allows up to {best} tokens, cache budget "
                f"{budget / 1024 ** 3:.2f} GiB")
     return best
+
+
+def _kernel_context(model):
+    """The one number the kernel and the profile both read.
+
+    They must not diverge: a profile promising more than llama-server was
+    started with fails at the end of a long turn, which is the most expensive
+    moment to find out. A model carries the user's choice; the ceiling answers
+    for the paths that never ask, which are the flow-validation probe and any
+    record written before this screen existed.
+    """
+    chosen = model.get("context")
+    return int(chosen) if chosen else _context_ceiling(model)
+
+
+def _choose_kernel_context(model, input_fn):
+    """The context screen the local setup already draws, with a harder ceiling.
+
+    On Ollama the ceiling is what the model was trained for, and asking for
+    more is refused by something that costs nothing. Here it is borrowed VRAM,
+    and going over it does not warn: it kills the kernel while allocating the
+    cache, after the whole load has already been paid for out of a weekly
+    budget. So the list offered is the filtered one, and a typed value above
+    the ceiling is refused with the reason rather than accepted because the
+    user asked for it.
+    """
+    import setup_ollama
+
+    ceiling = _context_ceiling(model)
+    levels = [(key, value) for key, value in setup_ollama.CONTEXT_LEVELS
+              if value <= ceiling]
+    if ceiling not in {value for _key, value in levels}:
+        levels.append(("cli.kaggle.context.maximum", ceiling))
+    options = [t(key, limit=setup_ollama.format_context(value))
+               for key, value in levels]
+    options += [t("context.manual"), t("navigation.back")]
+    explanation = (t("context.explain") + "\n"
+                   + t("cli.kaggle.context.limit",
+                       limit=setup_ollama.format_context(ceiling),
+                       machine=model.get("machine_label", "")))
+    title = t("context.title")
+    # The largest rung is highlighted because that is exactly what a launch was
+    # given before this screen existed, so pressing Enter keeps the behaviour
+    # the measurements were taken against.
+    index = _choose(f"{title}\n\n{explanation}", options, input_fn,
+                    initial=max(0, len(levels) - 1))
+    if index == len(levels) + 1:
+        return None
+    if index < len(levels):
+        return levels[index][1]
+    while True:
+        print(f"{title}\n\n{explanation}")
+        value = setup_ollama.parse_context(input_fn(t("context.manual.prompt")))
+        if setup_ollama.MIN_CONTEXT <= value <= ceiling:
+            return value
+        print(t("cli.kaggle.context.manual.invalid",
+                limit=setup_ollama.format_context(ceiling)))
 
 
 def _kernel_value(marker, value):
@@ -967,7 +1025,7 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
         "__MACHINE_SHAPE__": model.get("machine_shape", ""),
         "__GPU_COUNT__": str(model.get("gpu_count", 0)),
         "__SPLIT_MODE__": "layer" if _needs_every_gpu(model) else "none",
-        "__CONTEXT__": str(_context_for_model(model)),
+        "__CONTEXT__": str(_kernel_context(model)),
     }
     values = {marker: _kernel_value(marker, value)
               for marker, value in values.items()}
@@ -1236,10 +1294,9 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
         "base_url": url.rstrip("/") + "/v1",
         "model": model["alias"],
         "credential": credential,
-        # The same ceiling the kernel was started with. A profile promising more
-        # than llama-server was given fails at the end of a long turn, which is
-        # the most expensive moment to find out.
-        "num_ctx": _context_for_model(model),
+        # The same number the kernel was started with, read from the same
+        # place, so the two cannot drift apart.
+        "num_ctx": _kernel_context(model),
         "thinking": False,
     }
     data["default_profile"] = profile_name
@@ -2052,6 +2109,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         if preference:
             # The screens are what cost the user time, not the choice. Naming
             # what is about to be launched is what keeps skipping them honest.
+            # The context chosen that time travels inside the model, so
+            # repeating a choice does not ask about it again either.
             model = preference["model"]
             print(t("cli.kaggle.preference.using",
                     model=model.get("name") or model.get("alias"),
@@ -2065,6 +2124,11 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             except RuntimeError as error:
                 print(error)
                 return 1
+            context = _choose_kernel_context(model, input_fn)
+            if context is None:
+                print(t("cli.kaggle.cancelled"))
+                return 130
+            model = dict(model, context=context)
     dataset_sources = []
     if not validation_cpu:
         try:
