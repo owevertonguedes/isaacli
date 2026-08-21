@@ -1979,6 +1979,32 @@ check(cli_kaggle._asset_refs("owner", catalogued)["model"]
       == "owner/isaacli-model-qwen3-coder-30b-a3b",
       "a catalogued alias keeps the exact name its dataset was published under")
 
+# Cleanup a keypress can abort is not cleanup, and here it is not tidiness that
+# is lost: the kernel keeps spending quota by wall clock until it is deleted.
+interrupt_file = session_config(root / "session-interrupt" / "config.json")
+interrupt_commands = []
+interrupt_attempts = []
+
+
+def interrupting_run(command, check=False, capture_output=False, text=False,
+                     env=None, **kwargs):
+    interrupt_attempts.append(1)
+    if len(interrupt_attempts) == 1:
+        raise KeyboardInterrupt
+    interrupt_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    interrupted_stop = cli._without_interruption(
+        lambda: cli_kaggle.stop_profile_session(
+            "kaggle-one", config_file=interrupt_file, run_fn=interrupting_run,
+            which_fn=lambda _name: "/fake/kaggle", home_dir=home))
+check(interrupted_stop == "owner/isaacli-gpu-1"
+      and any("kernels delete" in " ".join(c) for c in interrupt_commands)
+      and not (config.load(interrupt_file)["kaggle"] or {}).get("kernels"),
+      "a Ctrl+C on the way out does not leave the kernel spending quota")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)

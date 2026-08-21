@@ -64,7 +64,7 @@ from cli_commands import (
 )
 from cli_ollama import (
     OllamaMixin, _close_without_interruption, _install_signals, _ollama_ok,
-    _pid_identity, _shared_ollama_state,
+    _pid_identity, _shared_ollama_state, _without_interruption,
 )
 from cli_kaggle import (
     ensure_profile_session as _kaggle_ensure_session,
@@ -1011,7 +1011,9 @@ def main(argv=None):
         # kernel is not. It spends quota by wall clock until it is deleted, so
         # the program that started it ends it, here, on every way out that runs
         # a `finally`, including SIGHUP and SIGTERM.
-        _kaggle_stop_session(cli.kaggle_profile)
+        # And not interruptible: a Ctrl+C landing here would leave the kernel
+        # running and the quota draining, which is exactly what this call is for.
+        _without_interruption(lambda: _kaggle_stop_session(cli.kaggle_profile))
 
 
 if __name__ == "__main__":

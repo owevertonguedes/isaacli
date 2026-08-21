@@ -110,8 +110,14 @@ def _install_signals():
             pass
 
 
-def _close_without_interruption(cli):
-    """Finish the cleanup even when the user hits Ctrl+C again on the way out."""
+def _without_interruption(action):
+    """Finish one piece of cleanup even when Ctrl+C keeps arriving.
+
+    Cleanup that a keypress can abort is not cleanup. Ending a Kaggle kernel
+    needs this as much as closing the session does, and for a harder reason: the
+    kernel keeps spending quota by wall clock until something deletes it, so an
+    interrupted stop does not merely skip tidying up, it leaves money running.
+    """
     previous = {}
     for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
         try:
@@ -122,8 +128,7 @@ def _close_without_interruption(cli):
     try:
         while True:
             try:
-                cli.close()
-                return
+                return action()
             except KeyboardInterrupt:
                 # A SIGINT may already have been delivered at the instant the
                 # finally block started. From here on new ones are ignored.
@@ -134,6 +139,11 @@ def _close_without_interruption(cli):
                 signal.signal(sig, handler)
             except (AttributeError, ValueError):
                 pass
+
+
+def _close_without_interruption(cli):
+    """Finish the cleanup even when the user hits Ctrl+C again on the way out."""
+    return _without_interruption(cli.close)
 
 
 def _ollama_ok(timeout=2):
