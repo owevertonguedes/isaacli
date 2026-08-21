@@ -1701,6 +1701,80 @@ finally:
 check(switch_screens and switch_screens[0][2] == {1},
       "replacing is refused while another window is using that kernel")
 
+# The tunnel URL dies with the kernel, so the profile built from it is thrown
+# away and every launch asked for the account, the model and the exact file
+# again. What the user chose is durable even though the session is not, so it is
+# kept apart from it and offered back as one keypress.
+preference_file = root / "preference" / "config.json"
+config.save({"language": "en"}, preference_file)
+cli_kaggle.register_account("user", {"key": "account-key"}, preference_file)
+cli_kaggle.save_kaggle_profile(
+    "https://pref.trycloudflare.com", "user/isaacli-gpu-pref",
+    {"alias": "model-q4-k-m", "name": "Model, Q4_K_M", "repo": "org/Repo-GGUF",
+     "file": "Model-Q4_K_M.gguf", "model_bytes": 10 * 1024 ** 3,
+     "machine_shape": "NvidiaTeslaT4", "cuda_arch": "75", "gpu_count": 2},
+    "api-key", preference_file, account="user")
+stored_preference = (config.load(preference_file).get("kaggle") or {}).get(
+    "preference") or {}
+check(stored_preference.get("account") == "user"
+      and (stored_preference.get("model") or {}).get("file") == "Model-Q4_K_M.gguf"
+      and (stored_preference.get("model") or {}).get("machine_shape")
+      == "NvidiaTeslaT4",
+      "what was chosen is remembered even though the session it ran in is not")
+
+# The kernel is gone, so the record and the profile went with it. The preference
+# has to survive that, because it is the answer to a different question.
+cli_kaggle._forget_kernel_record("user/isaacli-gpu-pref", preference_file)
+survived = (config.load(preference_file).get("kaggle") or {}).get("preference")
+check(survived and survived.get("account") == "user",
+      "forgetting a dead kernel does not forget what the user chose")
+
+repeat_commands = []
+repeat_screens = []
+
+
+def preference_run(command, check=False, capture_output=False, text=False,
+                   env=None, **kwargs):
+    repeat_commands.append(list(map(str, command)))
+    joined = " ".join(map(str, command))
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+    if "kernels list" in joined or "datasets list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+original_preference_select = cli_kaggle.terminal_ui.select
+
+
+def preference_select(title, options, **kwargs):
+    repeat_screens.append(title)
+    return 0
+
+
+try:
+    cli_kaggle.terminal_ui.select = preference_select
+    cli_kaggle._select_model = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("the model list was drawn again"))
+    with redirect_stdout(io.StringIO()) as repeat_output:
+        cli_kaggle.run_kaggle(
+            input_fn=lambda prompt: "y" if "Push" in prompt else "n",
+            run_fn=preference_run, which_fn=lambda _name: "/fake/kaggle",
+            config_file=preference_file, home_dir=home,
+            popen_fn=lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("tunnel discovery not exercised here")))
+finally:
+    cli_kaggle.terminal_ui.select = original_preference_select
+    cli_kaggle._select_model = original_select_model
+check(len(repeat_screens) == 1
+      and any("kernels push" in " ".join(c) for c in repeat_commands)
+      and "Model, Q4_K_M" in repeat_output.getvalue(),
+      "repeating the last choice names it and asks once, not for account and model again")
+check("12.18h" in repeat_output.getvalue(),
+      "repeating still shows the quota before anything is spent")
+
 # The quantization screen has to know which precision this account already has,
 # because the alias is built from the file name: moving one row unhooks the
 # prepared dataset and the kernel goes back to downloading the weight.

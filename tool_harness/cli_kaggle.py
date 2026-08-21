@@ -1119,6 +1119,13 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
     }
     data["default_profile"] = profile_name
     state = data.setdefault("kaggle", {})
+    # What was chosen and the session it ran in are two different lifetimes. The
+    # tunnel URL is minted per kernel and never comes back, so the record and the
+    # profile built from it are thrown away when the kernel ends, and that used
+    # to take the account, the model and the exact file with them. Keeping the
+    # choice apart from the session is what turns the next launch back into one
+    # keypress instead of the whole flow again.
+    state["preference"] = {"account": account, "model": dict(model)}
     kernels = state.setdefault("kernels", [])
     kernels.append({
         "slug": slug, "url": url,
@@ -1703,6 +1710,38 @@ def _offer_switch(record, profile_name, input_fn, config_file=None):
     return index == 0
 
 
+def stored_preference(config_file=None):
+    """The account and model of the last launch, when both still make sense.
+
+    An account that has been signed out of cannot be repeated, and offering it
+    would be offering something that fails at the first command.
+    """
+    state = config.load(config_file).get("kaggle") or {}
+    preference = state.get("preference") or {}
+    account = preference.get("account")
+    model = preference.get("model")
+    if not account or not isinstance(model, dict) or not model.get("alias"):
+        return None
+    if account not in (state.get("accounts") or {}):
+        debug.note("cli_kaggle.stored_preference",
+                   f"{account} is no longer registered, so it is not offered")
+        return None
+    return preference
+
+
+def _offer_preference(preference, input_fn):
+    """Repeat the last choice, or open the screens that change it."""
+    model = preference["model"]
+    index = _choose(
+        t("cli.kaggle.preference.title"),
+        [t("cli.kaggle.preference.repeat",
+           model=model.get("name") or model.get("alias"),
+           account=preference["account"]),
+         t("cli.kaggle.preference.change")],
+        input_fn)
+    return preference if index == 0 else None
+
+
 def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 popen_fn=subprocess.Popen, config_file=None, home_dir=None,
                 record_path=None, which_fn=shutil.which,
@@ -1717,9 +1756,16 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
     )
     if executable is None:
         return 1
+    preference = None if validation_cpu else stored_preference(config_file)
+    if preference:
+        preference = _offer_preference(preference, input_fn)
     try:
-        account, environment = _select_account(
-            executable, input_fn, run_fn, config_file)
+        if preference:
+            account, environment = _use_account(
+                executable, preference["account"], run_fn, config_file)
+        else:
+            account, environment = _select_account(
+                executable, input_fn, run_fn, config_file)
         quota = _quota(executable, run_fn, environment)
         # The raw answer is a four line table of headers and dashes. Only the
         # remaining GPU hours change a decision here, and the account picker
@@ -1772,14 +1818,22 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         print(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}
     else:
-        try:
-            model = _select_model(
-                input_fn,
-                prepared_fn=prepared_weight_probe(
-                    executable, username, run_fn, environment))
-        except RuntimeError as error:
-            print(error)
-            return 1
+        if preference:
+            # The screens are what cost the user time, not the choice. Naming
+            # what is about to be launched is what keeps skipping them honest.
+            model = preference["model"]
+            print(t("cli.kaggle.preference.using",
+                    model=model.get("name") or model.get("alias"),
+                    machine=model.get("machine_label", "")))
+        else:
+            try:
+                model = _select_model(
+                    input_fn,
+                    prepared_fn=prepared_weight_probe(
+                        executable, username, run_fn, environment))
+            except RuntimeError as error:
+                print(error)
+                return 1
     dataset_sources = []
     if not validation_cpu:
         try:
