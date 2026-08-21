@@ -317,6 +317,7 @@ class CommandsMixin:
             index = terminal_ui.select(
                 t("cli.language.title"),
                 [SUPPORTED_LANGUAGES[code] for code in codes],
+                prompt=t("select.prompt"), invalid=t("select.invalid"),
                 initial=initial,
                 more_above=t("ui.more_above", count="{count}"),
                 more_below=t("ui.more_below", count="{count}"),

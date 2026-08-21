@@ -383,6 +383,33 @@ check(config.load(language_config)["language"] == "en",
       "/language persists the chosen language")
 check(language_redraws and "English" in (language_redraws[-1] or ""),
       "/language redraws the session after the full-screen menu closes")
+
+# The selector carries English defaults for the line it asks on and the line it
+# answers a bad choice with. Every other screen in the program overrides both;
+# this one did not, so a session in Portuguese was asked "Select: " in English.
+# Recorded at the call site and then rendered for real, so what is checked is
+# the text that reaches the screen and not the intention behind it.
+app.set_language("pt-BR")
+language_call = {}
+terminal_ui.select = lambda *args, **kwargs: (
+    language_call.update(args=args, kwargs=kwargs) or 1)
+try:
+    with redirect_stdout(io.StringIO()):
+        cli_language.internal_command("/language")
+finally:
+    terminal_ui.select = original_select
+language_answers = iter(["0", "1"])
+with redirect_stdout(io.StringIO()) as language_screen:
+    original_select(
+        language_call["args"][0], language_call["args"][1],
+        input_fn=lambda prompt="": (print(prompt, end="") or next(language_answers)),
+        **{key: value for key, value in language_call["kwargs"].items()
+           if key in {"prompt", "invalid"}})
+language_drawn = language_screen.getvalue()
+check("Selecione: " in language_drawn
+      and "Select: " not in language_drawn
+      and "Choose a number from 1 to" not in language_drawn,
+      "the language screen asks and corrects in the language it is running in")
 app.set_language("en")
 
 cli_redraw = app.IsaacCLI(
