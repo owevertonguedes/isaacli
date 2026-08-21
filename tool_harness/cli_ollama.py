@@ -87,12 +87,6 @@ def _shared_local_state(key="ollama"):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _shared_ollama_state():
-    """The historical entry point cli.py imports by name; equivalent to
-    _shared_local_state("ollama")."""
-    return _shared_local_state("ollama")
-
-
 def _install_signals():
     def leave(_signum, _frame):
         raise SystemExit(130)
