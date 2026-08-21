@@ -900,29 +900,41 @@ KERNEL_VALUE_PATTERNS = {
 # So when the cards still have room after the weights, the ceiling rises to the
 # largest rung that fits, decided by the same fit function that chose the model.
 MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
+# `hardware.fits` reserves 1536 MiB, which is the right question for choosing a
+# model that will sit at the floor with room to spare. It is the wrong question
+# for a context that grows until it stops fitting, because the answer then
+# spends every last byte of that slack on cache and leaves llama.cpp's compute
+# buffers with nothing. Measured on 2026-08-21: the MoE at Q6_K was handed 65536
+# tokens, which `fits` accepted at 29.37 GiB of 30.50 GiB, and the kernel died
+# with `cudaMalloc failed` allocating the cache. So only part of what is free
+# after the weights may become cache, and the rest stays free on purpose.
+CONTEXT_CACHE_SHARE = 0.5
 
 
 def _context_for_model(model):
-    """The largest catalogued context this model still fits into on its cards."""
+    """The largest catalogued context that leaves the runtime room to work.
+
+    Never below the floor every launch used to get, because a model only
+    reaches the list by fitting there, and never so high that the cache eats
+    the headroom the server needs to run.
+    """
     accelerator = ACCELERATORS.get(model.get("machine_shape"))
     required = ("n_layers", "n_kv_heads", "head_dim", "model_bytes")
     if not accelerator or any(model.get(key) is None for key in required):
         return MODEL_CONTEXT
-    # Splitting puts part of the layers on each card, so the budget is the whole
-    # machine only when every card is actually used.
-    cards = accelerator["gpu_count"] if _needs_every_gpu(model) else 1
-    vram_mb = accelerator["vram_mb"] // max(1, accelerator["gpu_count"]) * cards
+    usable = max(0, accelerator["vram_mb"] - accelerator["overhead_mb"])
+    budget = (usable * 1024 * 1024 - model["model_bytes"]) * CONTEXT_CACHE_SHARE
     best = MODEL_CONTEXT
     for context in MODEL_CONTEXT_LADDER:
         kv_bytes = hardware.kv_cache_bytes(
             model["n_layers"], model["n_kv_heads"], model["head_dim"], context)
-        if hardware.fits(model["model_bytes"], kv_bytes, vram_mb,
-                         overhead_mb=accelerator["overhead_mb"]):
+        if kv_bytes <= budget:
             best = max(best, context)
         else:
             break
     debug.note("cli_kaggle._context_for_model",
-               f"{model.get('alias')} fits {best} tokens on {cards} card(s)")
+               f"{model.get('alias')} gets {best} tokens, cache budget "
+               f"{budget / 1024 ** 3:.2f} GiB")
     return best
 
 
