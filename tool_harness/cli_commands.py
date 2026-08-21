@@ -255,6 +255,12 @@ class CommandsMixin:
                     self.num_ctx = item.get("num_ctx")
                     self.temperature = item.get("temperature")
                     self.provider = self._provider_from_profile(item)
+                    # A kernel started from inside the session is this run's to
+                    # end, exactly like one opened from the command line.
+                    import cli_kaggle
+
+                    if cli_kaggle.profile_kernel_record(name, self.config_file):
+                        self.kaggle_profile = name
                     self._log("meta", event="kaggle", profile=name,
                               model=self.model, thinking=self.thinking)
                     self.redraw_session(

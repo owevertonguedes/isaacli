@@ -1362,6 +1362,167 @@ except RuntimeError:
 check(still_raises,
       "a status failure that is not a missing session still stops the flow")
 
+# ----------------------------------------------------------------------
+# The session lifecycle: what isaacli starts on Kaggle, isaacli ends.
+#
+# A kernel spends quota by wall clock until it is deleted, so leaving the
+# stop to the user put the only brake on the spending outside the program.
+# These drive the two entry points the CLI calls when it opens and when it
+# closes, and they are judged by what reached the Kaggle CLI and what is left
+# in the config, never by the message on screen.
+# ----------------------------------------------------------------------
+def refuse_typing(_prompt=""):
+    raise AssertionError("a live session asked the user to type something")
+
+
+def session_config(path, slug="owner/isaacli-gpu-1", extra_kernels=()):
+    config.save({
+        "language": "en",
+        "default_profile": "kaggle-one",
+        "profiles": {"kaggle-one": {
+            "provider": "openai_compatible",
+            "base_url": "https://one.trycloudflare.com/v1",
+            "model": "qwen38-27b", "credential": "kaggle-one-api-key"}},
+        "kaggle": {"kernels": [
+            {"slug": slug, "url": "https://one.trycloudflare.com",
+             "profile": "kaggle-one", "model": "qwen38-27b", "account": "owner"},
+            *extra_kernels,
+        ]},
+    }, path)
+    cli_kaggle.register_account("owner", {"key": "owner-key"}, path)
+    # register_account marks the account selected, which rewrites the file. The
+    # kernels and the profile above have to survive that.
+    return path
+
+
+def answering_endpoint(_request, timeout=None):
+    class Answer:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    return Answer()
+
+
+def dead_endpoint(_request, timeout=None):
+    raise OSError("no route to host")
+
+
+live_file = session_config(root / "session-live" / "config.json")
+with redirect_stdout(io.StringIO()):
+    live_state = cli_kaggle.ensure_profile_session(
+        "kaggle-one", input_fn=refuse_typing, config_file=live_file,
+        urlopen_fn=answering_endpoint,
+        run_kaggle_fn=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("a live kernel was relaunched")))
+check(live_state == "live"
+      and (config.load(live_file)["kaggle"]["kernels"] or [{}])[0]["slug"]
+      == "owner/isaacli-gpu-1",
+      "an endpoint that still answers is reused without pushing a kernel")
+
+declined_file = session_config(root / "session-declined" / "config.json")
+with redirect_stdout(io.StringIO()):
+    declined_state = cli_kaggle.ensure_profile_session(
+        "kaggle-one", input_fn=lambda _prompt: "n", config_file=declined_file,
+        urlopen_fn=dead_endpoint,
+        run_kaggle_fn=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("quota was spent without consent")))
+declined_state_data = config.load(declined_file)
+check(declined_state == "declined"
+      and not (declined_state_data.get("kaggle") or {}).get("kernels")
+      and "kaggle-one" not in declined_state_data["profiles"],
+      "opening the program never pushes a kernel on its own, and forgets the dead one")
+
+relaunch_file = session_config(root / "session-relaunch" / "config.json")
+relaunched = []
+with redirect_stdout(io.StringIO()):
+    relaunch_state = cli_kaggle.ensure_profile_session(
+        "kaggle-one", input_fn=lambda _prompt: "y", config_file=relaunch_file,
+        urlopen_fn=dead_endpoint,
+        run_kaggle_fn=lambda **kwargs: relaunched.append(kwargs) or 0)
+check(relaunch_state == "relaunched" and len(relaunched) == 1
+      and relaunched[0]["config_file"] == relaunch_file,
+      "a dead kernel is replaced only after the user says so")
+
+end_file = session_config(
+    root / "session-end" / "config.json",
+    extra_kernels=[{"slug": "owner/isaacli-gpu-2",
+                    "url": "https://two.trycloudflare.com",
+                    "profile": "kaggle-two", "model": "qwen38-27b",
+                    "account": "owner"}])
+end_commands = []
+
+
+def end_run(command, check=False, capture_output=False, text=False, env=None,
+            **kwargs):
+    end_commands.append(list(map(str, command)))
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    ended = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=end_file, run_fn=end_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+end_state = config.load(end_file)
+end_slugs = [item["slug"] for item in (end_state.get("kaggle") or {}).get("kernels", [])]
+check(ended == "owner/isaacli-gpu-1"
+      and [parts[1:] for parts in end_commands]
+      == [["kernels", "delete", "owner/isaacli-gpu-1", "--yes"]]
+      and end_slugs == ["owner/isaacli-gpu-2"]
+      and "kaggle-one" not in end_state["profiles"],
+      "closing the program ends its own kernel and leaves the other one alone")
+
+quiet_commands = []
+with redirect_stdout(io.StringIO()):
+    nothing = cli_kaggle.stop_profile_session(
+        None, config_file=end_file,
+        run_fn=lambda command, **kwargs: quiet_commands.append(command),
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+check(nothing is None and not quiet_commands,
+      "a run with no Kaggle kernel of its own never reaches Kaggle on the way out")
+
+# The wiring itself, by effect: a run that opens a Kaggle profile has to end
+# its kernel on the way out, whatever the answer to the question was.
+wired_file = config.config_path()
+session_config(wired_file)
+wired_stops = []
+original_ensure = cli._kaggle_ensure_session
+original_stop = cli._kaggle_stop_session
+try:
+    cli._kaggle_ensure_session = lambda name, **kwargs: "live"
+    cli._kaggle_stop_session = lambda name: wired_stops.append(name)
+    with redirect_stdout(io.StringIO()):
+        wired_code = cli.main(["say", "something"])
+finally:
+    cli._kaggle_ensure_session = original_ensure
+    cli._kaggle_stop_session = original_stop
+check(wired_code == 1 and wired_stops == ["kaggle-one"],
+      "a run that opened a Kaggle profile ends that kernel when it closes")
+
+# A delete that fails must not look like a stop that worked: the kernel is
+# still spending, and the record has to stay so the next run can try again.
+failed_file = session_config(root / "session-failed" / "config.json")
+
+
+def failing_run(command, check=False, capture_output=False, text=False, env=None,
+                **kwargs):
+    return SimpleNamespace(returncode=1, stdout="", stderr="403 Forbidden")
+
+
+with redirect_stdout(io.StringIO()) as failed_output:
+    failed_stop = cli_kaggle.stop_profile_session(
+        "kaggle-one", config_file=failed_file, run_fn=failing_run,
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+check(failed_stop is None
+      and "--stop" in failed_output.getvalue()
+      and (config.load(failed_file)["kaggle"]["kernels"] or [{}])[0]["slug"]
+      == "owner/isaacli-gpu-1",
+      "a failed stop says so, keeps the record, and names the command that retries")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)

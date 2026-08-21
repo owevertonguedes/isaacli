@@ -457,5 +457,12 @@
   "cli.kaggle.accounts.owner_unknown": "NOTE: {username} ainda não tem dataset nem kernel, então o Kaggle não confirma a conta por trás desta credencial. O nome mostrado aqui é o que foi registrado, não um que o servidor confirmou.",
   "cli.kaggle.accounts.quota_gpu": "GPU {remaining} restantes de {total}",
   "cli.kaggle.accounts.forget_local": "Remover só do isaacli",
-  "cli.kaggle.accounts.forget_revoke": "Remover e revogar o token no Kaggle, o que não dá para desfazer"
+  "cli.kaggle.accounts.forget_revoke": "Remover e revogar o token no Kaggle, o que não dá para desfazer",
+  "cli.kaggle.session.gone": "O kernel do Kaggle {slug} salvo neste perfil não está mais servindo. O endpoint e o perfil foram removidos, porque uma URL de túnel nunca volta.",
+  "cli.kaggle.session.relaunch": "Subir outro kernel agora? Leva cerca de cinco minutos e gasta quota de GPU. [s/N]: ",
+  "cli.kaggle.session.declined": "Nenhum kernel foi enviado e nenhuma quota foi gasta. Use /kaggle ou isaacli kaggle quando quiser um.",
+  "cli.kaggle.session.stopping": "Encerrando a sessão do Kaggle que este programa iniciou, kernel {slug}.",
+  "cli.kaggle.session.stopped": "Sessão encerrada e kernel {slug} apagado. A quota para aqui.",
+  "cli.kaggle.session.stop_failed": "Não consegui encerrar a sessão do Kaggle {slug}: {error}. Ela pode continuar gastando quota. Pare com: isaacli kaggle --stop",
+  "cli.kaggle.session.no_cli": "O CLI do Kaggle não está mais nesta máquina, então a sessão {slug} não pôde ser encerrada daqui. Ela pode continuar gastando quota: pare pela página do Kaggle."
 }

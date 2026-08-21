@@ -1173,6 +1173,25 @@ def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
     return 0
 
 
+def _drop_records(data, removed, config_file=None):
+    """Remove the profile each dead record created, when it still owns it.
+
+    A profile is only dropped when it still holds the exact URL that record
+    created it with, so a profile the user edited or reused is left alone.
+    """
+    profiles = data.get("profiles") or {}
+    for record in removed:
+        profile = profiles.get(record.get("profile"))
+        if not profile or not record.get("url"):
+            continue
+        if profile.get("base_url", "").rstrip("/") != record["url"].rstrip("/") + "/v1":
+            continue
+        profiles.pop(record["profile"])
+        config.delete_secret(profile.get("credential"), _secret_path(config_file))
+        if data.get("default_profile") == record["profile"]:
+            data["default_profile"] = next(iter(profiles), None)
+
+
 def _prune_dead_kernels(live, config_file=None, account=None, username=None):
     """Forget the kernels that are over, and the profiles they left behind.
 
@@ -1196,18 +1215,28 @@ def _prune_dead_kernels(live, config_file=None, account=None, username=None):
         (kept if slug in live_refs or not owned else removed).append(record)
     if not removed:
         return []
-    profiles = data.get("profiles") or {}
-    for record in removed:
-        profile = profiles.get(record.get("profile"))
-        if not profile or not record.get("url"):
-            continue
-        if profile.get("base_url", "").rstrip("/") != record["url"].rstrip("/") + "/v1":
-            continue
-        profiles.pop(record["profile"])
-        config.delete_secret(profile.get("credential"), _secret_path(config_file))
-        if data.get("default_profile") == record["profile"]:
-            data["default_profile"] = next(iter(profiles), None)
+    _drop_records(data, removed, config_file)
     state["kernels"] = kept
+    config.save(data, config_file)
+    return removed
+
+
+def _forget_kernel_record(slug, config_file=None):
+    """Forget one kernel by slug, leaving every other record untouched.
+
+    The prune above answers "which of my kernels are over" and needs the live
+    list to say so. Stopping one kernel already knows the answer for that slug
+    alone, and must not decide anything about the others: another isaacli may be
+    serving from one of them right now.
+    """
+    data = config.load(config_file)
+    state = data.setdefault("kaggle", {})
+    records = state.get("kernels") or []
+    removed = [item for item in records if item.get("slug") == slug]
+    if not removed:
+        return []
+    _drop_records(data, removed, config_file)
+    state["kernels"] = [item for item in records if item.get("slug") != slug]
     config.save(data, config_file)
     return removed
 
@@ -1266,6 +1295,130 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
     return 0
 
 
+def _endpoint_answers(profile, secret_path=None,
+                      urlopen_fn=urllib.request.urlopen, timeout=10):
+    """Whether the endpoint a saved profile names is serving this account now."""
+    key = config.load_secret(profile.get("credential"), secret_path)
+    request = urllib.request.Request(
+        profile["base_url"].rstrip("/") + "/models",
+        headers={"Authorization": "Bearer " + key} if key else {},
+    )
+    try:
+        with urlopen_fn(request, timeout=timeout) as answer:
+            if answer.status == 200:
+                return True
+            debug.note("cli_kaggle._endpoint_answers status",
+                       f"saved endpoint returned HTTP {answer.status}")
+    except (urllib.error.URLError, OSError, TimeoutError):
+        debug.swallowed("cli_kaggle._endpoint_answers probe")
+    return False
+
+
+def _existing_executable(which_fn=shutil.which, home_dir=None):
+    """The Kaggle CLI already on this machine. Never installs anything.
+
+    Closing the program is the wrong moment to offer an installation: what is
+    being asked for here is cleanup of something that only exists because the
+    CLI was there a moment ago.
+    """
+    found = which_fn("kaggle")
+    if found:
+        return Path(found)
+    link = _home(home_dir) / ".local" / "bin" / "kaggle"
+    return link if link.exists() else None
+
+
+def profile_kernel_record(profile_name, config_file=None):
+    """The kernel this program launched for `profile_name`, or None."""
+    if not profile_name:
+        return None
+    for record in reversed(
+            (config.load(config_file).get("kaggle") or {}).get("kernels") or []):
+        if record.get("profile") == profile_name and record.get("slug"):
+            return record
+    return None
+
+
+def _record_environment(record, config_file=None):
+    account = record.get("account") or (
+        (config.load(config_file).get("kaggle") or {}).get("selected_account"))
+    if not account:
+        raise RuntimeError(t("cli.kaggle.accounts.none"))
+    return _account_environment(account, config_file)
+
+
+def ensure_profile_session(profile_name, input_fn=None, config_file=None,
+                           urlopen_fn=urllib.request.urlopen, run_kaggle_fn=None):
+    """Reopen the saved Kaggle kernel, or ask before spending quota on another.
+
+    Reactivating a kernel that is still serving costs nothing, so it happens
+    without asking. Pushing a new one spends GPU quota by wall clock and does
+    not come back, so it is never automatic: opening the program is not consent
+    to spend hours of somebody's weekly allowance.
+    """
+    record = profile_kernel_record(profile_name, config_file)
+    if record is None:
+        return None
+    profile = (config.load(config_file).get("profiles") or {}).get(profile_name)
+    if not profile or not profile.get("base_url"):
+        return None
+    if _endpoint_answers(profile, _secret_path(config_file), urlopen_fn):
+        debug.note("cli_kaggle.ensure_profile_session",
+                   f"{record['slug']} is still serving, nothing was pushed")
+        return "live"
+    print(t("cli.kaggle.session.gone", slug=record["slug"]))
+    _forget_kernel_record(record["slug"], config_file)
+    input_fn = input if input_fn is None else input_fn
+    try:
+        answer = input_fn(t("cli.kaggle.session.relaunch")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer != t("cli.kaggle.confirm_yes"):
+        print(t("cli.kaggle.session.declined"))
+        return "declined"
+    if run_kaggle_fn is None:
+        # The same screens the `/kaggle` command uses, so relaunching offers the
+        # live model list instead of a second, poorer version of it.
+        import setup_ollama
+
+        run_kaggle_fn = setup_ollama.run_kaggle
+    code = run_kaggle_fn(config_file=config_file, input_fn=input_fn)
+    return "relaunched" if code == 0 else "failed"
+
+
+def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
+                         which_fn=shutil.which, home_dir=None):
+    """End the kernel this program launched for the profile it just used.
+
+    What isaacli starts, isaacli stops. A Kaggle session spends quota by wall
+    clock until something deletes the kernel, and leaving that to the user put
+    the only brake on the spending outside the program. Only the kernel behind
+    the profile this process opened is touched: a second isaacli serving from
+    another kernel of the same account must not have it deleted underneath it,
+    and `isaacli kaggle --stop` is how those are reached.
+    """
+    record = profile_kernel_record(profile_name, config_file)
+    if record is None:
+        return None
+    executable = _existing_executable(which_fn, home_dir)
+    if executable is None:
+        print(t("cli.kaggle.session.no_cli", slug=record["slug"]))
+        return None
+    print(t("cli.kaggle.session.stopping", slug=record["slug"]))
+    try:
+        environment = _record_environment(record, config_file)
+        stop_kernel(executable, record["slug"], run_fn, environment)
+    except RuntimeError as error:
+        # Saying nothing here would leave quota draining behind a screen that
+        # already said goodbye.
+        print(t("cli.kaggle.session.stop_failed", slug=record["slug"], error=error))
+        return None
+    _forget_kernel_record(record["slug"], config_file)
+    print(t("cli.kaggle.session.stopped", slug=record["slug"]))
+    return record["slug"]
+
+
 def _reactivate_live_profile(live, config_file=None, account=None,
                              urlopen_fn=urllib.request.urlopen):
     """Reactivate a saved profile only when its recorded kernel and API answer."""
@@ -1287,21 +1440,7 @@ def _reactivate_live_profile(live, config_file=None, account=None,
         profile = (data.get("profiles") or {}).get(profile_name)
         if not profile or profile.get("model") == "isaacli-flow-probe":
             continue
-        key = config.load_secret(profile.get("credential"), secret_path)
-        request = urllib.request.Request(
-            profile["base_url"].rstrip("/") + "/models",
-            headers={"Authorization": "Bearer " + key} if key else {},
-        )
-        try:
-            with urlopen_fn(request, timeout=10) as answer:
-                if answer.status != 200:
-                    debug.note(
-                        "cli_kaggle._reactivate_live_profile status",
-                        f"saved endpoint returned HTTP {answer.status}",
-                    )
-                    continue
-        except (urllib.error.URLError, OSError, TimeoutError):
-            debug.swallowed("cli_kaggle._reactivate_live_profile probe")
+        if not _endpoint_answers(profile, secret_path, urlopen_fn):
             continue
         data["default_profile"] = profile_name
         config.save(data, config_file)

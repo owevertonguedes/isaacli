@@ -66,7 +66,9 @@ from cli_ollama import (
     _pid_identity, _shared_ollama_state,
 )
 from cli_kaggle import (
+    ensure_profile_session as _kaggle_ensure_session,
     run_kaggle as _run_kaggle,
+    stop_profile_session as _kaggle_stop_session,
     uninstall_managed_kaggle as _uninstall_managed_kaggle,
 )
 from cli_providers import ProvidersMixin
@@ -223,6 +225,10 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             language = None
         self.tr = set_language(language)
         self.provider = provider or {"provider": "ollama"}
+        # The Kaggle profile whose kernel this run is responsible for ending.
+        # It is a name and not a flag because `/kaggle` can create one mid
+        # session, and that kernel is just as much ours to stop.
+        self.kaggle_profile = None
         self.workspace = Path(workspace).expanduser().resolve()
         self.max_steps = max_steps
         self.autostart_ollama = autostart_ollama
@@ -944,6 +950,18 @@ def main(argv=None):
             # below asks for another try instead of picking a model for the user.
             config_data = config.empty_config()
             default_profile = None
+    # A saved Kaggle profile points at a tunnel that only exists while its
+    # kernel does. Reaching it before the first question is what turns "the
+    # model answered HTTP 530" into a sentence about the kernel being over.
+    kaggle_profile = None
+    if (default_profile is not None and args.model is None
+            and not os.environ.get("ISAACLI_MODEL")):
+        state = _kaggle_ensure_session(_profile_name)
+        if state in ("relaunched", "declined", "failed"):
+            config_data = config.load()
+            _profile_name, default_profile = config.profile(config_data)
+        if state in ("live", "relaunched"):
+            kaggle_profile = _profile_name
     model = (
         args.model
         or os.environ.get("ISAACLI_MODEL")
@@ -968,6 +986,7 @@ def main(argv=None):
         temperature=(model_profile or {}).get("temperature"),
     )
     cli.provider = cli._provider_from_profile(model_profile)
+    cli.kaggle_profile = kaggle_profile
     if resumed:
         cli.history = resumed["history"]
         cli.resume_transcript = resumed["transcript"]
@@ -979,6 +998,11 @@ def main(argv=None):
         return cli.repl()
     finally:
         _close_without_interruption(cli)
+        # Ollama is left running because starting it again is free; a Kaggle
+        # kernel is not. It spends quota by wall clock until it is deleted, so
+        # the program that started it ends it, here, on every way out that runs
+        # a `finally`, including SIGHUP and SIGTERM.
+        _kaggle_stop_session(cli.kaggle_profile)
 
 
 if __name__ == "__main__":
