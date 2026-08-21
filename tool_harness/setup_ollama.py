@@ -42,7 +42,9 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
             and isinstance(item["scores"], dict)
             for item in models):
         raise RuntimeError(Translator().t("setup.catalog.not_list", path=path))
-    return models
+    # This section is the reviewed list, and every screen that draws it says so
+    # on the row itself, next to rows that were merely found.
+    return [{**item, "curated": True} for item in models]
 
 
 LOCAL_CATALOG = _load_catalog("local")
@@ -226,7 +228,21 @@ def _model_label(item, installed, tr):
     state = ("model.installed" if _is_installed(base, installed)
               else "model.not_installed")
     fit = item.get("fit_label") or tr.t("model.fit.unknown")
-    return tr.t("model.option", model=base, state=tr.t(state), fit=fit)
+    return tr.t("model.option", model=base, state=tr.t(state),
+                origin=_origin_label(item, tr), fit=fit)
+
+
+def _origin_label(item, tr):
+    """What stands behind this row: curation, a public score, or nothing.
+
+    A model already installed is neither suggested nor discovered: the user put
+    it there, and saying "found live, no evidence" about their own model would
+    be describing this program's search instead of their machine.
+    """
+    evidence = item.get("catalog") or item.get("resolved")
+    if evidence is None:
+        return tr.t("model.origin.installed")
+    return model_discovery.origin_label(evidence, tr.t)
 
 
 def _task_ruler(task, tr):
@@ -442,12 +458,38 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     explanation = None if discovered else "\n".join(
         model_discovery.text("model.discovery.failed", error=error)
         for error in errors) or None
+    # What the user asked is "what can I run", so the answer is drawn against
+    # their machine, the way the curated screen already is. A model that does
+    # not fit still appears, saying so: hiding it would make the list look like
+    # the whole of Hugging Face fits in this GPU.
+    vram_mb, gpu_count = model_discovery.local_vram()
+    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    ranked = []
+    for item in discovered:
+        complete = all(key in item for key in
+                       ("model_bytes", "n_layers", "n_kv_heads", "head_dim"))
+        if not complete:
+            ranked.append((dict(item, fits=False), tr.t("model.fit.unknown")))
+            continue
+        report = model_discovery.fit_report(item, vram_mb, overhead_mb=overhead_mb)
+        if not gpu_count:
+            label = tr.t("model.fit.no_gpu_sized",
+                         weights=f"{item['model_bytes'] / 1024 ** 3:.2f}")
+        else:
+            label = tr.t("model.fit.fits") if report["fits"] else tr.t(
+                "model.fit.does_not_fit")
+        ranked.append((report, label))
+    ranked.sort(key=lambda entry: not entry[0]["fits"])
+    discovered = [report for report, _label in ranked]
     entries = [*discovered, "__exact__", "__back__"]
     options = [
         *[
-            f"{item['name']} | {item['benchmark']} | "
-            f"{item['model_bytes'] / 1024 ** 3:.2f} GiB"
-            for item in discovered
+            tr.t(
+                "model.discovery.entry", name=report["name"],
+                size=f"{report['model_bytes'] / 1024 ** 3:.2f}",
+                origin=model_discovery.origin_label(report, tr.t),
+                benchmark=report["benchmark"], fit=label)
+            for report, label in ranked
         ],
         model_discovery.text("model.discovery.exact"),
         model_discovery.text("model.discovery.back"),

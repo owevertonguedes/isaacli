@@ -662,7 +662,10 @@ def _load_model_candidates(path=MODEL_CATALOG_PATH):
             or any(not isinstance(item, dict) or not required <= item.keys()
                    for item in candidates)):
         raise RuntimeError(t("cli.kaggle.catalog.invalid", error="invalid entries"))
-    return candidates
+    # The seed is the reviewed list, and the screen says so on each row. A live
+    # search result that happens to resolve the same fields does not become
+    # reviewed by looking alike.
+    return [{**item, "curated": True} for item in candidates]
 
 
 def models_for_accelerator(machine_shape, catalog_path=MODEL_CATALOG_PATH):
@@ -723,10 +726,13 @@ def model_entry(model, no_score=""):
     could not read. The evidence behind the chosen row is not dropped, it is
     printed once for the row that was actually chosen.
     """
+    import model_discovery
+
     return t(
         "cli.kaggle.models.entry", name=model["name"],
         size=f"{model['model_bytes'] / 1024 ** 3:.2f}",
         machine=model.get("machine_label", ""),
+        origin=model_discovery.origin_label(model, t),
         benchmark=model.get("benchmark") or no_score,
     )
 

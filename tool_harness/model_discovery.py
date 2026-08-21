@@ -244,8 +244,20 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
     repo_payload = _json_request(
         f"{HF_API}/{quoted_repo}", timeout=timeout, urlopen_fn=urlopen_fn,
     )
+    if repo_payload.get("gated"):
+        # Hugging Face answers the metadata of a gated repository and refuses
+        # its files, so the download only fails after the user has chosen it and
+        # a kernel is already spending quota. Ask now, while it is still free.
+        raise DiscoveryError(text("model.discovery.error.gated", repo=repo))
     selected_file = _select_gguf(_gguf_files(repo_payload), selector)
     upstream = _base_model(repo_payload)
+    # A repository that declares a base model and does not merely requantize it
+    # is a changed model: Uncensored, abliterated, a merge, an aggressive MTP
+    # graft. It may be exactly what somebody wants, and it stays reachable by
+    # exact reference, but it was never the model anybody measured, so it is not
+    # something this program puts in front of a user as a suggestion.
+    derived = bool(upstream) and not _is_plain_quantization(repo, upstream)
+    derived_from = upstream if derived else None
     by_gguf, by_upstream = _seed_maps(catalog_path) if catalog_path else ({}, {})
     evidence = by_gguf.get(repo.casefold())
     if evidence and not upstream:
@@ -291,11 +303,32 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "upstream_repo": upstream,
         "downloads": repo_payload.get("downloads", 0),
         "file_url": file_url,
+        "curated": bool(by_gguf.get(repo.casefold())),
+        "derived": derived,
+        "derived_from": derived_from,
     }
 
 
+def origin(model):
+    """Where a row's authority comes from: curation, a public score, or nothing.
+
+    The user reads a list of suggestions and has no way to tell which rows this
+    program stands behind. Saying it on each row is what keeps a live search
+    result from borrowing the standing of a reviewed one.
+    """
+    if model.get("curated"):
+        return "curated"
+    return "scored" if model.get("scores") else "discovered"
+
+
+def origin_label(model, translate=None):
+    translate = translate or text
+    return translate("model.origin." + origin(model))
+
+
 def discover_models(catalog_path, search=None, limit=6,
-                    urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT):
+                    urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT,
+                    include_derived=False):
     """Discover and resolve live candidates while preserving search order."""
     query = {"filter": "gguf", "limit": str(limit)}
     if search:
@@ -324,7 +357,17 @@ def discover_models(catalog_path, search=None, limit=6,
                 resolved[repo] = future.result()
             except DiscoveryError as error:
                 errors.append(f"{repo}: {error}")
-    models = [resolved[repo] for repo in repos if repo in resolved]
+    models = []
+    for repo in repos:
+        model = resolved.get(repo)
+        if model is None:
+            continue
+        if model.get("derived") and not include_derived:
+            errors.append(text(
+                "model.discovery.error.derived", repo=repo,
+                upstream=model.get("derived_from") or "?"))
+            continue
+        models.append(model)
     return models, errors
 
 

@@ -454,6 +454,82 @@ check(model_discovery._is_plain_quantization("unsloth/Model-X-GGUF", "org/Model-
       "only a name that adds nothing but the format counts as the same weights")
 
 
+# ----------------------------------------------------------------------
+# What a list of suggestions accepts.
+#
+# The first real use put `Qwen3.8-27B-Uncensored` and `-OBLITERATED` on a
+# screen titled recommendation. The rule is not a list of forbidden words:
+# a repository that declares a base model and is not simply a requantization
+# of it is a changed model, so nothing published about the base describes it.
+# It stays reachable by exact reference and leaves the suggestions.
+# ----------------------------------------------------------------------
+def suggestion_urlopen(request, timeout=None):
+    url = request.full_url
+    if url.startswith(model_discovery.HF_API + "?"):
+        return FakeResponse([{"id": official_gguf}, {"id": derivative}])
+    return attribution_urlopen(request, timeout)
+
+
+suggested, suggestion_errors = model_discovery.discover_models(
+    catalog, urlopen_fn=suggestion_urlopen)
+with_derived, _errors = model_discovery.discover_models(
+    catalog, urlopen_fn=suggestion_urlopen, include_derived=True)
+check([item["repo"] for item in suggested] == [official_gguf]
+      and any(derivative in message for message in suggestion_errors)
+      and [item["repo"] for item in with_derived] == [official_gguf, derivative],
+      "a modified build leaves the suggestions and its reason goes to --debug")
+check(modified["derived"] and modified["derived_from"] == official_upstream
+      and not official["derived"],
+      "being a changed model is decided by the declared base, not by the name")
+check(model_discovery.origin(official) == "curated"
+      and model_discovery.origin(
+          {"scores": {"swebench_verified": 1.0}}) == "scored"
+      and model_discovery.origin({"scores": {}}) == "discovered",
+      "every row can say whether it was reviewed, scored, or merely found")
+
+
+# A gated repository answers its metadata and refuses its files. Finding that
+# out after a kernel is up costs quota; finding it out here costs nothing.
+def gated_urlopen(request, timeout=None):
+    url = request.full_url
+    if url.startswith(model_discovery.HF_API + "/"):
+        return FakeResponse({
+            "id": "org/Gated-GGUF", "gated": "auto",
+            "siblings": [{"rfilename": "gated-Q4_K_M.gguf"}],
+        })
+    raise AssertionError("a gated repository was read past its metadata")
+
+
+gated_error = None
+try:
+    model_discovery.resolve_hf_model(
+        "org/Gated-GGUF", catalog_path=catalog, urlopen_fn=gated_urlopen)
+except model_discovery.DiscoveryError as error:
+    gated_error = str(error)
+check(gated_error and "org/Gated-GGUF" in gated_error,
+      "a gated repository is refused while it is still free to find out")
+
+# The local discovery screen answers "what can I run", so it is drawn against
+# this machine and the ones that fit come first.
+fit_screens = []
+original_local_vram = model_discovery.local_vram
+original_ui = setup_ollama.terminal_ui.select
+try:
+    model_discovery.local_vram = lambda: (16384, 1)
+    setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
+        fit_screens.append(options) or len(options) - 1)
+    with redirect_stdout(io.StringIO()):
+        setup_ollama._choose_other_ollama(
+            lambda _prompt="": "", setup_ollama.Translator("en"), catalog,
+            fake_urlopen)
+finally:
+    model_discovery.local_vram = original_local_vram
+    setup_ollama.terminal_ui.select = original_ui
+rows = fit_screens[-1][:-2]
+check(len(rows) == 2 and "Fits" in rows[0] and "Does not fit" in rows[1]
+      and "found live" in rows[0],
+      "the discovery screen says what fits this machine, fitting models first")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")
