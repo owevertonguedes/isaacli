@@ -133,12 +133,25 @@ def _base_model(payload):
     return base if isinstance(base, str) and len(base.split("/")) == 2 else None
 
 
+# What a repository publishes is not a name this program chose, and the file
+# name ends up inside a Python literal in the kernel Kaggle runs on the user's
+# account. Rendering refuses an unusable name, which is the guarantee; leaving
+# it out here as well means it is never offered in the first place, so the
+# refusal cannot arrive after a model has been chosen.
+SAFE_GGUF_NAME = re.compile(r"[A-Za-z0-9_./+ -]+")
+
+
 def _gguf_files(payload):
     names = []
     for sibling in payload.get("siblings") or []:
         name = sibling.get("rfilename") if isinstance(sibling, dict) else None
-        if isinstance(name, str) and name.lower().endswith(".gguf"):
-            names.append(name)
+        if not isinstance(name, str) or not name.lower().endswith(".gguf"):
+            continue
+        if ".." in name or not SAFE_GGUF_NAME.fullmatch(name):
+            debug.note("model_discovery._gguf_files",
+                       f"skipping a file whose name cannot be used safely: {name[:80]}")
+            continue
+        names.append(name)
     return names
 
 

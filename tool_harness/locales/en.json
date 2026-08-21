@@ -475,6 +475,7 @@
   "cli.kaggle.preference.repeat": "Launch {model} on {account} again",
   "cli.kaggle.preference.change": "Choose another account or model",
   "cli.kaggle.preference.using": "Launching {model} on {machine}, the choice from last time.",
+  "cli.kaggle.kernel.unsafe_value": "Refusing to build the kernel: the {marker} value is not something that can be put in it safely: {value}",
   "model.origin.curated": "reviewed here",
   "model.origin.scored": "public score",
   "model.origin.discovered": "found live, no evidence",

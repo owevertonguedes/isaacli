@@ -475,6 +475,7 @@
   "cli.kaggle.preference.repeat": "Subir {model} na conta {account} de novo",
   "cli.kaggle.preference.change": "Escolher outra conta ou outro modelo",
   "cli.kaggle.preference.using": "Subindo {model} em {machine}, a escolha da última vez.",
+  "cli.kaggle.kernel.unsafe_value": "Recusei montar o kernel: o valor de {marker} não é algo que dê para colocar nele com segurança: {value}",
   "model.origin.curated": "revisado aqui",
   "model.origin.scored": "placar público",
   "model.origin.discovered": "achado ao vivo, sem evidência",

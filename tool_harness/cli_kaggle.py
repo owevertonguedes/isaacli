@@ -869,6 +869,43 @@ def _needs_every_gpu(model):
         overhead_mb=accelerator["overhead_mb"] // count)
 
 
+# Every marker below lands inside a bare double-quoted Python literal in a file
+# Kaggle runs on the user's own account, so a value carrying a quote, a
+# backslash or a newline stops being data and becomes code. The repository name
+# and the selector a user types are already checked where they are typed, but
+# the file name is not typed: it is whatever `siblings` says, straight from
+# Hugging Face, and it only ever had to end in .gguf. Rendering is the one point
+# every path goes through, curated, discovered, exact reference, sibling
+# precision, remembered preference and flow validation alike, so the check lives
+# here rather than in each of them.
+KERNEL_VALUE_PATTERNS = {
+    "__MODEL_REPO__": re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"),
+    "__MODEL_FILE__": re.compile(r"[A-Za-z0-9_./+ -]+"),
+    "__MODEL_ALIAS__": re.compile(r"[A-Za-z0-9_.-]+"),
+    "__API_KEY__": re.compile(r"[A-Za-z0-9_-]+"),
+    "__CUDA_ARCH__": re.compile(r"[0-9]+"),
+    "__MACHINE_SHAPE__": re.compile(r"[A-Za-z0-9]+"),
+    "__GPU_COUNT__": re.compile(r"[0-9]+"),
+    "__SPLIT_MODE__": re.compile(r"[a-z]+"),
+}
+
+
+def _kernel_value(marker, value):
+    """One substituted value, or a refusal naming which one it was.
+
+    An empty value is the flow validation probe, which carries no model at all.
+    `..` is refused on top of the pattern because it is legal in a file name and
+    is a path traversal in the kernel's own download.
+    """
+    text = "" if value is None else str(value)
+    if text == "":
+        return ""
+    if ".." in text or not KERNEL_VALUE_PATTERNS[marker].fullmatch(text):
+        raise RuntimeError(t("cli.kaggle.kernel.unsafe_value",
+                             marker=marker.strip("_").lower(), value=text[:80]))
+    return text
+
+
 def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
                    dataset_sources=None):
     template_name = "flow-validation-cpu.py.tmpl" if validation_cpu else "gpu-server.py.tmpl"
@@ -883,6 +920,8 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
         "__GPU_COUNT__": str(model.get("gpu_count", 0)),
         "__SPLIT_MODE__": "layer" if _needs_every_gpu(model) else "none",
     }
+    values = {marker: _kernel_value(marker, value)
+              for marker, value in values.items()}
     for marker, value in values.items():
         template = template.replace(marker, value)
     code_name = f"{slug.rsplit('/', 1)[-1]}.py"

@@ -1701,6 +1701,74 @@ finally:
 check(switch_screens and switch_screens[0][2] == {1},
       "replacing is refused while another window is using that kernel")
 
+# The kernel is a Python file this program writes and Kaggle runs on the user's
+# own account, and every marker lands inside a bare double-quoted literal. The
+# repository name and the selector a user types are checked, but the file name
+# is whatever the repository publishes: `siblings` comes from Hugging Face and
+# only had to end in .gguf. A name carrying a quote or a newline leaves the
+# string and becomes code. Proven by parsing what gets written, not by reading a
+# refusal message.
+import ast as kernel_ast
+
+hostile_values = [
+    ("file", 'Model".gguf'),
+    ("file", 'Model\n__import__("os").system("id")\n#.gguf'),
+    ("repo", 'org/Repo"+__import__("os").popen("id").read()+"'),
+    ("alias", 'alias"\nSTOLEN = 1\n#'),
+]
+escaped = []
+for field, value in hostile_values:
+    model = {
+        "repo": "org/Repo-GGUF", "file": "Model-Q4_K_M.gguf",
+        "alias": "model-q4-k-m", "machine_shape": "NvidiaTeslaT4",
+        "cuda_arch": "75", "gpu_count": 2,
+    }
+    model[field] = value
+    folder = Path(tempfile.mkdtemp())
+    try:
+        cli_kaggle._render_kernel(
+            folder, "user/isaacli-gpu-x", model, "api-key", dataset_sources=[])
+    except (RuntimeError, ValueError):
+        continue
+    rendered = (folder / "isaacli-gpu-x.py").read_text(encoding="utf-8")
+    try:
+        tree = kernel_ast.parse(rendered)
+    except SyntaxError:
+        # Leaving the literal at all is the escape. Whether the result happens
+        # to parse is the attacker's problem, not evidence of containment.
+        escaped.append((field, value))
+        continue
+    planted = [
+        node for node in kernel_ast.walk(tree)
+        if isinstance(node, kernel_ast.Call)
+        and isinstance(node.func, kernel_ast.Name)
+        and node.func.id == "__import__"
+    ] + [
+        node for node in kernel_ast.walk(tree)
+        if isinstance(node, kernel_ast.Assign)
+        and any(isinstance(target, kernel_ast.Name) and target.id == "STOLEN"
+                for target in node.targets)
+    ]
+    if planted:
+        escaped.append((field, value))
+check(not escaped,
+      "a hostile file or repository name cannot become code inside the kernel")
+
+# And the honest values still render, otherwise the guard has just broken the
+# feature it was protecting.
+plain_folder = Path(tempfile.mkdtemp())
+cli_kaggle._render_kernel(
+    plain_folder, "user/isaacli-gpu-ok",
+    {"repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+     "file": "Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+     "alias": "qwen3-coder-30b-a3b", "machine_shape": "NvidiaTeslaT4",
+     "cuda_arch": "75", "gpu_count": 2},
+    "kkQ9-_ab", dataset_sources=[])
+plain = (plain_folder / "isaacli-gpu-ok.py").read_text(encoding="utf-8")
+check("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf" in plain
+      and kernel_ast.parse(plain) is not None,
+      "an ordinary repository, subfolder and key still render into a valid kernel")
+
 # The tunnel URL dies with the kernel, so the profile built from it is thrown
 # away and every launch asked for the account, the model and the exact file
 # again. What the user chose is durable even though the session is not, so it is

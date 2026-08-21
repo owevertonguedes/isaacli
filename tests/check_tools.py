@@ -227,6 +227,63 @@ with tempfile.TemporaryDirectory() as tmp:
     check([s["function"]["name"] for s in tools.filtered_schema(["read_file"])] == ["read_file"],
           "filtered_schema returns only what was asked for")
 
+# The boundary is tested by effect, not by the refusal it prints. A test that
+# reads "path outside the sandbox" passes just as well against a version that
+# refuses and writes the file anyway, and the file is what matters.
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp) / "workspace"
+    root.mkdir()
+    tools.SANDBOX_ROOT = root
+    outside = Path(tmp) / "outside.txt"
+    outside.write_text("untouched\n")
+    (root / "shortcut").symlink_to(outside)
+    (root / "up").symlink_to(Path(tmp))
+
+    escapes = [
+        "../outside.txt",
+        "shortcut",
+        "up/outside.txt",
+        "sub/../../outside.txt",
+        str(outside),
+        "/etc/passwd",
+    ]
+    for attempt in escapes:
+        for call in (
+                lambda name: tools.write_file(name, "OWNED"),
+                lambda name: tools.append_file(name, "OWNED"),
+                lambda name: tools.replace_text(name, "untouched", "OWNED"),
+        ):
+            try:
+                call(attempt)
+            except ValueError:
+                pass
+    check(outside.read_text() == "untouched\n",
+          "no write, append or replace reaches a file outside the workspace")
+    check(Path("/etc/passwd").read_text().find("OWNED") == -1,
+          "an absolute system path is neutralised rather than followed")
+
+    # Reading has the same boundary, and a leak there is a disclosure rather
+    # than a corruption, so it is worth its own effect check.
+    leaked = []
+    for attempt in escapes:
+        try:
+            leaked.append(tools.read_file(attempt))
+        except ValueError:
+            pass
+    check(not any("untouched" in text or "root:" in text for text in leaked),
+          "no read reaches a file outside the workspace")
+
+    # A name that cannot be a path at all has to be refused, not passed down to
+    # the filesystem where the error would come back as something else.
+    refused_nul = []
+    for call in (tools.read_file,
+                 lambda name: tools.write_file(name, "x")):
+        try:
+            call("notes\0.txt")
+        except (ValueError, OSError):
+            refused_nul.append(True)
+    check(len(refused_nul) == 2, "a path holding a null byte is refused")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")
