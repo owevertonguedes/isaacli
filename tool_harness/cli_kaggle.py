@@ -1054,6 +1054,56 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
     return profile_name
 
 
+def remote_leftovers(executable, config_file=None, run_fn=subprocess.run):
+    """What this program put on Kaggle, per account, without deleting anything.
+
+    Uninstalling has to reach the account too. Everything here is named by
+    isaacli and owned by the authenticated user, and it is only ever reported:
+    what happens to somebody's Kaggle account is not decided by an uninstall
+    flag on their laptop.
+    """
+    accounts = ((config.load(config_file).get("kaggle") or {}).get("accounts") or {})
+    found = {}
+    for username in accounts:
+        try:
+            environment = _account_environment(username, config_file)
+            kernels = [
+                ref for ref in _kernel_refs(executable, run_fn, environment)
+                if ref.split("/", 1)[-1].startswith("isaacli-")
+            ]
+            datasets = sorted(
+                ref for ref in _dataset_refs(executable, run_fn, environment)
+                if ref.split("/", 1)[-1].startswith("isaacli-")
+            )
+        except RuntimeError as error:
+            # An account whose credential no longer works cannot be asked, and
+            # that must not stop the local cleanup of every other account.
+            debug.note(f"cli_kaggle.remote_leftovers {username}", error)
+            continue
+        if kernels or datasets:
+            found[username] = {"kernels": kernels, "datasets": datasets}
+    return found
+
+
+def delete_remote_leftovers(executable, leftovers, config_file=None,
+                            run_fn=subprocess.run):
+    """Delete exactly what was listed and confirmed, reporting each failure."""
+    removed, failed = [], []
+    for username, items in leftovers.items():
+        environment = _account_environment(username, config_file)
+        for noun, refs in (("kernels", items["kernels"]),
+                            ("datasets", items["datasets"])):
+            for ref in refs:
+                result = _run_capture(
+                    [str(executable), noun, "delete", ref, "--yes"],
+                    run_fn, environment)
+                if result.returncode == 0:
+                    removed.append(ref)
+                else:
+                    failed.append((ref, (result.stderr or result.stdout).strip()))
+    return removed, failed
+
+
 def stop_kernel(executable, slug, run_fn=subprocess.run, env=None):
     """End a session, which on Kaggle means deleting the kernel that owns it.
 

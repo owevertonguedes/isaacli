@@ -737,6 +737,49 @@ class _IsaacArgumentParser(argparse.ArgumentParser):
         self.exit(2, f"{self.prog}: error: {message}\n")
 
 
+def _offer_remote_cleanup(input_fn=input, which_fn=shutil.which, run_fn=None,
+                          config_file=None):
+    """Show what this program left on Kaggle and offer to delete it there too.
+
+    Removing the launcher and the local credential leaves the kernels and
+    private datasets isaacli created sitting in the account, and a kernel left
+    behind can still be spending quota. Deleting is destructive and it is a
+    third party account, so the list goes on screen and the answer is typed.
+    """
+    import cli_kaggle
+
+    executable = which_fn("kaggle")
+    if not executable:
+        return {}
+    run_fn = subprocess.run if run_fn is None else run_fn
+    try:
+        leftovers = cli_kaggle.remote_leftovers(executable, config_file, run_fn)
+    except (OSError, RuntimeError) as error:
+        print(t("cli.uninstall.kaggle.remote_failed", error=error))
+        return {}
+    if not leftovers:
+        return {}
+    print(t("cli.uninstall.kaggle.remote_found"))
+    for username, items in leftovers.items():
+        for ref in items["kernels"] + items["datasets"]:
+            print(f"  {username}: {ref}")
+    print(t("cli.uninstall.kaggle.remote_explain"))
+    try:
+        answer = input_fn(t("cli.uninstall.kaggle.remote_confirm"))
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() != t("cli.uninstall.confirm_yes"):
+        print(t("cli.uninstall.kaggle.remote_kept"))
+        return {}
+    removed, failed = cli_kaggle.delete_remote_leftovers(
+        executable, leftovers, config_file, run_fn)
+    for ref in removed:
+        print(t("cli.uninstall.kaggle.remote_removed", ref=ref))
+    for ref, error in failed:
+        print(t("cli.uninstall.kaggle.remote_failed_one", ref=ref, error=error))
+    return leftovers
+
+
 def _print_commands_help(usage_message):
     print(usage_message)
     print()
@@ -862,6 +905,11 @@ def main(argv=None):
             uninstall_code = _uninstall_launcher(purge=True, check_only=True)
             if uninstall_code != 0:
                 return uninstall_code
+            # Reaching the account has to happen before the credential is
+            # deleted, and refusing it must not stop the local cleanup: what
+            # happens to somebody's Kaggle account is their decision, and a
+            # forgotten kernel there can still be spending quota.
+            _offer_remote_cleanup()
             kaggle_code = _uninstall_managed_kaggle(remove_credentials=True)
             if kaggle_code != 0:
                 return kaggle_code

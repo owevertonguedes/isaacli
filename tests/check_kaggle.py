@@ -972,6 +972,61 @@ check(all(Path(path).is_relative_to(config.cache_path()) for path in prepare_pat
       and Path(cli_kaggle._scratch_root()) == config.cache_path(),
       "large staging follows the cache location, not the system temp filesystem")
 
+# Uninstalling has to reach the account, not only the disk. A kernel left in a
+# Kaggle account can still be spending quota, and the credential that could
+# delete it is about to be removed from this machine. It is a third party
+# account, so the list goes on screen and refusing must not block the local
+# cleanup.
+remote_file = root / "remote" / "config.json"
+add_account(remote_file, "leaver", "leave-key")
+remote_commands = []
+
+
+def remote_run(command, check=False, capture_output=False, text=False, env=None,
+               **kwargs):
+    parts = list(map(str, command))
+    remote_commands.append(parts)
+    joined = " ".join(parts)
+    if "kernels list" in joined:
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ref,title\nleaver/isaacli-gpu-1,Gpu\nleaver/my-own-notebook,Mine\n",
+            stderr="")
+    if "datasets list" in joined:
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ref,title\nleaver/isaacli-llama-cuda-sm75-b10502,Runtime\n"
+                   "leaver/my-own-dataset,Mine\n",
+            stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+found = cli_kaggle.remote_leftovers(Path("/fake/kaggle"), remote_file, remote_run)
+check(found == {"leaver": {
+          "kernels": ["leaver/isaacli-gpu-1"],
+          "datasets": ["leaver/isaacli-llama-cuda-sm75-b10502"]}},
+      "what this program left on Kaggle is listed, and the user's own work is not")
+
+kept_output = io.StringIO()
+with redirect_stdout(kept_output):
+    kept = cli._offer_remote_cleanup(
+        input_fn=lambda _prompt: "n", which_fn=lambda _name: "/fake/kaggle",
+        run_fn=remote_run, config_file=remote_file)
+check(kept == {}
+      and not any("delete" in parts for parts in remote_commands)
+      and "leaver/isaacli-gpu-1" in kept_output.getvalue(),
+      "refusing the remote cleanup shows the list and deletes nothing")
+
+with redirect_stdout(io.StringIO()):
+    cli._offer_remote_cleanup(
+        input_fn=lambda _prompt: "y", which_fn=lambda _name: "/fake/kaggle",
+        run_fn=remote_run, config_file=remote_file)
+remote_deletes = [parts[1:4] for parts in remote_commands if "delete" in parts]
+check(remote_deletes == [["kernels", "delete", "leaver/isaacli-gpu-1"],
+                         ["datasets", "delete",
+                          "leaver/isaacli-llama-cuda-sm75-b10502"]],
+      "confirming deletes exactly what was listed, on Kaggle, and nothing else")
+
 # Stopping is the only thing that stops the quota, and for a long time the
 # program said it was impossible. Measured against a kernel that really was
 # running: `kernels delete` succeeded, the tunnel answered HTTP 530 afterwards
