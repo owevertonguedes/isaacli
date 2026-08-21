@@ -1377,4 +1377,17 @@ if failures:
     for f in failures:
         print(f"  - {f}")
     sys.exit(1)
+# Two READMEs are two chances to describe a program that no longer exists. The
+# text cannot be compared, but the shape can: a section added to one and not the
+# other is the way they drift, and it is silent.
+readmes = {
+    name: [line for line in (HERE.parent / name).read_text(encoding="utf-8").splitlines()
+           if line.startswith("#")]
+    for name in ("README.md", "README.pt-BR.md")
+}
+check(len(readmes["README.md"]) == len(readmes["README.pt-BR.md"])
+      and [line.split(" ", 1)[0] for line in readmes["README.md"]]
+      == [line.split(" ", 1)[0] for line in readmes["README.pt-BR.md"]],
+      "the two READMEs still have the same sections at the same depth")
+
 print("ISAAC CLI OK: workspace, model and basic output without Ollama")
