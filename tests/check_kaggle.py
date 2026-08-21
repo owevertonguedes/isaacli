@@ -1979,6 +1979,74 @@ check(cli_kaggle._asset_refs("owner", catalogued)["model"]
       == "owner/isaacli-model-qwen3-coder-30b-a3b",
       "a catalogued alias keeps the exact name its dataset was published under")
 
+# The preparation kernel is a second file this program writes and Kaggle runs on
+# the user's account, and it substitutes into a bare literal exactly like the GPU
+# one. Rendering was described as the single point every value passes through,
+# and this path was not going through it.
+hostile_arch_dir = root / "preparation-hostile"
+hostile_arch_dir.mkdir()
+try:
+    cli_kaggle._render_preparation_kernel(
+        hostile_arch_dir, "owner/prepare",
+        '75"\n__import__("os").system("id")\n#')
+except (RuntimeError, ValueError):
+    prepared_source = None
+else:
+    prepared_source = (hostile_arch_dir / "prepare.py").read_text(encoding="utf-8")
+prepared_planted = bool(prepared_source) and any(
+    isinstance(node, kernel_ast.Call) and isinstance(node.func, kernel_ast.Name)
+    and node.func.id == "__import__"
+    for node in kernel_ast.walk(kernel_ast.parse(prepared_source)))
+check(prepared_source is None or not prepared_planted,
+      "a hostile architecture cannot become code inside the preparation kernel")
+plain_arch_dir = root / "preparation-plain"
+plain_arch_dir.mkdir()
+cli_kaggle._render_preparation_kernel(plain_arch_dir, "owner/prepare", "75")
+check('CUDA_ARCH = "75"' in
+      (plain_arch_dir / "prepare.py").read_text(encoding="utf-8"),
+      "an ordinary architecture still renders into the preparation kernel")
+
+# The saved preference replays a dict straight from config.json, which is a file
+# a person edits. Nothing between the file and `curl`, a path join and a kernel
+# literal was checking that what came back is still the shape this program wrote.
+hostile_pref_file = root / "preference-hostile" / "config.json"
+config.save({"language": "en"}, hostile_pref_file)
+cli_kaggle.register_account("user", {"key": "account-key"}, hostile_pref_file)
+sane_model = {
+    "alias": "model-q4-k-m", "name": "Model, Q4_K_M", "repo": "org/Repo-GGUF",
+    "file": "Model-Q4_K_M.gguf", "model_bytes": 10 * 1024 ** 3,
+    "machine_shape": "NvidiaTeslaT4", "cuda_arch": "75", "gpu_count": 2,
+}
+hostile_preferences = [
+    ("cuda_arch", '75"\n__import__("os").system("id")\n#'),
+    ("file", "../../../../etc/isaacli-escaped.gguf"),
+    ("file_url", "file:///etc/passwd"),
+    ("model_bytes", "large"),
+    ("alias", 'alias"\nSTOLEN = 1\n#'),
+]
+replayed = []
+for field, value in hostile_preferences:
+    edited = dict(sane_model)
+    edited[field] = value
+    data = config.load(hostile_pref_file)
+    data.setdefault("kaggle", {})["preference"] = {
+        "account": "user", "model": edited}
+    config.save(data, hostile_pref_file)
+    with redirect_stdout(io.StringIO()):
+        if cli_kaggle.stored_preference(hostile_pref_file) is not None:
+            replayed.append(field)
+check(not replayed,
+      f"a hand-edited preference is not replayed into the launch: {replayed}")
+data = config.load(hostile_pref_file)
+data.setdefault("kaggle", {})["preference"] = {
+    "account": "user", "model": dict(sane_model)}
+config.save(data, hostile_pref_file)
+with redirect_stdout(io.StringIO()):
+    honest_preference = cli_kaggle.stored_preference(hostile_pref_file)
+check(honest_preference is not None
+      and honest_preference["model"]["file"] == "Model-Q4_K_M.gguf",
+      "the preference this program actually wrote is still offered back")
+
 # Cleanup a keypress can abort is not cleanup, and here it is not tidiness that
 # is lost: the kernel keeps spending quota by wall clock until it is deleted.
 interrupt_file = session_config(root / "session-interrupt" / "config.json")

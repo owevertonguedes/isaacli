@@ -953,9 +953,15 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
 
 
 def _render_preparation_kernel(folder, slug, cuda_arch):
+    # This is the second file this program writes for Kaggle to run on the
+    # user's own account, and it substitutes into a bare literal exactly like
+    # the GPU one. The comment above `KERNEL_VALUE_PATTERNS` called rendering
+    # the single point every value passes through, and that was only true of
+    # one of the two renderers.
     template = (TEMPLATE_DIR / "prepare-assets-cpu.py.tmpl").read_text(
         encoding="utf-8")
-    template = template.replace("__CUDA_ARCH__", cuda_arch)
+    template = template.replace(
+        "__CUDA_ARCH__", _kernel_value("__CUDA_ARCH__", cuda_arch))
     code_name = f"{slug.rsplit('/', 1)[-1]}.py"
     (folder / code_name).write_text(template, encoding="utf-8")
     metadata = {
@@ -1751,6 +1757,42 @@ def _offer_switch(record, profile_name, input_fn, config_file=None):
     return index == 0
 
 
+MODEL_FILE_URL_PREFIX = "https://huggingface.co/"
+
+
+def _replayable_model(model):
+    """Whether a remembered model is still the shape this program wrote.
+
+    Everything else about a saved model is checked where it is used, but the
+    saved copy skips the screens that produced it: it is read back out of
+    `config.json`, which is a file a person edits. The values then reach a path
+    join, a `curl` target, a dataset name and a literal in a kernel Kaggle runs
+    on the user's account, and the preparation half of that runs before the
+    launch is rendered. Checking the shape here is checking it at the entrance,
+    which is where the rest of this program puts its limits.
+    """
+    for marker, key in (("__MODEL_ALIAS__", "alias"), ("__MODEL_REPO__", "repo"),
+                        ("__MODEL_FILE__", "file"),
+                        ("__CUDA_ARCH__", "cuda_arch"),
+                        ("__MACHINE_SHAPE__", "machine_shape")):
+        try:
+            _kernel_value(marker, model.get(key))
+        except RuntimeError:
+            return key
+    for key in ("model_bytes", "kv_bytes", "gpu_count", "n_layers",
+                "n_kv_heads", "head_dim"):
+        value = model.get(key)
+        if value is not None and not isinstance(value, (int, float)):
+            return key
+    url = model.get("file_url")
+    if url is not None and not str(url).startswith(MODEL_FILE_URL_PREFIX):
+        # The only writer of this field builds it from that root, and the value
+        # is handed to `curl -o`, where a `file://` would copy something off
+        # this machine into a dataset instead of downloading a weight.
+        return "file_url"
+    return None
+
+
 def stored_preference(config_file=None):
     """The account and model of the last launch, when both still make sense.
 
@@ -1762,6 +1804,12 @@ def stored_preference(config_file=None):
     account = preference.get("account")
     model = preference.get("model")
     if not account or not isinstance(model, dict) or not model.get("alias"):
+        return None
+    edited = _replayable_model(model)
+    if edited:
+        debug.note("cli_kaggle.stored_preference",
+                   f"the remembered {edited} is not the shape this program "
+                   "saved, so the last choice is not repeated")
         return None
     if account not in (state.get("accounts") or {}):
         debug.note("cli_kaggle.stored_preference",
