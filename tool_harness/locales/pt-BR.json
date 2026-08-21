@@ -489,5 +489,6 @@
   "model.quantization.title": "Quanto deste modelo você quer?",
   "model.quantization.explain": "Menos bits significa menos memória e menos bytes lidos por token, ao custo de qualidade que não é medida aqui. O placar publicado descreve os pesos originais de qualquer forma.",
   "model.quantization.option": "{quantization} · {size} GiB · {fit}",
-  "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · já preparado na sua conta"
+  "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · já preparado na sua conta",
+  "cli.kaggle.url.ended": "O kernel {slug} terminou como {state} sem publicar a URL do túnel. O log dele na página do Kaggle diz por quê."
 }

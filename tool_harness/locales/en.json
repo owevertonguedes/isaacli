@@ -489,5 +489,6 @@
   "model.quantization.title": "How much of this model do you want?",
   "model.quantization.explain": "Fewer bits means less memory and fewer bytes read per token, at a cost in quality that is not measured here. The published score describes the original weights either way.",
   "model.quantization.option": "{quantization} · {size} GiB · {fit}",
-  "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · already prepared on your account"
+  "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · already prepared on your account",
+  "cli.kaggle.url.ended": "The kernel {slug} finished as {state} without publishing a tunnel URL. Its log on the Kaggle page says why."
 }

@@ -1117,36 +1117,64 @@ def _prepare_assets(executable, username, model, available, input_fn,
 URL_DISCOVERY_TIMEOUT = 30 * 60
 
 
+def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
+    """What Kaggle says about this kernel right now, as a bare word."""
+    result = _run_capture(
+        [str(executable), "kernels", "status", slug], run_fn, env)
+    output = (result.stdout + " " + result.stderr).strip()
+    match = re.search(r"KernelWorkerStatus\.([A-Z_]+)", output)
+    return match.group(1) if match else ""
+
+
 def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
-                        popen_fn=subprocess.Popen, env=None):
-    process = popen_fn(
-        [str(executable), "kernels", "logs", "-f", slug],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
-    )
+                        popen_fn=subprocess.Popen, env=None,
+                        run_fn=subprocess.run):
+    """Wait for the kernel to publish its tunnel URL, for as long as promised.
+
+    `kernels logs -f` returns immediately while the kernel is still queued,
+    because there is nothing to follow yet. Treating the end of that stream as
+    the end of the wait made a launch that had worked look like one that failed:
+    measured on 2026-08-21, the push succeeded, this gave up in under a minute
+    with the kernel in QUEUED, and the caller then told the user their kernel
+    was spending quota and should be deleted. The deadline is a clock, not a
+    process, so the stream is reopened until the clock runs out, and only a
+    state Kaggle calls terminal ends the wait early.
+    """
     deadline = time.monotonic() + timeout
-    try:
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([process.stdout], [], [], 0.5)
-            if not ready:
-                if process.poll() is not None:
-                    break
-                continue
-            line = process.stdout.readline()
-            if not line:
-                if process.poll() is not None:
-                    break
-                time.sleep(0.1)
-                continue
-            match = URL_PATTERN.search(line)
-            if match:
-                return match.group(1)
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
+    while time.monotonic() < deadline:
+        process = popen_fn(
+            [str(executable), "kernels", "logs", "-f", slug],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+        )
+        try:
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([process.stdout], [], [], 0.5)
+                if not ready:
+                    if process.poll() is not None:
+                        break
+                    continue
+                line = process.stdout.readline()
+                if not line:
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                    continue
+                match = URL_PATTERN.search(line)
+                if match:
+                    return match.group(1)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        state = _kernel_state(executable, slug, run_fn, env)
+        if state in TERMINAL_STATES:
+            raise RuntimeError(t("cli.kaggle.url.ended", slug=slug, state=state))
+        debug.note("cli_kaggle.discover_tunnel_url",
+                   f"{slug} has not published a URL yet, state {state or 'unknown'}")
+        time.sleep(10)
     raise RuntimeError(t("cli.kaggle.url.failed", slug=slug))
 
 

@@ -2099,6 +2099,94 @@ check(interrupted_stop == "owner/isaacli-gpu-1"
       and not (config.load(interrupt_file)["kaggle"] or {}).get("kernels"),
       "a Ctrl+C on the way out does not leave the kernel spending quota")
 
+# Measured on 2026-08-21: `kernels logs -f` returns at once while the kernel is
+# QUEUED, because there is nothing to follow yet. Reading that as the end of the
+# wait made a launch that had worked look like one that failed, and the caller
+# then told the user to go delete a kernel that was about to serve.
+url_attempts = []
+
+
+class _FakeLog:
+    def __init__(self, lines):
+        self._lines = list(lines)
+        self.stdout = self
+        self.returncode = 0
+        self._closed = False
+
+    def readline(self):
+        return self._lines.pop(0) if self._lines else ""
+
+    def fileno(self):
+        return 0
+
+    def poll(self):
+        return None if self._lines else 0
+
+    def terminate(self):
+        self._closed = True
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        self._closed = True
+
+
+def queued_popen(command, **kwargs):
+    url_attempts.append(list(map(str, command)))
+    # The first two attempts return an empty stream, which is what a queued
+    # kernel does; the third carries the line.
+    if len(url_attempts) < 3:
+        return _FakeLog([])
+    return _FakeLog(["TUNNEL_URL=https://one-two-three.trycloudflare.com\n"])
+
+
+def queued_status(command, check=False, capture_output=False, text=False,
+                  env=None, **kwargs):
+    return SimpleNamespace(
+        returncode=0, stdout='has status "KernelWorkerStatus.QUEUED"', stderr="")
+
+
+original_sleep = cli_kaggle.time.sleep
+original_select = cli_kaggle.select.select
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    # The fake stream is an object, not a descriptor, so readiness is answered
+    # by whether it still holds a line.
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        found = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-1", timeout=60,
+            popen_fn=queued_popen, run_fn=queued_status)
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+check(found == "https://one-two-three.trycloudflare.com" and len(url_attempts) == 3,
+      "a log stream that ends while the kernel is queued is reopened, not believed")
+
+
+def failed_status(command, check=False, capture_output=False, text=False,
+                  env=None, **kwargs):
+    return SimpleNamespace(
+        returncode=0, stdout='has status "KernelWorkerStatus.ERROR"', stderr="")
+
+
+gave_up = False
+try:
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: ([], [], [])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-2", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog([]),
+            run_fn=failed_status)
+except RuntimeError as error:
+    gave_up = "ERROR" in str(error)
+finally:
+    cli_kaggle.select.select = original_select
+check(gave_up,
+      "a kernel that really ended stops the wait instead of burning the deadline")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)
