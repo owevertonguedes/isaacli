@@ -260,7 +260,7 @@ def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
                 and not any(path.exists() for path in known_paths)):
             print(t("cli.uninstall.ollama.not_installed"))
             return 0
-        print(t("cli.uninstall.ollama.unrecognized", path=found or "—"))
+        print(t("cli.uninstall.ollama.unrecognized", path=found or "?"))
         return 1
     if shutil.which("sudo") is None:
         print(t("cli.uninstall.ollama.no_sudo"))

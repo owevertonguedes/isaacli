@@ -21,7 +21,15 @@ HF_ROOT = "https://huggingface.co"
 HF_API = HF_ROOT + "/api/models"
 DEFAULT_TIMEOUT = 8
 DEFAULT_CONTEXT = 16384
-NO_PUBLIC_SCORE = "no public score on the accepted coding benchmarks"
+# A benchmark string is a proper noun and a number and stays as published. The
+# absence of one is a sentence this program writes, so it is translated like
+# every other sentence: a Portuguese screen was printing "no public score on the
+# accepted coding benchmarks" in the middle of it.
+NO_PUBLIC_SCORE_KEY = "model.score.none"
+
+
+def no_public_score(translate=None):
+    return (translate or text)(NO_PUBLIC_SCORE_KEY)
 TASK_RULERS = {
     "fix_bug": (
         "swebench_verified", "swebench_lite", "swebench_pro", "aider_polyglot",
@@ -220,7 +228,7 @@ def _seed_maps(catalog_path):
         source = item.get("benchmark_source", "")
         upstream = "/".join(urllib.parse.urlparse(source).path.strip("/").split("/")[:2])
         evidence = {
-            "benchmark": item.get("benchmark") or NO_PUBLIC_SCORE,
+            "benchmark": item.get("benchmark") or "",
             "benchmark_source": source or None,
             "upstream_repo": upstream or None,
             "scores": item.get("scores") or {},
@@ -295,7 +303,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
                 f"{urllib.parse.quote(selected_file, safe='/')}")
     model_bytes = _content_length(file_url, timeout=timeout, urlopen_fn=urlopen_fn)
     evidence = evidence or by_upstream.get((upstream or "").casefold()) or {}
-    benchmark = evidence.get("benchmark") or NO_PUBLIC_SCORE
+    benchmark = evidence.get("benchmark") or ""
     alias = re.sub(
         r"[^a-z0-9]+", "-", f"{repo}-{Path(selected_file).stem}".casefold(),
     ).strip("-")
@@ -510,7 +518,8 @@ def format_fit(report, translate=None, state_key="model.discovery.fit",
 
 
 def benchmark_line(model):
-    return text("model.discovery.score", score=model.get("benchmark") or NO_PUBLIC_SCORE)
+    return text("model.discovery.score",
+                score=model.get("benchmark") or no_public_score())
 
 
 def matched_ruler(model, task):

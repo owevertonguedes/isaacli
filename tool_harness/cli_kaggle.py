@@ -721,7 +721,7 @@ def recommended_models(catalog_path=MODEL_CATALOG_PATH):
     return selected
 
 
-def model_entry(model, no_score=""):
+def model_entry(model, no_score=None):
     """One model on one line, because a selection screen draws one line each.
 
     Three printed lines per model turned six candidates into a wall the user
@@ -735,7 +735,9 @@ def model_entry(model, no_score=""):
         size=f"{model['model_bytes'] / 1024 ** 3:.2f}",
         machine=model.get("machine_label", ""),
         origin=model_discovery.origin_label(model, t),
-        benchmark=model.get("benchmark") or no_score,
+        benchmark=(model.get("benchmark")
+                   or (no_score if no_score is not None
+                       else model_discovery.no_public_score(t))),
     )
 
 

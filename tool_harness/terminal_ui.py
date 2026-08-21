@@ -83,6 +83,47 @@ def alternate_screen(input_fn=input):
             sys.stdout.flush()
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def fit(text, width):
+    """One option on one line, cut on purpose rather than by the terminal.
+
+    A Kaggle model row runs to 138 characters. The menu counts every option as
+    one screen line, so on an 80 column terminal the terminal wraps them itself
+    and the window the menu believes it is drawing stops being the window on
+    screen: rows scroll off the top and the count of what is below is wrong.
+    What gets cut is the tail, because the beginning is what names the option,
+    and for the row that is finally chosen the evidence is printed in full
+    underneath it anyway.
+    """
+    if width <= 0:
+        return ""
+    visible = ANSI.sub("", text)
+    if len(visible) <= width:
+        return text
+    if visible != text:
+        # Cutting inside an escape sequence would leave the rest of the screen
+        # painted in whatever colour was half written.
+        return text
+    return text[: max(0, width - 1)] + "\u2026"
+
+
+def option_lines(options, width, cursor, disabled, indent=3):
+    """Exactly what the menu writes for each option, one line each."""
+    lines = []
+    for position, option in enumerate(options):
+        body = fit(option, max(1, width - indent))
+        if position in disabled:
+            lines.append(f"   \033[2m{body}\033[0m")
+            continue
+        mark = "\u276f" if position == cursor else " "
+        highlight = "\033[1;36m" if position == cursor else ""
+        reset = "\033[0m" if highlight else ""
+        lines.append(f" {mark} {highlight}{body}{reset}")
+    return lines
+
+
 def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
            initial=0, disabled=None, more_above=None, more_below=None):
     if not options:
@@ -140,15 +181,10 @@ def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
         if start:
             label = (more_above or "↑ {count} more above").format(count=start)
             sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")
-        for position in range(start, end):
-            option = options[position]
-            if position in disabled:
-                sys.stdout.write(f"   \033[2m{option}\033[0m\r\n")
-                continue
-            cursor = "❯" if position == index else " "
-            highlight = "\033[1;36m" if position == index else ""
-            reset = "\033[0m" if highlight else ""
-            sys.stdout.write(f" {cursor} {highlight}{option}{reset}\r\n")
+        for line in option_lines(
+                options[start:end], width, index - start,
+                {position - start for position in disabled}):
+            sys.stdout.write(line + "\r\n")
         if end < len(options):
             label = (more_below or "↓ {count} more below").format(
                 count=len(options) - end)

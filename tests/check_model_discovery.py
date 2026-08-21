@@ -133,7 +133,7 @@ check(by_repo["test/MoE-30B-GGUF"]["active_ratio"] == 8 / 128
 check(all(timeout and timeout <= model_discovery.DEFAULT_TIMEOUT
           for _url, _method, timeout in calls),
       "every Hugging Face request has a finite timeout")
-check(by_repo["test/MoE-30B-GGUF"]["benchmark"] == model_discovery.NO_PUBLIC_SCORE
+check(by_repo["test/MoE-30B-GGUF"]["benchmark"] == ""
       and by_repo["test/MoE-30B-GGUF"]["benchmark_source"] is None,
       "an uncurated model reports no public accepted score instead of inventing one")
 
@@ -467,7 +467,7 @@ modified = model_discovery.resolve_hf_model(
 check(official["scores"] == catalogued["scores"] and official["scores"],
       "a plain requantization of the catalogued model keeps its published score")
 check(modified["scores"] == {}
-      and modified["benchmark"] == model_discovery.NO_PUBLIC_SCORE,
+      and modified["benchmark"] == "",
       "a modified build reports no public score instead of borrowing the original's")
 check(modified["n_layers"] == official["n_layers"],
       "the modified build still reads its geometry from the base architecture")

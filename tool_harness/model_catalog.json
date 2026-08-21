@@ -26,14 +26,14 @@
     {
       "name": "granite4.1:3b",
       "reference": "granite4.1:3b",
-      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark": "",
       "benchmark_source": null,
       "scores": {}
     },
     {
       "name": "phi4-mini:latest",
       "reference": "phi4-mini:latest",
-      "benchmark": "no public score on the accepted coding benchmarks",
+      "benchmark": "",
       "benchmark_source": null,
       "scores": {}
     },
@@ -79,7 +79,7 @@
       "n_layers": 48,
       "n_kv_heads": 4,
       "head_dim": 128,
-      "benchmark": "no public score at this size",
+      "benchmark": "",
       "benchmark_source": "https://qwenlm.github.io/blog/qwen3-coder/",
       "scores": {},
       "active_ratio": 0.1

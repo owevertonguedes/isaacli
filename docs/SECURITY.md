@@ -26,7 +26,7 @@ security remain part of the protection model.
 | Feedback | `tool_harness/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask |
 | Runtime coordination | `XDG_RUNTIME_DIR/isaacli` or `/tmp/isaacli-<uid>` | Process identities and managed-Ollama state, not conversation content; the application requests a `0700` directory |
 | Ollama models | Ollama-managed paths | Model weights and Ollama data; outside isaacli's secret store |
-| Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, `kaggle-accounts/`, the regular config and secrets files | Account credentials and generated tunnel API keys stay in `secrets.json` with mode `0600`. A selected credential is materialized with mode `0600` under `kaggle-accounts/` and supplied only through `KAGGLE_CONFIG_DIR`. Kernel slugs record their owning account. Prepared datasets default to private. |
+| Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, `kaggle-accounts/`, the regular config and secrets files | Account credentials and generated tunnel API keys stay in `secrets.json` with mode `0600`. A selected credential is materialized with mode `0600` under `kaggle-accounts/` inside a `0700` per-account folder. Isolation is by `HOME`, not by `KAGGLE_CONFIG_DIR`: read from the Kaggle CLI 2.2.4 source and then confirmed by running it, `authenticate` reaches `~/.kaggle/access_token` and `~/.kaggle/credentials.json` through `expanduser`, which that variable does not redirect, so an account folder holding a deliberately invalid credential still answered with the ambient account's quota. The selected account is verified against what the server says owns the assets before anything is spent. Kernel slugs record their owning account. Prepared datasets default to private. |
 
 Git ignores sessions, feedback and secrets, but `.gitignore` is not access
 control, encryption or a backup exclusion. Copying the clone can copy ignored
@@ -97,7 +97,7 @@ filesystems, SSD wear levelling, snapshots and backups may retain prior blocks.
 Use encrypted storage and manage snapshots/backups when that distinction
 matters.
 
-## Hardening backlog — not current guarantees
+## Hardening backlog, not current guarantees
 
 The most useful next changes, in order, are:
 

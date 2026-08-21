@@ -479,6 +479,7 @@
   "model.origin.curated": "reviewed here",
   "model.origin.scored": "public score",
   "model.origin.discovered": "found live, no evidence",
+  "model.score.none": "no public score on the accepted coding benchmarks",
   "model.discovery.error.gated": "{repo} is gated on Hugging Face: its files are only served after you accept its licence with an account. Accept it there, then bring the exact reference back here.",
   "model.discovery.error.derived": "{repo} is a modified build of {upstream}, not a requantization of it, so nothing published about {upstream} describes it. It is left out of the suggestions and stays available by exact reference.",
   "model.discovery.entry": "{name} · {size} GiB · [{origin}] {benchmark} · {fit}",

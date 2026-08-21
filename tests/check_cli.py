@@ -1299,6 +1299,31 @@ check("isaacli uninstall --purge --kaggle" in _ANSI.sub("", _epilog)
       and "authentication files" in _epilog,
       "wrapping the commands section keeps every command and its whole description")
 
+# A Kaggle model row runs to 138 characters and the menu counts every option as
+# one screen line. On an 80 column terminal the terminal wraps them itself, so
+# the window the menu thinks it is drawing is not the window on screen: rows
+# scroll off the top and the "more below" count is wrong.
+_long_row = (
+    "Qwen3 30B A3B Instruct 2507, Q4_K_M \u00b7 17.28 GiB \u00b7 T4 x2, 2 x 16 GB \u00b7 "
+    "[reviewed here] Aider Polyglot 55.1, LiveCodeBench v6 45.2, GPQA 68.4")
+_fitted = terminal_ui.fit(_long_row, 80)
+check(len(_fitted) <= 80 and _fitted.startswith("Qwen3 30B A3B Instruct 2507"),
+      "a row too wide for the terminal is cut on purpose, keeping what names it")
+check(terminal_ui.fit("short row", 80) == "short row",
+      "a row that already fits is left exactly as it is")
+check(all(len(terminal_ui.fit(_long_row, width)) <= width
+          for width in (20, 40, 61, 79, 80, 200)),
+      "the cut holds at every width, including the narrow ones")
+
+# The menu writes a cursor and two spaces before each row, so the budget is the
+# width minus that prefix: a row that fits the terminal exactly still wraps once
+# the cursor is in front of it.
+_rendered = terminal_ui.option_lines(
+    [_long_row, "short row"], width=80, cursor=0, disabled=set())
+check(all(len(re.sub(r"\x1b\[[0-9;]*m", "", line)) <= 80 for line in _rendered)
+      and len(_rendered) == 2,
+      "each option is drawn as exactly one line that fits the terminal")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

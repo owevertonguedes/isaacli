@@ -936,7 +936,8 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         "\n\n".join([
             model_discovery.text("cli.kaggle.models.section"), *explanation]),
         [
-            *[cli_kaggle.model_entry(item, model_discovery.NO_PUBLIC_SCORE)
+            *[cli_kaggle.model_entry(
+                  item, model_discovery.no_public_score(model_discovery.text))
               for item in models],
             model_discovery.text("model.discovery.exact"),
         ],
