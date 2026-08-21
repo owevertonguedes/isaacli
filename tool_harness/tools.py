@@ -333,6 +333,8 @@ class _SafeWebRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class _HTMLExtractor(HTMLParser):
+    # The three `handle_*` methods below are never called by name here: they are
+    # the base class's callbacks, and `feed()` is what invokes them.
     def __init__(self):
         super().__init__()
         self.parts = []
