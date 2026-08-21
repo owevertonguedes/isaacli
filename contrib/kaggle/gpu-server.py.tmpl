@@ -17,6 +17,7 @@ API_KEY = "__API_KEY__"
 CUDA_ARCH = "__CUDA_ARCH__"
 MACHINE_SHAPE = "__MACHINE_SHAPE__"
 GPU_COUNT = __GPU_COUNT__
+SPLIT_MODE = "__SPLIT_MODE__"
 PORT = 8080
 # The attached inputs are read-only and already expanded by Kaggle.
 SCRATCH = tempfile.gettempdir()
@@ -101,7 +102,10 @@ server_command = [
     "--jinja", "--api-key", API_KEY,
 ]
 if GPU_COUNT > 1:
-    server_command.extend(["--split-mode", "layer"])
+    # Splitting layers across cards buys capacity, not speed: for one request
+    # at a time, one card computes while the other waits. It is asked for only
+    # when the weights plus cache do not fit on a single card.
+    server_command.extend(["--split-mode", SPLIT_MODE])
 server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"

@@ -312,9 +312,13 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
 
 
 SPLIT_GGUF = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.I)
+# The precision always sits at the end of the file name, so the pattern is
+# anchored there. Anchoring is what keeps `UD-Q6_K_L` from being read as
+# `UD-Q6_K`: three different files were collapsing onto one label, and the
+# screen showed three identical rows with three different sizes.
 QUANTIZATION = re.compile(
-    r"(?i)(?:^|[-_.])((?:ud[-_.])?i?q\d+[-_.][a-z0-9]+(?:[-_.]xl)?|f16|bf16|f32)"
-    r"(?:[-_.]|\.gguf$)")
+    r"(?i)(?:^|[-_.])((?:ud[-_.])?(?:i?q\d+|bf16|f16|f32)(?:[-_.][a-z0-9]+)*)"
+    r"\.gguf$")
 
 
 def quantization_label(file_name):
@@ -322,8 +326,24 @@ def quantization_label(file_name):
     return match.group(1) if match else Path(file_name).stem
 
 
+def _weight_stem(file_name):
+    """The model name a weight file carries, without its precision.
+
+    A repository holds more than weights: `imatrix_unsloth.gguf` is calibration
+    data, `mmproj-BF16.gguf` is a projector, `MTP/mtp-*.gguf` is a speculative
+    head. All three were being offered as if they were the model, one of them at
+    0.01 GiB and reported as fitting. What separates them is not a list of
+    forbidden names, which would age: a real precision of this model carries
+    this model's name and a precision, and lives beside it.
+    """
+    match = QUANTIZATION.search(file_name)
+    if not match or "/" in file_name:
+        return None
+    return file_name[:match.start()].strip("-_.").casefold()
+
+
 def quantization_variants(model, urlopen_fn=urllib.request.urlopen,
-                          timeout=DEFAULT_TIMEOUT, limit=8):
+                          timeout=DEFAULT_TIMEOUT, limit=24):
     """The same weights at the other precisions the repository publishes.
 
     Choosing a model and choosing how much of it to keep are two questions, and
@@ -337,9 +357,11 @@ def quantization_variants(model, urlopen_fn=urllib.request.urlopen,
     Split files are left out: their `Content-Length` is one part of a model, and
     presenting a part as the whole would misstate both fit and speed.
     """
+    stem = _weight_stem(model["file"])
     others = [
         name for name in model.get("files") or []
         if name != model["file"] and not SPLIT_GGUF.search(name)
+        and _weight_stem(name) == stem and stem is not None
     ][:limit]
     if not others:
         return []

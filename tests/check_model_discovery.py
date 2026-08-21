@@ -554,6 +554,80 @@ check(len(rows) == 2 and "Fits" in rows[0] and "Does not fit" in rows[1]
       and "found live" in rows[0],
       "the discovery screen says what fits this machine, fitting models first")
 
+# Filling the accelerator is the point of borrowing it: the hour costs the same
+# whether two thirds of the card sit idle or not. The heaviest that still leaves
+# room comes first, and what is not a weight at all never appears.
+shelf = {
+    "org/Model-GGUF": {
+        "id": "org/Model-GGUF",
+        "siblings": [
+            {"rfilename": "Model-Q4_K_M.gguf"},
+            {"rfilename": "Model-Q6_K.gguf"},
+            {"rfilename": "Model-Q6_K_L.gguf"},
+            {"rfilename": "Model-Q8_0.gguf"},
+            {"rfilename": "Model-BF16-00001-of-00002.gguf"},
+            {"rfilename": "imatrix_unsloth.gguf"},
+            {"rfilename": "mmproj-BF16.gguf"},
+            {"rfilename": "MTP/mtp-Model-Q4_0.gguf"},
+        ],
+    },
+}
+shelf_sizes = {
+    "Model-Q4_K_M.gguf": 10 * GB, "Model-Q6_K.gguf": 13 * GB,
+    "Model-Q6_K_L.gguf": 14 * GB, "Model-Q8_0.gguf": 19 * GB,
+    "imatrix_unsloth.gguf": GB // 100, "mmproj-BF16.gguf": GB,
+    "MTP/mtp-Model-Q4_0.gguf": GB,
+}
+
+
+def shelf_urlopen(request, timeout=None):
+    url = request.full_url
+    prefix = model_discovery.HF_API + "/"
+    if url.startswith(prefix):
+        return FakeResponse(shelf[url[len(prefix):]])
+    if url.endswith("/config.json"):
+        return FakeResponse({
+            "num_hidden_layers": 40, "num_key_value_heads": 8, "head_dim": 128,
+        })
+    if request.get_method() == "HEAD":
+        name = url.split("/resolve/main/", 1)[1]
+        return FakeResponse(length=shelf_sizes[name])
+    raise AssertionError(f"unexpected fake URL {url}")
+
+
+shelf_model = model_discovery.resolve_hf_model(
+    "org/Model-GGUF", "Model-Q4_K_M.gguf", urlopen_fn=shelf_urlopen)
+shelf_variants = model_discovery.quantization_variants(
+    shelf_model, urlopen_fn=shelf_urlopen)
+offered = sorted(item["file"] for item in shelf_variants)
+check(offered == ["Model-Q6_K.gguf", "Model-Q6_K_L.gguf", "Model-Q8_0.gguf"],
+      "only real precisions of this model are offered, not projectors or calibration")
+check(model_discovery.quantization_label("Model-Q6_K.gguf") == "Q6_K"
+      and model_discovery.quantization_label("Model-Q6_K_L.gguf") == "Q6_K_L"
+      and model_discovery.quantization_label("m-UD-Q4_K_M.gguf") == "UD-Q4_K_M",
+      "each precision reads as itself instead of collapsing onto a shorter name")
+
+shelf_screens = []
+original_shelf_ui = setup_ollama.terminal_ui.select
+try:
+    setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
+        shelf_screens.append((options, kwargs.get("initial"))) or kwargs.get("initial", 0))
+    with redirect_stdout(io.StringIO()):
+        picked = setup_ollama._choose_quantization(
+            shelf_model, lambda _prompt="": "", setup_ollama.Translator("en"),
+            shelf_urlopen, vram_mb=16384, overhead_mb=768)
+finally:
+    setup_ollama.terminal_ui.select = original_shelf_ui
+rows, cursor = shelf_screens[-1]
+# 16 GiB minus overhead leaves 15.25 GiB. Q8_0 at 19 GiB does not fit; Q6_K_L at
+# 14 GiB plus 2.5 GiB of cache does not either; Q6_K at 13 GiB is the heaviest
+# that fits, and it still has to leave a tenth of the card free.
+check([row.split(" ")[0] for row in rows]
+      == ["Q8_0", "Q6_K_L", "Q6_K", "Q4_K_M"],
+      "the precisions are drawn heaviest first, so the card gets filled")
+check(picked["file"] == "Model-Q4_K_M.gguf" and cursor == 3,
+      "the cursor starts on the heaviest precision that still leaves room")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

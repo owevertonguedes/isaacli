@@ -50,6 +50,9 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
 LOCAL_CATALOG = _load_catalog("local")
 RECOMMENDED = [item["reference"] for item in LOCAL_CATALOG]
 TASK_VALUES = ("fix_bug", "build_new", "explain_code")
+# How much of the accelerator the suggested precision is allowed to claim. A
+# launch that runs out of memory still spends the hour it was given.
+QUANTIZATION_HEADROOM = 0.9
 _UNCHANGED = object()
 _LOCAL_RESOLUTION_CACHE = {}
 # The model screen has to draw fast and has to work with the network down. Each
@@ -443,10 +446,30 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
     if vram_mb is None:
         vram_mb, gpu_count = model_discovery.local_vram()
         overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
-    options, entries = [], []
-    for item in [model, *variants]:
+    # Heaviest first, and the cursor starts on the heaviest that fits. Filling
+    # the accelerator is the point: a borrowed GPU costs the same hour whether
+    # two thirds of it sit idle or not, and more bits of the same weights is
+    # quality that this hour is already paying for. What it costs is bytes read
+    # per token, so the row says the size and the fit and nothing about speed.
+    ranked = sorted([model, *variants],
+                    key=lambda item: -item["model_bytes"])
+    options, entries, initial, tight = [], [], None, None
+    for item in ranked:
         report = model_discovery.fit_report(
             item, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB)
+        if report["fits"]:
+            available = max(0, report["vram_mb"] - report["overhead_mb"]) * 1024 ** 2
+            used = report["model_bytes"] + report["kv_bytes"]
+            # The cursor stops on the heaviest that still leaves room, not on
+            # the heaviest that arithmetic allows. The one measured overshoot
+            # of this estimate was 16% on the safe side, but a launch that runs
+            # out of memory spends the hour anyway, so the default keeps a
+            # tenth of the card in reserve and the tighter rows stay one keypress
+            # away for whoever wants them.
+            if initial is None and used <= available * QUANTIZATION_HEADROOM:
+                initial = len(entries)
+            if tight is None:
+                tight = len(entries)
         entries.append(item)
         options.append(tr.t(
             "model.quantization.option",
@@ -456,7 +479,11 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
             else tr.t("model.fit.does_not_fit")))
     index = _select(
         tr, tr.t("model.quantization.title"), options, input_fn,
-        tr.t("model.quantization.explain"))
+        tr.t("model.quantization.explain"),
+        # Nothing leaves room: fall back to whatever fits at all, and if not
+        # even that, to the smallest, which is the only one with a chance.
+        initial=(initial if initial is not None
+                 else tight if tight is not None else len(entries) - 1))
     return entries[index]
 
 
