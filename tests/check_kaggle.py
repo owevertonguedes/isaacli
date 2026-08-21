@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tempfile
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -1389,6 +1390,11 @@ def session_config(path, slug="owner/isaacli-gpu-1", extra_kernels=()):
             *extra_kernels,
         ]},
     }, path)
+    # `save_kaggle_profile` always stores the key it minted, and the liveness
+    # probe now proves that key rather than only that the tunnel is up, so a
+    # fixture without it would be describing a profile this program never writes.
+    config.save_secret("kaggle-one-api-key", "session-key",
+                       path.with_name("secrets.json"))
     cli_kaggle.register_account("owner", {"key": "owner-key"}, path)
     # register_account marks the account selected, which rewrites the file. The
     # kernels and the profile above have to survive that.
@@ -1522,6 +1528,50 @@ check(failed_stop is None
       and (config.load(failed_file)["kaggle"]["kernels"] or [{}])[0]["slug"]
       == "owner/isaacli-gpu-1",
       "a failed stop says so, keeps the record, and names the command that retries")
+
+# Measured against llama-server b10502 started with --api-key: /v1/models answers
+# 200 with no credential at all, while /props answers 401 without the key and 200
+# with it. Probing /v1/models therefore proves the tunnel is up and proves
+# nothing about our key, so a profile holding the wrong key was reactivated as
+# live and only failed at the first real question.
+probe_file = root / "probe" / "config.json"
+config.save({
+    "language": "en",
+    "profiles": {"kaggle-probe": {
+        "provider": "openai_compatible", "provider_name": "Kaggle",
+        "base_url": "https://probe.trycloudflare.com/v1",
+        "model": "qwen38-27b", "credential": "probe-key",
+    }},
+}, probe_file)
+config.save_secret("probe-key", "wrong", probe_file.with_name("secrets.json"))
+probe_paths = []
+
+
+def probe_urlopen(request, timeout=0):
+    probe_paths.append(request.full_url)
+    authorized = request.headers.get("Authorization") == "Bearer right"
+    if request.full_url.endswith("/v1/models"):
+        return HealthyAnswer()
+    if authorized:
+        return HealthyAnswer()
+    raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+
+probe_profile = config.load(probe_file)["profiles"]["kaggle-probe"]
+with redirect_stdout(io.StringIO()):
+    wrong_key_live = cli_kaggle._endpoint_answers(
+        probe_profile, probe_file.with_name("secrets.json"), probe_urlopen)
+check(not wrong_key_live,
+      "a saved endpoint holding the wrong key is not reported as live")
+check(probe_paths and not any(path.endswith("/v1/models") for path in probe_paths),
+      "the liveness probe uses a route the server refuses without the key")
+
+config.save_secret("probe-key", "right", probe_file.with_name("secrets.json"))
+with redirect_stdout(io.StringIO()):
+    right_key_live = cli_kaggle._endpoint_answers(
+        probe_profile, probe_file.with_name("secrets.json"), probe_urlopen)
+check(right_key_live,
+      "a saved endpoint holding the right key is still reported as live")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")

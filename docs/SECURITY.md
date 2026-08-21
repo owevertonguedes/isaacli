@@ -74,6 +74,8 @@ part of their own threat model.
 
 The Kaggle path sends the generated notebook and selected model identifiers to Kaggle, and later sends model conversations through a public Cloudflare tunnel protected by a generated API key. The kernel is private, but the temporary tunnel hostname is public. Kaggle quota, availability, account security and terms remain part of the user's threat model. No remote kernel starts without an explicit confirmation for that push.
 
+Not every route behind that tunnel is behind the key. Measured against llama-server b10502 started with `--api-key`: `/health` and `/v1/models` answer HTTP 200 with no credential, while `/props` and `/v1/chat/completions` answer 401. So anybody who learns the tunnel hostname can read which model alias is being served, and cannot generate anything with it. That coverage is llama-server's to decide and this program does not widen it; what it does do is refuse to treat an unauthenticated 200 as proof that a saved session still belongs to us, which is why the liveness probe uses `/props`. Treat the hostname as the secret it is: it is minted per session, printed once, and dies with the kernel.
+
 Session logs intentionally support resume and therefore contain substantially
 more sensitive material than metrics. They are not currently encrypted. On a
 multi-user machine, shared checkout or synchronised/unencrypted backup, users

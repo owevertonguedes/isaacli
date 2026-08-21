@@ -799,6 +799,29 @@ def _available_asset_refs(executable, username, model, run_fn=subprocess.run,
     return {kind: ref for kind, ref in expected.items() if ref in existing}
 
 
+def _needs_every_gpu(model):
+    """Whether the model really needs both cards, or would only be split.
+
+    Splitting layers across two T4 is capacity, not speed: on a single request
+    one card computes while the other waits, and the 026 measurement says so
+    without theory, 13.4 tok/s against the 10.8 predicted from the bandwidth of
+    ONE card. A model that fits on one card is therefore asked to stay on one.
+    When the numbers behind the decision are missing, the split stays, because
+    the failure of splitting needlessly is slower, and the failure of not
+    splitting when it was needed is a launch that dies out of memory.
+    """
+    accelerator = ACCELERATORS.get(model.get("machine_shape"))
+    if not accelerator or accelerator["gpu_count"] < 2:
+        return False
+    kv_bytes = model.get("kv_bytes")
+    if not model.get("model_bytes") or kv_bytes is None:
+        return True
+    count = accelerator["gpu_count"]
+    return not hardware.fits(
+        model["model_bytes"], kv_bytes, accelerator["vram_mb"] // count,
+        overhead_mb=accelerator["overhead_mb"] // count)
+
+
 def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
                    dataset_sources=None):
     template_name = "flow-validation-cpu.py.tmpl" if validation_cpu else "gpu-server.py.tmpl"
@@ -811,6 +834,7 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
         "__CUDA_ARCH__": model.get("cuda_arch", ""),
         "__MACHINE_SHAPE__": model.get("machine_shape", ""),
         "__GPU_COUNT__": str(model.get("gpu_count", 0)),
+        "__SPLIT_MODE__": "layer" if _needs_every_gpu(model) else "none",
     }
     for marker, value in values.items():
         template = template.replace(marker, value)
@@ -1301,13 +1325,39 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
     return 0
 
 
+def _probe_url(base_url):
+    """The route that answers this question, which is not the one under /v1.
+
+    Measured against llama-server b10502 launched with `--api-key`: `/v1/models`
+    returns 200 with no credential at all, `/health` returns 200 with no
+    credential, and `/props` returns 401 without the key and 200 with it. Only
+    the last one answers what is being asked here.
+    """
+    root = profile_base = str(base_url).rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    return (root or profile_base) + "/props"
+
+
 def _endpoint_answers(profile, secret_path=None,
                       urlopen_fn=urllib.request.urlopen, timeout=10):
-    """Whether the endpoint a saved profile names is serving this account now."""
+    """Whether the endpoint a saved profile names is serving this key now.
+
+    "The endpoint responds" is not the question. A tunnel that is up answers
+    `/v1/models` to anybody, so probing that route reactivated a profile whose
+    stored key no longer opened anything, and the failure surfaced at the user's
+    first real question instead of here, where it can still be explained.
+    """
     key = config.load_secret(profile.get("credential"), secret_path)
+    if not key:
+        # Without a key there is nothing to prove, and a route that requires one
+        # would refuse for the wrong reason. Say so rather than guess.
+        debug.note("cli_kaggle._endpoint_answers key",
+                   "the saved profile has no stored key to prove")
+        return False
     request = urllib.request.Request(
-        profile["base_url"].rstrip("/") + "/models",
-        headers={"Authorization": "Bearer " + key} if key else {},
+        _probe_url(profile["base_url"]),
+        headers={"Authorization": "Bearer " + key},
     )
     try:
         with urlopen_fn(request, timeout=timeout) as answer:
@@ -1315,6 +1365,11 @@ def _endpoint_answers(profile, secret_path=None,
                 return True
             debug.note("cli_kaggle._endpoint_answers status",
                        f"saved endpoint returned HTTP {answer.status}")
+    except urllib.error.HTTPError as error:
+        # 401 here is the answer, not a transport failure: the tunnel is up and
+        # the stored key does not open it.
+        debug.note("cli_kaggle._endpoint_answers status",
+                   f"saved endpoint refused with HTTP {error.code}")
     except (urllib.error.URLError, OSError, TimeoutError):
         debug.swallowed("cli_kaggle._endpoint_answers probe")
     return False
