@@ -1054,6 +1054,75 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
     return profile_name
 
 
+def stop_kernel(executable, slug, run_fn=subprocess.run, env=None):
+    """End a session, which on Kaggle means deleting the kernel that owns it.
+
+    There is no `kernels stop`, and for a long time this program said so and
+    left the web interface as the only recourse while quota drained. Measured
+    against a kernel that really was running: `kernels delete` returned success,
+    the tunnel stopped answering with HTTP 530, and the remaining GPU hours
+    stopped moving. Deleting is destructive and it is a third party account, so
+    nothing here ever decides it on its own.
+    """
+    result = _run_capture(
+        [str(executable), "kernels", "delete", slug, "--yes"], run_fn, env)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout).strip()
+                            or t("cli.kaggle.stop.failed", slug=slug))
+    return slug
+
+
+def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
+                     home_dir=None, record_path=None, which_fn=shutil.which):
+    """Stop a session this account has running, chosen explicitly."""
+    input_fn = input if input_fn is None else input_fn
+    executable = install_kaggle_cli(
+        input_fn=input_fn, run_fn=run_fn, which_fn=which_fn,
+        home_dir=home_dir, record_path=record_path,
+    )
+    if executable is None:
+        return 1
+    try:
+        account, environment = _select_account(
+            executable, input_fn, run_fn, config_file)
+        username = _authenticated_username(executable, run_fn, environment)
+        live = live_kernels(executable, run_fn, environment)
+    except RuntimeError as error:
+        print(t("cli.kaggle.failed", error=error))
+        return 1
+    for record in _prune_dead_kernels(live, config_file, account, username):
+        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
+    if not live:
+        print(t("cli.kaggle.stop.none"))
+        return 0
+    slugs = [ref for ref, _state in live]
+    index = _choose(
+        t("cli.kaggle.stop.title"),
+        [t("cli.kaggle.stop.option", slug=ref, state=state) for ref, state in live]
+        + [t("navigation.back")], input_fn)
+    if index >= len(slugs):
+        print(t("cli.kaggle.cancelled"))
+        return 130
+    print(t("cli.kaggle.stop.explain", slug=slugs[index]))
+    if input_fn(t("cli.kaggle.stop.confirm")).strip().lower() != t(
+            "cli.kaggle.confirm_yes"):
+        print(t("cli.kaggle.cancelled"))
+        return 130
+    try:
+        stop_kernel(executable, slugs[index], run_fn, environment)
+    except RuntimeError as error:
+        print(t("cli.kaggle.failed", error=error))
+        return 1
+    print(t("cli.kaggle.stop.stopped", slug=slugs[index]))
+    # The endpoint that kernel published cannot come back, so the record and the
+    # profile built from it go with it instead of waiting for the next run.
+    for record in _prune_dead_kernels(
+            [item for item in live if item[0] != slugs[index]],
+            config_file, account, username):
+        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
+    return 0
+
+
 def _prune_dead_kernels(live, config_file=None, account=None, username=None):
     """Forget the kernels that are over, and the profiles they left behind.
 

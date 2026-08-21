@@ -972,6 +972,73 @@ check(all(Path(path).is_relative_to(config.cache_path()) for path in prepare_pat
       and Path(cli_kaggle._scratch_root()) == config.cache_path(),
       "large staging follows the cache location, not the system temp filesystem")
 
+# Stopping is the only thing that stops the quota, and for a long time the
+# program said it was impossible. Measured against a kernel that really was
+# running: `kernels delete` succeeded, the tunnel answered HTTP 530 afterwards
+# and the remaining GPU hours stopped moving. What is checked here is that it
+# never happens without being asked for, that it really goes through delete,
+# and that the endpoint it published is forgotten with it.
+stop_file = root / "stop" / "config.json"
+config.save({
+    "language": "en", "default_profile": "kaggle-live",
+    "profiles": {"kaggle-live": {
+        "provider": "openai_compatible",
+        "base_url": "https://live.trycloudflare.com/v1",
+        "model": "qwen38-27b", "credential": "live-key"}},
+    "kaggle": {"kernels": [{
+        "slug": "stopper/live", "url": "https://live.trycloudflare.com",
+        "profile": "kaggle-live", "model": "qwen38-27b", "account": "stopper"}]},
+}, stop_file)
+cli_kaggle.register_account("stopper", {"key": "stop-key"}, stop_file)
+stop_commands = []
+
+
+def stop_run(command, check=False, capture_output=False, text=False, env=None,
+             **kwargs):
+    parts = list(map(str, command))
+    stop_commands.append(parts)
+    joined = " ".join(parts)
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: stopper\n", stderr="")
+    if "kernels list" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="ref,title\nstopper/live,Live\n", stderr="")
+    if "datasets list" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="ref,title\nstopper/thing,Thing\n", stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+declined_answers = iter(["1", "1", "n"])
+with redirect_stdout(io.StringIO()):
+    declined_stop = cli_kaggle.run_stop_kernels(
+        input_fn=lambda _prompt: next(declined_answers), run_fn=stop_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=stop_file, home_dir=home)
+check(declined_stop == 130
+      and not any("kernels delete" in " ".join(parts) for parts in stop_commands)
+      and (config.load(stop_file)["kaggle"]["kernels"] or [{}])[0]["slug"]
+      == "stopper/live",
+      "declining to stop deletes nothing and keeps the recorded session")
+
+stop_answers = iter(["1", "1", "y"])
+with redirect_stdout(io.StringIO()) as stop_output:
+    stopped = cli_kaggle.run_stop_kernels(
+        input_fn=lambda _prompt: next(stop_answers), run_fn=stop_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=stop_file, home_dir=home)
+deletes = [parts for parts in stop_commands if "delete" in parts]
+stop_state = config.load(stop_file)
+check(stopped == 0 and len(deletes) == 1
+      and deletes[0][1:] == ["kernels", "delete", "stopper/live", "--yes"],
+      "stopping a session goes through the only command Kaggle has for it")
+check(not (stop_state.get("kaggle") or {}).get("kernels")
+      and "kaggle-live" not in stop_state["profiles"],
+      "the endpoint a stopped kernel published is forgotten with the kernel")
+
 # The command has to reach preparation through the same wrapper the launch uses,
 # because that wrapper is what lends it the live model screen. Routing it
 # straight at cli_kaggle would give this command a different, smaller list.

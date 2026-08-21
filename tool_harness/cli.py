@@ -756,6 +756,9 @@ def main(argv=None):
     kaggle_prepare_assets = (
         kaggle_requested and arguments[1:] == ["--prepare-assets"]
     )
+    kaggle_stop = (
+        kaggle_requested and arguments[1:] == ["--stop"]
+    )
     purge_requested = uninstall_requested and arguments[1:] == ["--purge"]
     ollama_purge_requested = (
         uninstall_requested and arguments[1:] == ["--purge", "--ollama"]
@@ -774,7 +777,8 @@ def main(argv=None):
             return 2
         arguments = []
     elif kaggle_requested:
-        if len(arguments) > 1 and not (kaggle_cpu_validation or kaggle_prepare_assets):
+        if len(arguments) > 1 and not (
+                kaggle_cpu_validation or kaggle_prepare_assets or kaggle_stop):
             _print_commands_help(t("cli.kaggle.usage"))
             return 2
         arguments = []
@@ -822,6 +826,9 @@ def main(argv=None):
         return _install_launcher()
     if kaggle_requested:
         import setup_ollama
+        if kaggle_stop:
+            import cli_kaggle
+            return cli_kaggle.run_stop_kernels()
         if kaggle_prepare_assets:
             return setup_ollama.run_prepare_assets()
         return setup_ollama.run_kaggle(validation_cpu=kaggle_cpu_validation)
