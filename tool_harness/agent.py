@@ -909,7 +909,10 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             msgs.append({"role": "tool", "tool_call_id": c.get("id", name),
                          "content": model_result})
 
-    return {"final": "(step limit reached)", "calls": calls,
+    # The final answer is what the user reads, so it says what happened and what
+    # to do about it. "(step limit reached)" read like a truncated answer or a
+    # freeze, in English, on whatever screen the user had.
+    return {"final": None, "step_limit": max_steps, "calls": calls,
             "steps": max_steps, "usage": total_usage,
             "thinking_adjusted": thinking_adjusted,
             "changing_calls": changing_calls,

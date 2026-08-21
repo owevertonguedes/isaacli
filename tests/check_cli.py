@@ -766,6 +766,26 @@ finally:
 check(empty_answer_code == 1 and "no visible answer" in out.getvalue(),
       "the CLI reports an empty answer after a tool attempt instead of returning success")
 
+# Running out of steps is unfinished work, not an empty or wrong answer, and
+# "(step limit reached)" read like a freeze in whatever language the user is not
+# using.
+try:
+    cli.ensure_ollama = lambda warn=False: "test"
+    app.agent.run = lambda *_a, **_kw: {
+        "final": None, "step_limit": 8,
+        "calls": [("read_file", {}, "OK", "native")], "usage": {"eval_count": 3},
+    }
+    limit_out = io.StringIO()
+    with redirect_stdout(limit_out):
+        limit_code = cli.ask("long test")
+finally:
+    app.agent.run = original_agent_run
+    cli.ensure_ollama = original_ensure
+_limit_shown = limit_out.getvalue()
+check(limit_code == 1 and "8" in _limit_shown and "--max-steps" in _limit_shown
+      and "no visible answer" not in _limit_shown,
+      "hitting the step ceiling says so and names the way forward")
+
 def denied_agent(*_a, on_tool=None, **_kw):
     result = ("$ rm x\nDENIED BY USER: the command was not authorized.\n"
               "(exit code: 126)")

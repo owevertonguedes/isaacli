@@ -337,6 +337,7 @@
   "cli.error.ollama_no_response": "ERRO: o Ollama não respondeu ({error}) e o início automático falhou.",
   "cli.error.interrupted": "interrompido",
   "cli.error.empty_answer": "ERRO: o modelo terminou sem resposta visível e sem chamada de ferramenta.",
+  "cli.error.step_limit": "Parei depois de {steps} passos, que é o teto desta sessão, então o trabalho está inacabado e não errado. Peça um pedaço menor, ou aumente o teto com --max-steps.",
   "cli.error.constrained_output": "ERRO: a resposta restringida por schema não pôde ser executada com segurança: {cause}",
   "cli.error.constrained_output.invalid_response": "o endpoint devolveu um resultado fora do schema solicitado",
   "cli.error.constrained_output.json_as_text": "o provedor devolveu um objeto JSON como texto comum em vez de uma chamada de ferramenta executável",

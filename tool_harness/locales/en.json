@@ -337,6 +337,7 @@
   "cli.error.ollama_no_response": "ERROR: Ollama did not respond ({error}) and the automatic start failed.",
   "cli.error.interrupted": "interrupted",
   "cli.error.empty_answer": "ERROR: the model finished with no visible answer and no tool call.",
+  "cli.error.step_limit": "I stopped after {steps} steps, which is this session's ceiling, so the work is unfinished rather than wrong. Ask for a smaller piece of it, or raise the ceiling with --max-steps.",
   "cli.error.constrained_output": "ERROR: the schema-constrained answer could not be executed safely: {cause}",
   "cli.error.constrained_output.invalid_response": "the endpoint returned an outcome outside the requested schema",
   "cli.error.constrained_output.json_as_text": "the provider returned a JSON object as ordinary text instead of an executable tool call",

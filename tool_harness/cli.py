@@ -569,7 +569,13 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
             key = ("thinking.rejected.persisted" if persisted
                    else "thinking.rejected.session_only")
             print(_color(t(key), "warn"))
-        if empty_answer:
+        if empty_answer and (r or {}).get("step_limit"):
+            # Running out of steps is not an empty answer and not a freeze: the
+            # model was still working when the ceiling arrived, and the way
+            # forward is a smaller request or a higher ceiling.
+            print(_color(t("cli.error.step_limit",
+                           steps=(r or {}).get("step_limit")), "warn"))
+        elif empty_answer:
             print(_color(t("cli.error.empty_answer"), "bad"))
         eval_count = int(usage.get("eval_count") or 0)
         eval_duration = int(usage.get("eval_duration") or 0) / 1_000_000_000
