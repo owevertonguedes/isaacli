@@ -156,22 +156,6 @@ def profile(data, name=None):
     return chosen, item
 
 
-def default_model(fallback=None, path=None):
-    try:
-        data = load(path)
-    except ValueError:
-        return fallback
-    _name, item = profile(data)
-    return item.get("model", fallback) if item else fallback
-
-
-def model_thinking(data, model):
-    for item in (data.get("profiles") or {}).values():
-        if item.get("model") == model:
-            return item.get("thinking")
-    return None
-
-
 def profile_for_model(data, model):
     for name, item in (data.get("profiles") or {}).items():
         if item.get("model") == model:
