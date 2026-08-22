@@ -321,7 +321,10 @@ def _xdg_base_dirs(home):
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime:
         bases.add(runtime)
-    return {Path(base) for base in bases}
+    # Resolved, because the comparison is against resolved paths: a `~/.config`
+    # that is itself a symlink into another disk would otherwise match nothing
+    # and stop being refused.
+    return {Path(os.path.realpath(base)) for base in bases}
 
 
 def _mountable(path, home, xdg_bases, root, already):
@@ -482,7 +485,9 @@ def _toolchain_mounts(root):
 
     Returns (binds, path_dirs, env_pass).
     """
-    home = Path.home()
+    # Resolved for the same reason the PATH entries are: every guard compares
+    # paths, and a home reached through a symlink would match none of them.
+    home = Path(os.path.realpath(Path.home()))
     xdg_bases = _xdg_base_dirs(home)
     binds, path_dirs, mounted, refused = [], [], [], []
     forced_env = {}
