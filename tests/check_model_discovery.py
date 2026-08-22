@@ -681,6 +681,53 @@ check(unknown_pick["file"] == "Model-Q4_K_M.gguf" and unknown_cursor == 3
       and not any("prepared" in row for row in unknown_rows),
       "a lookup that fails leaves the screen unmarked instead of breaking it")
 
+# The Kaggle path used to hand `_choose_quantization` a translator built on the
+# spot, which is always English, so this one screen came out in English inside a
+# Portuguese session while every screen around it was translated. Comparing the
+# two catalogs cannot see that: both catalogs have the key and both are correct.
+# Only running the screen in a Portuguese session can, so that is what this does.
+import cli_i18n
+import cli_kaggle
+
+kaggle_titles = []
+original_select = setup_ollama.terminal_ui.select
+original_choose = cli_kaggle._choose
+original_candidates = cli_kaggle._load_model_candidates
+original_discover = model_discovery.discover_models
+try:
+    cli_i18n.set_language("pt-BR")
+    setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
+        kaggle_titles.append(title) or kwargs.get("initial", 0))
+    cli_kaggle._choose = lambda _title, _options, _input_fn: 0
+    model_discovery.discover_models = lambda *args, **kwargs: ([], [])
+    cli_kaggle._load_model_candidates = lambda *args, **kwargs: [shelf_model]
+
+    with redirect_stdout(io.StringIO()):
+        setup_ollama._dynamic_kaggle_selector(
+            lambda _prompt="": "", urlopen_fn=shelf_urlopen)
+finally:
+    setup_ollama.terminal_ui.select = original_select
+    cli_kaggle._choose = original_choose
+    cli_kaggle._load_model_candidates = original_candidates
+    model_discovery.discover_models = original_discover
+    cli_i18n.set_language("en")
+
+pt_title = setup_ollama.Translator("pt-BR").t("model.quantization.title")
+en_title = setup_ollama.Translator("en").t("model.quantization.title")
+check(kaggle_titles and pt_title in kaggle_titles[-1]
+      and en_title not in kaggle_titles[-1] and pt_title != en_title,
+      "the Kaggle quantization screen speaks the language the session chose")
+
+# The same mistake anywhere else in the module would be just as invisible, so
+# the rule is the guard: only cli_i18n decides what a bare translator is.
+sources = sorted((HERE.parent / "tool_harness").glob("*.py"))
+bare = [f"{path.name}:{number}" for path in sources if path.name != "cli_i18n.py"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "Translator()" in line]
+check(not bare,
+      "no module builds a language-less translator behind the session's back"
+      + (f" (found {', '.join(bare)})" if bare else ""))
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

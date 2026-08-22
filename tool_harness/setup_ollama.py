@@ -20,6 +20,7 @@ import debug
 import hardware
 import model_discovery
 import terminal_ui
+from cli_i18n import translator
 from i18n import SUPPORTED_LANGUAGES, Translator
 
 
@@ -33,7 +34,7 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
         models = data[key]
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
         raise RuntimeError(
-            Translator().t("setup.catalog.invalid", path=path, error=e)) from e
+            translator().t("setup.catalog.invalid", path=path, error=e)) from e
     required = {"name", "reference", "benchmark", "benchmark_source", "scores"}
     if not isinstance(models, list) or not models or not all(
             isinstance(item, dict) and required <= item.keys()
@@ -41,7 +42,7 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
             and isinstance(item["reference"], str) and item["reference"].strip()
             and isinstance(item["scores"], dict)
             for item in models):
-        raise RuntimeError(Translator().t("setup.catalog.not_list", path=path))
+        raise RuntimeError(translator().t("setup.catalog.not_list", path=path))
     # This section is the reviewed list, and every screen that draws it says so
     # on the row itself, next to rows that were merely found.
     return [{**item, "curated": True} for item in models]
@@ -170,7 +171,7 @@ def _ollama_install_instructions(tr):
 
 
 def _ensure_server(client, ollama_exe, tr=None):
-    tr = tr or Translator()
+    tr = tr or translator()
     try:
         return client.version(), None
     except Exception:
@@ -190,7 +191,7 @@ def _ensure_server(client, ollama_exe, tr=None):
 
 
 def _download_model(ollama_exe, model, tr=None):
-    tr = tr or Translator()
+    tr = tr or translator()
     print(tr.t("model.download.running", model=model))
     result = subprocess.run([ollama_exe, "pull", model], check=False)
     if result.returncode != 0:
@@ -527,7 +528,7 @@ def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
             reference, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
         )
         chosen = _choose_quantization(
-            model, input_fn, tr or Translator(), urlopen_fn)
+            model, input_fn, tr or translator(), urlopen_fn)
         report = _confirm_model_fit(chosen, input_fn)
         if report is None:
             return None
@@ -693,7 +694,7 @@ def _normalize_api_url(base_url):
             url = url[:-len(suffix)]
     parts = urllib.parse.urlparse(url)
     if parts.scheme not in ("http", "https") or not parts.netloc:
-        raise RuntimeError(Translator().t("api.url.invalid"))
+        raise RuntimeError(translator().t("api.url.invalid"))
     return url
 
 
@@ -706,7 +707,8 @@ def _api_http_message(error):
         detail = item.get("message", "") if isinstance(item, dict) else str(item)
     except (OSError, ValueError, AttributeError):
         pass
-    detail = re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+", r"\1[oculta]", detail)
+    detail = re.sub(r"(?i)(api[_ -]?key\s*[=:]?\s*)\S+",
+                    lambda m: m.group(1) + translator().t("api.key.redacted"), detail)
     return f"HTTP {error.code}" + (f": {detail}" if detail else "")
 
 
@@ -725,9 +727,9 @@ def _list_api_models(base_url, api_key):
         raise RuntimeError(_api_http_message(e)) from e
     except urllib.error.URLError as e:
         raise RuntimeError(
-            Translator().t("api.connect.failed", reason=e.reason)) from e
+            translator().t("api.connect.failed", reason=e.reason)) from e
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise RuntimeError(Translator().t("api.models.invalid_json")) from e
+        raise RuntimeError(translator().t("api.models.invalid_json")) from e
     return sorted(item.get("id") for item in payload.get("data", [])
                   if isinstance(item, dict) and item.get("id"))
 
@@ -737,10 +739,10 @@ def _validate_api(base_url, api_key, model):
     if model not in models:
         close_matches = sorted(m for m in models if model.lower() in m.lower() or
                           m.lower() in model.lower())[:5]
-        suggestion = (Translator().t("api.model.suggestion",
+        suggestion = (translator().t("api.model.suggestion",
                                      options=", ".join(close_matches))
                       if close_matches else "")
-        raise RuntimeError(Translator().t("api.model.unavailable",
+        raise RuntimeError(translator().t("api.model.unavailable",
                                           model=model, suggestion=suggestion))
 
 
@@ -945,7 +947,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     )
     if selected < len(models):
         model = _choose_quantization(
-            models[selected], input_fn, Translator(), urlopen_fn,
+            models[selected], input_fn, translator(), urlopen_fn,
             vram_mb=accelerator["vram_mb"],
             overhead_mb=accelerator["overhead_mb"], prepared_fn=prepared_fn)
         model = _kaggle_fit(model, accelerator)
@@ -964,7 +966,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     except model_discovery.DiscoveryError as error:
         raise RuntimeError(str(error)) from error
     model = _choose_quantization(
-        model, input_fn, Translator(), urlopen_fn,
+        model, input_fn, translator(), urlopen_fn,
         vram_mb=accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
         prepared_fn=prepared_fn)
     report = model_discovery.fit_report(

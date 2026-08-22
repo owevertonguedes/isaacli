@@ -367,6 +367,7 @@
   "setup.catalog.not_list": "invalid model catalog in {path}: expected a list of strings",
   "api.url.invalid": "the endpoint has to be a valid http:// or https:// URL",
   "api.connect.failed": "could not connect to the endpoint: {reason}",
+  "api.key.redacted": "[hidden]",
   "api.models.invalid_json": "the /models endpoint did not return valid JSON",
   "api.model.unavailable": "the model “{model}” is not available for this key{suggestion}",
   "api.model.suggestion": "; similar options: {options}",
