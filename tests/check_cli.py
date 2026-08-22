@@ -362,13 +362,21 @@ def _drive_context_screen(keys):
             if not typed and b"Compact now" in drawn:
                 typed = True
                 os.write(master_fd, keys)
-        answered = child.poll() is not None
-        if not answered:
-            # A child that never answered has to be killed here. Waiting on it
-            # would raise out of the whole file, which turns one failed check
-            # into no report at all, and would leave a python holding this pty.
+        # Waiting, not polling. The read above ends with OSError the moment the
+        # child closes its side of the pty, and asking poll() in that same
+        # instant can find a process that has finished everything but has not
+        # been reaped yet: measured on GitHub Actions 2026-08-22, that reported
+        # a screen that had in fact been answered as one that never was. A
+        # child that really is still running is killed, because waiting on it
+        # unconditionally would raise out of the whole file and turn one failed
+        # check into no report at all, and would leave a python holding this pty.
+        try:
+            child.wait(timeout=5)
+            answered = True
+        except subprocess.TimeoutExpired:
+            answered = False
             child.kill()
-        child.wait(timeout=5)
+            child.wait(timeout=5)
         drain = time.monotonic() + 1
         while time.monotonic() < drain:
             ready, _, _ = select.select([master_fd], [], [], 0.1)
