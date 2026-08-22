@@ -78,18 +78,19 @@ def _add_usage(total, item):
         total[key] = total.get(key, 0) + int((item or {}).get(key) or 0)
 
 
-# No tokenizer ships with this program and none is needed here. What this has
-# to answer is one question, "will the next request be refused", and the server
-# answers it exactly after every call in prompt_eval_count, which is what this
-# constant was calibrated against on real sessions of this repository.
+# No tokenizer ships with this program and none is needed for the part of the
+# conversation that has already been sent: the server answers exactly how many
+# tokens that was, in prompt_eval_count, after every call. This ratio is only
+# ever applied to what has been added since that answer, and every number it
+# produces is reported as the estimated part. It is worth being explicit about
+# the direction of its error: on source code the real ratio is smaller than 3.5,
+# so this undershoots, and a warning built on it alone would arrive after the
+# request had already been refused.
 CHARS_PER_TOKEN = 3.5
 # How much of the window the request may occupy. The rest is the answer, and a
 # request that fills the window leaves the model no room to reply.
 CONTEXT_INPUT_SHARE = 0.75
-DROPPED_RESULT_NOTE = (
-    "... RESULT DROPPED BY ISAACLI: this tool result was removed to keep the "
-    "conversation inside the model's context window. Nothing about the file "
-    "changed. Read it again, or a narrower part of it, if you still need it ...")
+COMPACTED_PREFIX = "... ISAACLI COMPACTED THIS RESULT"
 
 
 def estimate_tokens(messages):
@@ -104,39 +105,144 @@ def estimate_tokens(messages):
     return int(chars / CHARS_PER_TOKEN)
 
 
-def fit_to_context(messages, num_ctx, on_note=None):
-    """Make room by dropping the oldest tool results, oldest first.
+def _compactable(msg):
+    """A tool result that has not been compacted yet is the only thing that goes.
 
-    Without this, one `read_file` of a large source file ends the turn: the
-    endpoint refuses the whole request and everything the model had done up to
-    there is lost. That is not a model failing the task, it is the harness
+    The system prompt is the contract, the user's request is the task, and the
+    assistant's own tool_calls have to keep matching their results or the
+    protocol breaks. A tool result is the one thing that can be fetched again.
+    """
+    return (msg.get("role") == "tool"
+            and not (msg.get("content") or "").startswith(COMPACTED_PREFIX))
+
+
+def context_report(messages, num_ctx, measured=0, measured_upto=0):
+    """Where this conversation stands against its window, measured where it can be.
+
+    `measured` is the prompt_eval_count the server returned for the request it
+    last answered, and `measured_upto` is how many of these messages that
+    request carried. Everything after that has never been counted by anyone, so
+    it is estimated and reported separately: a number that mixes a measurement
+    with a guess and does not say which is which is a guess.
+    """
+    counted = int(measured or 0)
+    rest = messages[measured_upto:] if counted else messages
+    estimated = estimate_tokens(rest)
+    used = counted + estimated
+    budget = int(num_ctx * CONTEXT_INPUT_SHARE) if num_ctx else 0
+    # The largest single thing one step can add is one tool result, and the cap
+    # on that is already derived from this same window. Warning any earlier
+    # would be a fraction chosen by hand; warning any later is warning after
+    # the request has already been refused.
+    headroom = int(num_ctx * tools.CONTEXT_READ_SHARE) if num_ctx else 0
+    return {
+        "num_ctx": num_ctx or 0,
+        "used": used,
+        "measured": counted,
+        "estimated": estimated,
+        "budget": budget,
+        "headroom": headroom,
+        "over": bool(num_ctx) and used > budget,
+        "approaching": bool(num_ctx) and used + headroom > budget,
+        "compactable": sum(1 for msg in messages if _compactable(msg)),
+    }
+
+
+def _tool_call_index(messages):
+    """Which call each tool result answers, so a summary can name it."""
+    index = {}
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            function = tc.get("function") or {}
+            arguments = function.get("arguments")
+            index[tc.get("id")] = {
+                "name": function.get("name") or "",
+                "arguments": arguments if isinstance(arguments, str)
+                else json.dumps(arguments or {}),
+            }
+    return index
+
+
+def _summarise_result(msg, index, num_ctx):
+    """What takes the place of a result: a summary, never a hole.
+
+    Telling the model only that something was removed leaves it unable to decide
+    whether reading that file again is worth one of its remaining steps. Naming
+    the call, its arguments and the size that went is enough to decide, costs
+    nothing to produce, and cannot summarise anything wrongly, which a model
+    written summary of the same bytes could.
+    """
+    call = index.get(msg.get("tool_call_id")) or {}
+    content = msg.get("content") or ""
+    stripped = content.strip()
+    opening = stripped.splitlines()[0][:120] if stripped else ""
+    return (
+        f"{COMPACTED_PREFIX}: {call.get('name') or 'a tool'}"
+        f"({call.get('arguments') or ''}) returned {len(content)} characters, "
+        f"summarised here to keep this conversation inside the {num_ctx} token "
+        f"window it runs in. Nothing on disk changed. It began: {opening} ... "
+        f"The full result is kept in the saved session, and running the same "
+        f"call again returns it in full.")
+
+
+def fit_to_context(messages, num_ctx, on_pressure=None, on_note=None,
+                   measured=0, measured_upto=0, manage=True):
+    """Offer to compact before the window overflows, and never take without asking.
+
+    Without something here, one `read_file` of a large source file ends the turn:
+    the endpoint refuses the whole request and everything the model had done up
+    to there is lost. That is not a model failing the task, it is the harness
     handing it more bytes than the window it was given, and it killed the first
     Part B case of task 036 after 56 seconds.
 
-    Only tool results are dropped, and only their content. The system prompt is
-    the contract, the user's request is the task, and the assistant's own
-    tool_calls have to keep matching their results or the protocol breaks. A
-    tool result is the one thing that can be fetched again, so it is the one
-    thing that goes, and the model is told in place that it went and why.
+    What replaced that was worse in the way that matters most here: it dropped
+    the oldest results and said so afterwards, so by the time the user read the
+    line the content was already gone and there had been no moment in which they
+    could have decided anything. Nothing here is silent and nothing here is
+    hidden. `on_pressure` receives the numbers while everything is still intact
+    and answers whether to compact; without it there is nobody to ask, which is
+    the measurement scripts, and then it compacts and the log names what went.
     """
     if not num_ctx:
-        return 0
-    budget = int(num_ctx * CONTEXT_INPUT_SHARE)
-    dropped = 0
-    for msg in messages:
-        if estimate_tokens(messages) <= budget:
-            break
-        if msg.get("role") != "tool" or msg.get("content") == DROPPED_RESULT_NOTE:
-            continue
-        msg["content"] = DROPPED_RESULT_NOTE
-        dropped += 1
-    if dropped:
+        return []
+    report = context_report(messages, num_ctx, measured, measured_upto)
+    if not (report["over"] or report["approaching"]):
+        return []
+    if not manage:
+        # Turned off means failing with the cause said out loud, never
+        # overflowing in silence and never quietly shrinking the conversation.
         debug.note("agent.fit_to_context",
-                   f"dropped {dropped} tool result(s) to fit {budget} tokens "
-                   f"of a {num_ctx} token window")
+                   f"context management is off: {report['used']} tokens against a "
+                   f"budget of {report['budget']} in a {num_ctx} token window")
         if on_note:
-            on_note(dropped)
-    return dropped
+            on_note(report, [])
+        return []
+    if on_pressure is not None and not on_pressure(report):
+        debug.note("agent.fit_to_context", "compaction was offered and declined")
+        return []
+    index = _tool_call_index(messages)
+    used, budget, summaries = report["used"], report["budget"], []
+    for msg in messages:
+        if used <= budget:
+            break
+        if not _compactable(msg):
+            continue
+        before = int(len(msg.get("content") or "") / CHARS_PER_TOKEN)
+        summary = _summarise_result(msg, index, num_ctx)
+        msg["content"] = summary
+        # The measured base still counts what this message used to be, so the
+        # saving is subtracted from it rather than the whole thing recounted
+        # from characters, which would throw the one real number away.
+        used -= before - int(len(summary) / CHARS_PER_TOKEN)
+        summaries.append(summary)
+    if summaries:
+        debug.note("agent.fit_to_context",
+                   f"compacted {len(summaries)} tool result(s) to fit {budget} "
+                   f"tokens of a {num_ctx} token window: "
+                   + "; ".join(summary.split(" returned ")[0] for summary in summaries))
+        if on_note:
+            on_note(report, summaries)
+    return summaries
 
 
 def _messages_for_ollama(messages):
@@ -817,7 +923,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         tools_schema=None, thinking=None, on_working=None, provider=None,
         on_thinking=None, num_ctx=None, require_change=False,
         is_changing_tool=None, changing_tool_succeeded=None, on_progress=None,
-        temperature=0.0, seed=None, on_context_trim=None):
+        temperature=0.0, seed=None, on_context_note=None,
+        on_context_pressure=None, manage_context=True):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
@@ -852,10 +959,19 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
     # The window the endpoint was started with is the one hard number here, and
     # the tool that can overflow it in a single call reads from the same place.
     tools.set_read_budget(num_ctx)
+    # What the server counted for the last request it answered, and how many of
+    # these messages that request carried. Together they are the one real number
+    # about where this conversation stands in its window.
+    measured, measured_upto = 0, 0
     for step in range(max_steps):
         if on_working:
             on_working()
-        fit_to_context(msgs, num_ctx, on_note=on_context_trim)
+        if fit_to_context(msgs, num_ctx, on_pressure=on_context_pressure,
+                          on_note=on_context_note, measured=measured,
+                          measured_upto=measured_upto, manage=manage_context):
+            # The count described messages that are no longer what they were,
+            # so it is dropped rather than reused as if it still applied.
+            measured, measured_upto = 0, 0
         provider_kind = (provider or {}).get("provider", "ollama")
         active_schema = tools_schema or tools.SCHEMA
 
@@ -892,6 +1008,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                         temperature=temperature)
 
         call_via = "native"
+        sent_upto = len(msgs)
         structured_step = correction_pending
         if structured_step:
             instruction = TOOL_CALL_RETRY if successful_changes else MUTATION_RETRY
@@ -913,6 +1030,11 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             msg = query(active_schema)
         tc = msg.get("tool_calls")
         _add_usage(total_usage, msg.get("_usage"))
+        # The server just counted the request that was sent, so the estimate for
+        # that stretch is thrown away and the measurement takes its place.
+        counted = int((msg.get("_usage") or {}).get("prompt_eval_count") or 0)
+        if counted:
+            measured, measured_upto = counted, sent_upto
         if msg.pop("_thinking_rejected", False):
             thinking = None
             thinking_adjusted = True

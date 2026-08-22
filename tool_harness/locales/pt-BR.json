@@ -507,5 +507,14 @@
   "model.quantization.option": "{quantization} · {size} GiB · {fit}",
   "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · já preparado na sua conta",
   "cli.kaggle.url.ended": "O kernel {slug} terminou como {state} sem publicar a URL do túnel. O log dele na página do Kaggle diz por quê.",
-  "cli.context.trimmed": "NOTE: {count} resultado(s) de ferramenta antigos foram descartados para caber na janela de contexto do modelo. Os arquivos não mudaram; o modelo pode lê-los de novo."
+  "cli.context.approaching": "AVISO: esta conversa está usando cerca de {used} tokens da janela de {num_ctx} tokens, e {budget} é onde o pedido tem que parar para o modelo ainda ter espaço de responder.",
+  "cli.context.parts": "Desses, {measured} foram contados pelo próprio servidor e {estimated} são estimados, que é o que entrou depois da última contagem.",
+  "cli.context.all_estimated": "O servidor ainda não contou esta conversa, então o número inteiro é estimativa.",
+  "cli.context.explain": "Compactar troca os resultados de ferramenta mais antigos por um resumo que nomeia a chamada, os argumentos e o tamanho, do mais antigo para o mais novo, e só o quanto for preciso para caber. Nada muda em disco e os resultados inteiros ficam na sessão salva. {count} resultado(s) podem ser compactados.",
+  "cli.context.compact": "Compactar agora",
+  "cli.context.keep": "Deixar como está",
+  "cli.context.prompt": "Compactar a conversa?",
+  "cli.context.compacted": "{count} resultado(s) de ferramenta viraram resumo. O modelo foi informado do que era cada um.",
+  "cli.context.recoverable": "Nada se perdeu: os resultados inteiros estão no log desta sessão, e {command} reconstrói a conversa a partir dele.",
+  "cli.context.unmanaged": "A gestão de contexto está desligada, então nada foi compactado. O próximo pedido pode ser recusado pelo endpoint por passar da janela."
 }

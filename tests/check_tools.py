@@ -309,32 +309,106 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         tools.set_read_budget(None)
 
-# Dropping the oldest results is what lets a long turn continue instead of being
-# refused whole. The system prompt and the user's request are not droppable: one
-# is the contract and the other is the task.
-history = [
+# Where the conversation stands against the window is measured, not guessed. The
+# server answers it exactly in prompt_eval_count after every call, and dividing
+# characters by 3.5 was both unnecessary and wrong in the dangerous direction:
+# on code the real ratio is smaller, so the estimate undershoots and the warning
+# would arrive after the request had already been refused.
+measured_history = [
+    {"role": "system", "content": "contract"},
+    {"role": "user", "content": "fix the bug"},
+]
+measured_report = agent.context_report(measured_history, 32_768, measured=24_000,
+                                       measured_upto=2)
+check(measured_report["used"] == 24_000 and measured_report["estimated"] == 0
+      and measured_report["measured"] == 24_000,
+      "what the server counted is what is used, not a ratio of characters")
+
+# Everything added since that count has no measurement yet, so it is estimated
+# and the report says how much of the number is a guess.
+grown_history = measured_history + [
+    {"role": "tool", "tool_call_id": "a", "content": "y" * 7_000}]
+grown_report = agent.context_report(grown_history, 32_768, measured=24_000,
+                                    measured_upto=2)
+check(grown_report["measured"] == 24_000 and grown_report["estimated"] > 0
+      and grown_report["used"] == 24_000 + grown_report["estimated"],
+      "the delta since the last count is estimated, and named as the estimated part")
+
+# Compacting is the one thing here that changes what the model can see, so it is
+# offered before it happens, while there is still room to act, and never after.
+# The trigger is the window and the largest single thing a tool may add to it,
+# both of which are already known, rather than a fraction chosen by hand.
+pressure_history = [
     {"role": "system", "content": "contract"},
     {"role": "user", "content": "fix the bug"},
     {"role": "assistant", "tool_calls": [
-        {"id": "a", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"id": "a", "function": {"name": "read_file",
+                                 "arguments": '{"path": "src/client.ts"}'}}]},
     {"role": "tool", "tool_call_id": "a", "content": "y" * 60_000},
     {"role": "tool", "tool_call_id": "b", "content": "z" * 60_000},
     {"role": "tool", "tool_call_id": "c", "content": "recent and small"},
 ]
-seen = []
-dropped = agent.fit_to_context(history, 32_768, on_note=seen.append)
-check(dropped and seen == [dropped],
-      "trimming the conversation is announced instead of happening in silence")
-check(agent.estimate_tokens(history) <= 32_768 * agent.CONTEXT_INPUT_SHARE,
-      "after trimming, the request fits the window the endpoint was started with")
+asked = []
+declined = agent.fit_to_context(
+    [dict(m) for m in pressure_history], 32_768,
+    on_pressure=lambda report: asked.append(report) or False)
+check(len(asked) == 1 and asked[0]["num_ctx"] == 32_768
+      and asked[0]["used"] > asked[0]["budget"],
+      "the numbers reach whoever decides, with the ceiling next to them")
+check(declined == [] and asked[0]["compactable"] == 3,
+      "saying no compacts nothing, and the offer said how much was on the table")
+
+kept_history = [dict(m) for m in pressure_history]
+agent.fit_to_context(kept_history, 32_768, on_pressure=lambda report: False)
+check([m.get("content") for m in kept_history]
+      == [m.get("content") for m in pressure_history],
+      "a refused compaction leaves every message exactly as it was")
+
+# Compacting is summarising, not deleting. The model has to be told what it lost,
+# not merely that it lost something: a result replaced by a bare note leaves it
+# unable to decide whether reading the file again is worth a step.
+history = [dict(m) for m in pressure_history]
+summaries = agent.fit_to_context(history, 32_768, on_pressure=lambda report: True)
+check(len(summaries) == 1 and agent.context_report(history, 32_768)["used"]
+      <= agent.context_report(history, 32_768)["budget"],
+      "accepting compacts exactly as much as it takes to fit and no more")
+check("read_file" in history[3]["content"] and "client.ts" in history[3]["content"]
+      and "60000" in history[3]["content"].replace(",", ""),
+      "what replaces a result names the call, its arguments and the size that went")
 check(history[0]["content"] == "contract" and history[1]["content"] == "fix the bug"
-      and history[2].get("tool_calls"),
-      "the contract, the task and the calls that results answer to all survive")
-check(history[3]["content"] == agent.DROPPED_RESULT_NOTE
-      and history[-1]["content"] == "recent and small",
-      "the oldest result goes first and the newest work is what is kept")
+      and history[2].get("tool_calls") and history[-1]["content"] == "recent and small",
+      "the contract, the task, the calls and the newest work all survive")
 check(all(m.get("tool_call_id") for m in history if m["role"] == "tool"),
-      "a dropped result keeps the id its call is waiting on")
+      "a compacted result keeps the id its call is waiting on")
+
+# With nobody to ask there is still nobody to keep in the dark: the run is a
+# measurement script, it compacts to survive, and the log says what went.
+silent_history = [dict(m) for m in pressure_history]
+noted = []
+original_note = agent.debug.note
+try:
+    agent.debug.note = lambda source, message: noted.append(f"{source} {message}")
+    auto = agent.fit_to_context(silent_history, 32_768)
+finally:
+    agent.debug.note = original_note
+check(len(auto) == 1 and any("read_file" in line for line in noted),
+      "with nobody at the terminal it compacts and the log names what it compacted")
+
+# The task itself is never compactable, and a task that does not fit is a refusal
+# with the numbers, not a silent shrinking of what the user asked for. This is
+# the case that kept the dense model out of Part A of task 036.
+oversized = [
+    {"role": "system", "content": "contract"},
+    {"role": "user", "content": "q" * 200_000},
+]
+oversized_report = agent.context_report(oversized, 32_768)
+check(oversized_report["over"] and oversized_report["compactable"] == 0,
+      "a request bigger than the window is over budget with nothing to compact")
+untouched_request = [dict(m) for m in oversized]
+check(agent.fit_to_context(untouched_request, 32_768,
+                           on_pressure=lambda report: True) == []
+      and untouched_request[1]["content"] == oversized[1]["content"],
+      "the user's own request is never compacted, not even when it is what does not fit")
 
 # The two limits are only worth anything if the window reaches them, so this
 # runs the loop itself with a stubbed endpoint and reads the cap afterwards.
@@ -350,10 +424,39 @@ finally:
 check(wired == int(32_768 * tools.CONTEXT_READ_SHARE * tools.CHARS_PER_TOKEN),
       "the window a turn runs in is what sets the read cap for that turn")
 
+# A budget that only the function which sets it can see is worth nothing, so
+# this runs the loop itself: the server's count from one step has to be what the
+# next step measures against, instead of the loop going back to counting
+# characters and warning too late.
+loop_reports = []
+loop_answers = [
+    {"role": "assistant", "content": "",
+     "tool_calls": [{"id": "z", "type": "function",
+                     "function": {"name": "read_file",
+                                  "arguments": '{"path": "gone.txt"}'}}],
+     "_usage": {"prompt_eval_count": 30_000, "eval_count": 1}},
+    {"role": "assistant", "content": "done",
+     "_usage": {"prompt_eval_count": 30_100, "eval_count": 1}},
+]
+original_call = agent.call
+try:
+    agent.call = lambda *args, **kwargs: loop_answers.pop(0)
+    agent.run("anything", "some-model", max_steps=2, verbose=False,
+              num_ctx=32_768,
+              on_context_pressure=lambda report: loop_reports.append(report) or False)
+finally:
+    agent.call = original_call
+    tools.set_read_budget(None)
+check(len(loop_reports) == 1 and loop_reports[0]["measured"] == 30_000,
+      "the count the server returned is what the next step of the loop measures against")
+check(loop_reports[0]["used"] >= 30_000
+      and loop_reports[0]["used"] > loop_reports[0]["budget"],
+      "a conversation the server says is nearly full is seen as nearly full")
+
 untouched = [{"role": "tool", "tool_call_id": "a", "content": "y" * 60_000}]
-check(agent.fit_to_context(untouched, None) == 0
+check(agent.fit_to_context(untouched, None) == []
       and len(untouched[0]["content"]) == 60_000,
-      "with no window declared nothing is dropped behind the model's back")
+      "with no window declared nothing is compacted behind the model's back")
 
 print()
 if failures:

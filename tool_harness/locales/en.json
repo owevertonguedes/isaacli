@@ -507,5 +507,14 @@
   "model.quantization.option": "{quantization} · {size} GiB · {fit}",
   "model.quantization.option_prepared": "{quantization} · {size} GiB · {fit} · already prepared on your account",
   "cli.kaggle.url.ended": "The kernel {slug} finished as {state} without publishing a tunnel URL. Its log on the Kaggle page says why.",
-  "cli.context.trimmed": "NOTE: {count} earlier tool result(s) were dropped to keep this conversation inside the model's context window. The files did not change; the model can read them again."
+  "cli.context.approaching": "NOTE: this conversation is using about {used} tokens of the {num_ctx} token window, and {budget} is where the request has to stop so the model still has room to answer.",
+  "cli.context.parts": "Of those, {measured} were counted by the server itself and {estimated} are estimated, being what was added since it last counted.",
+  "cli.context.all_estimated": "The server has not counted this conversation yet, so the whole figure is an estimate.",
+  "cli.context.explain": "Compacting replaces the oldest tool results with a summary naming the call, its arguments and the size, oldest first, and only as many as it takes to fit. Nothing on disk changes and the full results stay in the saved session. {count} result(s) can be compacted.",
+  "cli.context.compact": "Compact now",
+  "cli.context.keep": "Leave it as it is",
+  "cli.context.prompt": "Compact the conversation?",
+  "cli.context.compacted": "{count} tool result(s) were compacted into summaries. The model was told what each one was.",
+  "cli.context.recoverable": "Nothing was lost: the full results are in this session's log, and {command} rebuilds the conversation from it.",
+  "cli.context.unmanaged": "Context management is off, so nothing was compacted. The next request may be refused by the endpoint for exceeding the window."
 }

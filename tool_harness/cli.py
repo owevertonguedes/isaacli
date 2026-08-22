@@ -218,9 +218,14 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         self.temperature = temperature
         self.config_file = config_file
         try:
-            language = config.load(config_file).get("language")
+            data = config.load(config_file)
         except ValueError:
-            language = None
+            data = {}
+        language = data.get("language")
+        # On unless the user turned it off. Off does not mean overflowing in
+        # silence: it means the numbers are said and the endpoint's own refusal
+        # is what happens next, with its cause already on screen.
+        self.manage_context = data.get("context_management", True) is not False
         self.tr = set_language(language)
         self.provider = provider or {"provider": "ollama"}
         # The Kaggle profile whose kernel this run is responsible for ending.
@@ -298,11 +303,46 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         print(_color(self._pending_workspace_instruction_warning, "warn"))
         self._pending_workspace_instruction_warning = ""
 
-    def _context_trimmed(self, count):
-        # A layer that quietly discards part of the conversation is worse than
-        # no layer, because the user stops looking for it. Losing older results
-        # changes what the model can still see, so it is said on screen.
-        print(t("cli.context.trimmed", count=count))
+    def _context_numbers(self, report):
+        """The state of the window, saying which part of it was measured."""
+        print(_color(t("cli.context.approaching", used=report["used"],
+                       budget=report["budget"], num_ctx=report["num_ctx"]), "warn"))
+        if report["estimated"] and report["measured"]:
+            print(t("cli.context.parts", measured=report["measured"],
+                    estimated=report["estimated"]))
+        elif not report["measured"]:
+            print(t("cli.context.all_estimated"))
+
+    def _context_pressure(self, report):
+        """Offer to compact while everything is still there to decide about.
+
+        The version of this that shipped first dropped the oldest results and
+        printed a line afterwards. By the time anyone read it the content was
+        gone and there had been no moment in which they could have chosen
+        otherwise. The offer comes first now, or it is not an offer.
+        """
+        self._context_numbers(report)
+        print(t("cli.context.explain", count=report["compactable"]))
+        try:
+            index = terminal_ui.select_inline(
+                [t("cli.context.compact"), t("cli.context.keep")],
+                shortcuts={"k": 1}, input_fn=input, initial=0,
+                prompt=t("cli.context.prompt"),
+                chosen_label=t("cli.permission.chosen", option="{option}"),
+            )
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return index == 0
+
+    def _context_note(self, report, summaries):
+        """What actually happened, after it happened, and how to get it back."""
+        if not summaries:
+            self._context_numbers(report)
+            print(t("cli.context.unmanaged"))
+            return
+        print(t("cli.context.compacted", count=len(summaries)))
+        print(t("cli.context.recoverable", command=_resume_command(self.session_id)))
 
     def _show_working(self):
         continuing = self._working_visible
@@ -538,7 +578,13 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     history=self.history,
                     thinking=self.thinking,
                     num_ctx=self.num_ctx,
-                    on_context_trim=self._context_trimmed,
+                    on_context_note=self._context_note,
+                    # Somebody at the terminal decides for themselves. A run
+                    # nobody is watching, which is what the measurement scripts
+                    # are, has nobody to ask and compacts to survive.
+                    on_context_pressure=(self._context_pressure
+                                         if terminal_ui.interactive() else None),
+                    manage_context=self.manage_context,
                     provider=self.provider,
                     **({} if self.temperature is None
                        else {"temperature": self.temperature}),

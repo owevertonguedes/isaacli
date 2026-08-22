@@ -27,6 +27,7 @@ sys.path.insert(0, str(HERE.parent / "tool_harness"))
 root = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 
+import agent
 import cli as app
 import cli_ollama
 import config
@@ -285,6 +286,39 @@ out = io.StringIO()
 with redirect_stdout(out):
     cli.internal_command("/workspace")
 check(str(sub.resolve()) in out.getvalue(), "/workspace with no argument shows the folder")
+
+# Compacting the conversation is offered, never taken. What the screen has to
+# carry at that moment is the number, the ceiling, which part of the number was
+# measured, and what compacting would do, because it is the user answering.
+context_report = {
+    "num_ctx": 32_768, "used": 26_000, "measured": 24_000, "estimated": 2_000,
+    "budget": 24_576, "headroom": 8_192, "over": True, "approaching": True,
+    "compactable": 3,
+}
+original_inline = app.terminal_ui.select_inline
+try:
+    app.terminal_ui.select_inline = lambda options, **kwargs: 1
+    kept_context = io.StringIO()
+    with redirect_stdout(kept_context):
+        kept_answer = cli._context_pressure(context_report)
+    app.terminal_ui.select_inline = lambda options, **kwargs: 0
+    with redirect_stdout(io.StringIO()):
+        compact_answer = cli._context_pressure(context_report)
+finally:
+    app.terminal_ui.select_inline = original_inline
+screen = kept_context.getvalue()
+check(kept_answer is False and compact_answer is True,
+      "the answer on the screen is what decides whether anything is compacted")
+check("26000" in screen and "32768" in screen and "24576" in screen,
+      "the offer carries where the conversation stands and where it has to stop")
+check("24000" in screen and "2000" in screen,
+      "the offer separates what the server counted from what is estimated")
+
+compacted_out = io.StringIO()
+with redirect_stdout(compacted_out):
+    cli._context_note(context_report, ["one summary"])
+check(f"--resume {cli.session_id}" in compacted_out.getvalue(),
+      "what was compacted is recoverable, and the screen says with which command")
 
 out = io.StringIO()
 (root / "AGENTS.md").write_text("project-two-rule", encoding="utf-8")
@@ -1067,6 +1101,33 @@ check(any(m.get("role") == "tool" and m.get("content") == "content"
 check([role for role, _ in resumed["transcript"]] == [
     "user", "tool_start", "permission", "tool_result", "assistant"
 ], "--resume prepares the visible conversation including tools and permissions")
+
+# "Recoverable" is a claim about a file on disk, so it is checked against the
+# file: a conversation is compacted in memory and then rebuilt from its log,
+# which still has to carry the whole result that was summarised away.
+recoverable_id = "2026-08-22-090000-abcdef"
+recoverable_path = app.SESSIONS_DIR / f"{recoverable_id}.jsonl"
+recoverable_events = [
+    {"type": "meta", "workspace": str(sub), "model": "resume-model"},
+    {"type": "user", "workspace": str(sub), "model": "resume-model",
+     "content": "fix the bug"},
+    {"type": "tool_start", "workspace": str(sub), "model": "resume-model",
+     "name": "read_file", "args": {"path": "client.ts"}},
+    {"type": "tool_result", "workspace": str(sub), "model": "resume-model",
+     "name": "read_file", "result": "y" * 60_000},
+]
+recoverable_path.write_text("\n".join(json.dumps(e, ensure_ascii=False)
+                                      for e in recoverable_events) + "\n")
+before_compaction = app._load_session(recoverable_id)
+compacted = agent.fit_to_context(before_compaction["history"], 16_384,
+                                 on_pressure=lambda report: True)
+after_compaction = app._load_session(recoverable_id)
+check(compacted and all(len(m.get("content") or "") < 60_000
+                        for m in before_compaction["history"]),
+      "the conversation in memory really was compacted")
+check(any(m.get("role") == "tool" and len(m.get("content") or "") == 60_000
+          for m in after_compaction["history"]),
+      "the full result a summary replaced is still in the session log, and comes back")
 
 # Logs recorded before the identifiers were translated must still resume.
 legacy_id = "2026-08-06-101010-abcdef"
