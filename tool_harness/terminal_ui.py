@@ -85,6 +85,10 @@ def alternate_screen(input_fn=input):
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
+# Both menus move the cursor with these as well as with the arrow keys, so no
+# screen may claim them as an answer shortcut.
+NAVIGATION_KEYS = ("j", "k")
+
 
 def fit(text, width):
     """One option on one line, cut on purpose rather than by the terminal.
@@ -236,6 +240,16 @@ def select_inline(options, shortcuts=None, input_fn=input, initial=0,
     if not options:
         raise ValueError("inline select requires at least one option")
     shortcuts = shortcuts or {}
+    # Shortcuts are read before navigation below, so binding one of these would
+    # turn the key that moves the cursor into the key that answers. The context
+    # screen bound "k" and pressing it, to go up, chose "leave it as it is" on
+    # the spot. Refused loudly rather than quietly ignored: a shortcut that
+    # silently does nothing is the same class of bug pointing the other way.
+    colliding = sorted(set(shortcuts) & set(NAVIGATION_KEYS))
+    if colliding:
+        raise ValueError(
+            "inline select shortcuts cannot use the navigation keys: "
+            + ", ".join(colliding))
     if not interactive(input_fn):
         for i, option in enumerate(options, 1):
             print(f"  {i}) {option}")

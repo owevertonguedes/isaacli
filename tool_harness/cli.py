@@ -326,7 +326,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         try:
             index = terminal_ui.select_inline(
                 [t("cli.context.compact"), t("cli.context.keep")],
-                shortcuts={"k": 1}, input_fn=input, initial=0,
+                input_fn=input, initial=0,
                 prompt=t("cli.context.prompt"),
                 # The line left on screen has to name the decision that was
                 # made. Borrowing the permission screen's label answered a

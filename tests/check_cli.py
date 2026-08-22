@@ -338,68 +338,92 @@ report = {{"num_ctx": 32768, "used": 26000, "measured": 24000,
 screen = app.IsaacCLI.__new__(app.IsaacCLI)
 app.IsaacCLI._context_pressure(screen, report)
 """
-drawn = b""
-master_fd, slave_fd = pty.openpty()
-try:
-    child = subprocess.Popen(
-        [sys.executable, "-c", context_child],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
-    os.close(slave_fd)
-    slave_fd = None
-    answered = False
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and child.poll() is None:
-        ready, _, _ = select.select([master_fd], [], [], 0.2)
-        if ready:
+def _drive_context_screen(keys):
+    """Draw the offer on a real pseudo-terminal, type `keys`, return the screen."""
+    drawn = b""
+    master_fd, slave_fd = pty.openpty()
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-c", context_child],
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
+        os.close(slave_fd)
+        slave_fd = None
+        typed = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and child.poll() is None:
+            ready, _, _ = select.select([master_fd], [], [], 0.2)
+            if ready:
+                try:
+                    drawn += os.read(master_fd, 4096)
+                except OSError:
+                    break
+            # Type only once the menu is on screen: tty.setraw flushes whatever
+            # arrived before it, so a key sent too early is a key thrown away.
+            if not typed and b"Compact now" in drawn:
+                typed = True
+                os.write(master_fd, keys)
+        answered = child.poll() is not None
+        if not answered:
+            # A child that never answered has to be killed here. Waiting on it
+            # would raise out of the whole file, which turns one failed check
+            # into no report at all, and would leave a python holding this pty.
+            child.kill()
+        child.wait(timeout=5)
+        drain = time.monotonic() + 1
+        while time.monotonic() < drain:
+            ready, _, _ = select.select([master_fd], [], [], 0.1)
+            if not ready:
+                break
             try:
-                drawn += os.read(master_fd, 4096)
+                chunk = os.read(master_fd, 4096)
             except OSError:
                 break
-        # Answer only once the menu is on screen: tty.setraw flushes whatever
-        # arrived before it, so a key sent too early is a key thrown away.
-        if not answered and b"Compact now" in drawn:
-            answered = True
-            os.write(master_fd, b"\r")
-    answered_in_time = child.poll() is not None
-    check(answered_in_time, "the context offer answers a keypress on a TTY")
-    if not answered_in_time:
-        # A child that never drew its menu has to be killed here. Waiting on it
-        # would raise out of the whole file, which turns one failed check into
-        # no report at all, and would leave a python holding this pty behind.
-        child.kill()
-    child.wait(timeout=5)
-    drain = time.monotonic() + 1
-    while time.monotonic() < drain:
-        ready, _, _ = select.select([master_fd], [], [], 0.1)
-        if not ready:
-            break
-        try:
-            chunk = os.read(master_fd, 4096)
-        except OSError:
-            break
-        if not chunk:
-            break
-        drawn += chunk
-finally:
-    # The slave stays open here only if Popen itself failed, and then nothing
-    # below has anything to read: closing both is what keeps a check that could
-    # not start from leaking the terminal it asked the kernel for.
-    if slave_fd is not None:
-        os.close(slave_fd)
-    os.close(master_fd)
-drawn = drawn.decode(errors="replace")
+            if not chunk:
+                break
+            drawn += chunk
+    finally:
+        # The slave stays open here only if Popen itself failed, and then
+        # nothing has anything to read: closing both is what keeps a check that
+        # could not start from leaking the terminal it asked the kernel for.
+        if slave_fd is not None:
+            os.close(slave_fd)
+        os.close(master_fd)
+    return answered, drawn.decode(errors="replace")
+
+
+answered, drawn = _drive_context_screen(b"\r")
+check(answered, "the context offer answers a keypress on a TTY")
 check("Context: Compact now" in drawn,
       "on a real terminal the answered offer is confirmed as a context decision")
 check("Permission" not in drawn,
       "nothing about the window is announced as a permission")
 
-# The label above was inherited from a default, so fixing the caller alone
-# leaves the trap loaded for the next screen that forgets to pass its own.
+# "k" moves the cursor up in every menu this program draws, and this screen used
+# to bind it as a shortcut for "leave it as it is". Because shortcuts are read
+# before navigation, pressing it to go up answered the question instead. Two of
+# them wrap around a two-option menu and come back to where they started, so a
+# screen that navigates ends on "compact" and a screen that answers on the first
+# one does not.
+answered_after_navigating, navigated = _drive_context_screen(b"kk\r")
+check(answered_after_navigating and "Context: Compact now" in navigated,
+      "the navigation keys move the cursor here instead of answering for the user")
+
+# Fixing this caller alone would leave the trap armed for the next screen, in
+# both of the ways it was armed here: an inherited default, and a shortcut that
+# steals a navigation key.
 inline_defaults = inspect.signature(terminal_ui.select_inline).parameters
 check(all(word not in str(inline_defaults[name].default)
           for name in ("prompt", "chosen_label")
           for word in ("Permission", "w/g/n")),
       "the shared inline menu defaults to no particular screen's wording")
+try:
+    terminal_ui.select_inline(["a", "b"], shortcuts={"k": 1},
+                              input_fn=lambda _p="": "1")
+    refused_navigation_shortcut = False
+except ValueError:
+    refused_navigation_shortcut = True
+check(refused_navigation_shortcut,
+      "a screen cannot claim a navigation key as its answer shortcut")
 
 out = io.StringIO()
 (root / "AGENTS.md").write_text("project-two-rule", encoding="utf-8")
