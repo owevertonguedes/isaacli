@@ -223,8 +223,16 @@ def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
 
 
 def select_inline(options, shortcuts=None, input_fn=input, initial=0,
-                  prompt="Choose [Enter/w/g/n]: ", chosen_label="Permission: {option}"):
-    """Arrow-key menu that does not clear the conversation already on screen."""
+                  prompt="Choose: ", chosen_label="{option}"):
+    """Arrow-key menu that does not clear the conversation already on screen.
+
+    The defaults name no screen on purpose. They used to be the command
+    approval screen's own wording, back when it was the only caller, and the
+    second caller inherited it: the context screen confirmed a decision about
+    the model's window with the word "Permission". Every caller passes its own
+    translated wording, so a default that belongs to one of them is a trap and
+    never a saving.
+    """
     if not options:
         raise ValueError("inline select requires at least one option")
     shortcuts = shortcuts or {}

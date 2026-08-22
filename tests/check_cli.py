@@ -338,13 +338,14 @@ report = {{"num_ctx": 32768, "used": 26000, "measured": 24000,
 screen = app.IsaacCLI.__new__(app.IsaacCLI)
 app.IsaacCLI._context_pressure(screen, report)
 """
+drawn = b""
 master_fd, slave_fd = pty.openpty()
 try:
     child = subprocess.Popen(
         [sys.executable, "-c", context_child],
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
     os.close(slave_fd)
-    drawn = b""
+    slave_fd = None
     answered = False
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and child.poll() is None:
@@ -379,13 +380,26 @@ try:
         if not chunk:
             break
         drawn += chunk
-    drawn = drawn.decode(errors="replace")
 finally:
+    # The slave stays open here only if Popen itself failed, and then nothing
+    # below has anything to read: closing both is what keeps a check that could
+    # not start from leaking the terminal it asked the kernel for.
+    if slave_fd is not None:
+        os.close(slave_fd)
     os.close(master_fd)
+drawn = drawn.decode(errors="replace")
 check("Context: Compact now" in drawn,
       "on a real terminal the answered offer is confirmed as a context decision")
 check("Permission" not in drawn,
       "nothing about the window is announced as a permission")
+
+# The label above was inherited from a default, so fixing the caller alone
+# leaves the trap loaded for the next screen that forgets to pass its own.
+inline_defaults = inspect.signature(terminal_ui.select_inline).parameters
+check(all(word not in str(inline_defaults[name].default)
+          for name in ("prompt", "chosen_label")
+          for word in ("Permission", "w/g/n")),
+      "the shared inline menu defaults to no particular screen's wording")
 
 out = io.StringIO()
 (root / "AGENTS.md").write_text("project-two-rule", encoding="utf-8")
