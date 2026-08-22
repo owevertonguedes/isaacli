@@ -112,6 +112,7 @@ merely confirming that the refusal message showed up.
 """
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -493,6 +494,63 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
     return line
 
 
+# How the two layers below report a program they could not start. bwrap execs
+# the program itself and dies with `bwrap: execvp cargo: No such file or
+# directory` and exit code 1 (NOT 127, measured on this machine, which is why
+# nothing here keys off the exit code); an approved line goes through `sh -c`,
+# and the shell says `sh: line 1: cargo: command not found`, or `sh: 1: cargo:
+# not found` on dash.
+NOT_FOUND_PATTERNS = (
+    re.compile(r"^bwrap: execvp (?P<name>\S+): No such file or directory", re.M),
+    re.compile(r"^[^\n:]*: ?(?:line )?\d*:? ?(?P<name>[^\s:]+): (?:command )?not found",
+               re.M),
+)
+
+
+def _missing_programs(err: str):
+    """Names the sandbox could not start, in the order they were reported."""
+    names = []
+    for pattern in NOT_FOUND_PATTERNS:
+        for match in pattern.finditer(err):
+            name = match.group("name")
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _missing_program_note(err: str):
+    """Say WHICH kind of absence this was, because the two need opposite fixes.
+
+    `command not found` on its own is a lie by omission: the model reads it as
+    "this machine does not have the tool" and rewrites the task around the
+    absence, when the truth is usually that the tool exists and the jail cannot
+    see it. Measured in task 036, where the model was told `cargo: command not
+    found` and `yarn: command not found` on a machine that had both.
+
+    So the note names the real state: installed on the host but outside every
+    read-only mount, or genuinely not installed anywhere on the user's PATH.
+    English on purpose, like every other text the model reads.
+    """
+    lines = []
+    for name in _missing_programs(err):
+        host_path = shutil.which(name)
+        if host_path:
+            lines.append(
+                f"NOTE: '{name}' DOES exist on this machine, at {host_path}, but it "
+                f"is not reachable from inside the sandbox: the jail mounts the "
+                f"system directories and the directories on the user's PATH "
+                f"read-only, and that program is under neither. This is a sandbox "
+                f"limit, not a missing tool. Do not conclude the machine lacks "
+                f"'{name}' and do not work around it silently: say so, and ask the "
+                f"user, who can put it on their PATH or approve another route.")
+        else:
+            lines.append(
+                f"NOTE: '{name}' is not installed on this machine either: it is on "
+                f"none of the directories of the user's own PATH, so this is not a "
+                f"sandbox limit. Say so instead of retrying the same command.")
+    return lines
+
+
 def run_command(cmd: str, authorized=False) -> str:
     """Run a confined command and return the RAW output.
 
@@ -564,6 +622,10 @@ def run_command(cmd: str, authorized=False) -> str:
         parts.append("--- stderr ---")
         parts.append(err.rstrip("\n"))
     parts.append(f"(exit code: {code})")
+    # Before the layer notices, because this one is about the command the user
+    # just ran, not about the machine's configuration.
+    if code != 0:
+        parts.extend(_missing_program_note(err))
     if cgroup_prefix is None:
         parts.append(
             "NOTE: systemd-run is not installed, so this command ran without "

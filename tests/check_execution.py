@@ -70,6 +70,45 @@ check("stderr" in out, "stderr appears labelled")
 check("No such file" in out, f"the real system message appears: {out!r}")
 check("(exit code: 1)" in out, "a non-zero exit code shows up")
 
+print("\n=== 2b. a program that is missing says WHICH kind of missing ===")
+# `command not found` alone is a lie by omission: in task 036 the model was told
+# `cargo: command not found` and `yarn: command not found` on a machine that had
+# both, and it concluded the tools did not exist. The two absences need opposite
+# reactions, so the output has to tell them apart. Checked by effect, through the
+# real jail, because the parsing has to survive what bwrap and sh actually print
+# (bwrap exits 1, not 127, when execvp fails).
+absent = "isaacli-no-such-program-xyz"
+check(shutil.which(absent) is None, "the fake program name really is absent from the host")
+out = execution.run_command(f"{absent} --version", authorized=True)
+check("not installed on this machine" in out,
+      f"a program missing from the host too is reported as missing, not as a "
+      f"sandbox limit: {out[:300]!r}")
+check("DOES exist" not in out, f"and it is not claimed to exist: {out[:300]!r}")
+
+# The other half: a program that IS on the user's PATH and still cannot be
+# started inside. The bait is a real executable in a temporary directory put on
+# the host PATH, so `shutil.which` finds it exactly as it finds a real toolchain.
+outside_bin = base / "outside_bin"
+outside_bin.mkdir()
+bait_tool = outside_bin / "isaacli-bait-tool"
+bait_tool.write_text("#!/bin/sh\necho bait\n")
+bait_tool.chmod(0o755)
+previous_path = os.environ["PATH"]
+os.environ["PATH"] = f"{outside_bin}{os.pathsep}{previous_path}"
+try:
+    # The jail is told to mount nothing of the user's toolchain, which is the
+    # planted failure: the program exists outside and cannot be reached in here.
+    out = execution.run_command("isaacli-bait-tool", authorized=True)
+finally:
+    os.environ["PATH"] = previous_path
+check("(exit code: 0)" not in out,
+      f"the bait tool really did not run inside the sandbox: {out[:300]!r}")
+check("DOES exist on this machine" in out and str(bait_tool) in out,
+      f"a program present outside and unreachable inside says so, with its real "
+      f"path: {out[:400]!r}")
+check("not installed on this machine" not in out,
+      f"and it is not reported as absent from the machine: {out[:300]!r}")
+
 print("\n=== 3. rm -rf in several forms: refused AND without effect ===")
 for attempt in [
     "rm -rf /",
