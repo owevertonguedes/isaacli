@@ -89,6 +89,12 @@ never online: commands that run automatically keep the network shut, and `git
 push` plus read-only `gh` queries get it through their own narrow exception. See
 `_needs_network`.
 
+THE ENVIRONMENT IS BUILT FROM NOTHING, not filtered. `--clearenv` drops
+everything isaacli inherited and only the variables set explicitly below survive.
+Until this was added the filesystem was closed to credentials while the
+environment was wide open: measured on this machine, a key exported in the shell
+that started isaacli was readable inside the jail with one `python3 -c`.
+
 HOME is still the working directory, never the real home: no private key or HTTPS
 credential of the user is mounted inside the sandbox. Authentication goes through
 the ssh-agent SOCKET (`SSH_AUTH_SOCK`), which only signs challenges: there is no
@@ -426,7 +432,15 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
     """
     real, links = _system_binaries()
     git_name, git_email = _git_identity()
-    line = [shutil.which("bwrap")]
+    # --clearenv FIRST, and before every --setenv below, which is the order
+    # bwrap needs: it drops the whole inherited environment and keeps only what
+    # is set after it. Without this the jail inherited isaacli's own environment,
+    # measured on this machine: a variable exported in the shell that started
+    # isaacli (an OPENAI_API_KEY, a cloud token) was readable inside with a plain
+    # `python3 -c "import os"`. The filesystem was already closed to credentials
+    # and the environment was not, so the environment is now built here from
+    # nothing rather than filtered afterwards.
+    line = [shutil.which("bwrap"), "--clearenv"]
     for path in real:
         line += ["--ro-bind", path, path]
     for target, link in links:

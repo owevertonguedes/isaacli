@@ -307,6 +307,28 @@ out = execution.run_command("""python3 -c "open('created.txt','w').write('ok')" 
 check((root / "created.txt").exists(),
       f"writing INSIDE the working directory works ({out[:200]!r})")
 
+print("\n=== 7b. the host environment does not ride along into the jail ===")
+# The filesystem was closed to credentials while the environment was wide open:
+# before --clearenv, a key exported in the shell that started isaacli was
+# readable inside with one `python3 -c`. Planted failure, real effect: the
+# variable is set here, in this process, exactly as a user's shell would set it.
+os.environ["ISAACLI_FAKE_SECRET_PROBE"] = "sk-not-a-real-key-planted-by-the-check"
+try:
+    out = execution.run_command(
+        """python3 -c "import os; print('probe=', os.environ.get('ISAACLI_FAKE_SECRET_PROBE'))" """)
+finally:
+    del os.environ["ISAACLI_FAKE_SECRET_PROBE"]
+check("sk-not-a-real-key" not in out,
+      f"a secret in isaacli's own environment does not reach the sandbox: {out[:300]!r}")
+check("probe= None" in out,
+      f"and the probe really ran and looked for it (otherwise it proves nothing): {out[:300]!r}")
+# The counterpart: clearing the environment must not clear what the jail itself
+# sets, or git would lose its identity and every command would lose its PATH.
+out = execution.run_command(
+    """python3 -c "import os; print('H', os.environ.get('HOME'), 'P', bool(os.environ.get('PATH')), 'G', os.environ.get('GIT_AUTHOR_NAME'))" """)
+check(f"H {root}" in out and "P True" in out and "G None" not in out,
+      f"HOME, PATH and the git identity survive the cleared environment: {out[:300]!r}")
+
 print("\n=== 8. no network for what the user was never shown ===")
 # Careful writing this assert: looking for a sentinel word in the output does not
 # work, because the ECHOED command contains the word too. The exit code is what counts.
