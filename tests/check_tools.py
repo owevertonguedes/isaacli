@@ -336,6 +336,20 @@ check(history[3]["content"] == agent.DROPPED_RESULT_NOTE
 check(all(m.get("tool_call_id") for m in history if m["role"] == "tool"),
       "a dropped result keeps the id its call is waiting on")
 
+# The two limits are only worth anything if the window reaches them, so this
+# runs the loop itself with a stubbed endpoint and reads the cap afterwards.
+original_call = agent.call
+try:
+    agent.call = lambda *args, **kwargs: {"role": "assistant", "content": "done"}
+    tools.set_read_budget(None)
+    agent.run("anything", "some-model", max_steps=1, verbose=False, num_ctx=32_768)
+    wired = tools._read_budget
+finally:
+    agent.call = original_call
+    tools.set_read_budget(None)
+check(wired == int(32_768 * tools.CONTEXT_READ_SHARE * tools.CHARS_PER_TOKEN),
+      "the window a turn runs in is what sets the read cap for that turn")
+
 untouched = [{"role": "tool", "tool_call_id": "a", "content": "y" * 60_000}]
 check(agent.fit_to_context(untouched, None) == 0
       and len(untouched[0]["content"]) == 60_000,
