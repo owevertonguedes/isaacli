@@ -1622,6 +1622,93 @@ orphan_keys = sorted(
 check(not orphan_keys,
       f"every catalogue key is asked for by some screen ({orphan_keys or 'all used'})")
 
+# ----------------------------------------------------------------------
+# A sentence that never entered a catalogue at all has no pair to be missing,
+# so the comparison above is blind to it. `i18n_scan` closes that by reading
+# the sources: literal text handed to a call that writes on the screen.
+#
+# The whole value of it is what it does NOT flag. This project writes English
+# on purpose in two other places, and a scan that accused those would be turned
+# off within the week: text the model reads (system prompt, tool description,
+# tool result, sandbox refusal) is a contract and is never translated, and a
+# `--debug` note is neither. So both directions are proven here, on one planted
+# module that carries both kinds at once.
+# ----------------------------------------------------------------------
+import i18n_scan
+
+planted = '''
+import sys
+import debug
+import terminal_ui
+
+SCHEMA = [{"function": {"name": "read_file",
+                        "description": "Read a file from the workspace."}}]
+
+
+def refuse():
+    return "Refused: the sandbox does not reach outside the workspace."
+
+
+def build(msgs):
+    msgs.append({"role": "system",
+                 "content": "You are a coding agent. Call one tool per step."})
+    debug.note("planted", "the probe answered nothing at all")
+    print("this went to the debug channel", file=sys.stderr)
+    return terminal_ui.select(t("planted.title"), [t("planted.only")])
+
+
+def screen():
+    print("Nothing here can be undone later.")
+    terminal_ui.select("Pick a server to talk to", [t("planted.only")])
+'''
+planted_offenders = i18n_scan.interface_literals("planted.py", planted)
+planted_lines = planted.splitlines()
+expected = [
+    (planted_lines.index('    print("Nothing here can be undone later.")') + 1,
+     "print()", "Nothing here can be undone later."),
+    (planted_lines.index(
+        '    terminal_ui.select("Pick a server to talk to", [t("planted.only")])') + 1,
+     "terminal_ui.select()", "Pick a server to talk to"),
+]
+check(len(planted_offenders) == len(expected)
+      and all(f"planted.py:{line} {sink}" in offender and repr(text) in offender
+              for (line, sink, text), offender in zip(expected, planted_offenders)),
+      "an interface literal is refused with its file, its line and its sink "
+      f"({planted_offenders})")
+# Same module, same scan, same run: the model's English and the debug note come
+# through untouched. This is the assertion that keeps the check alive.
+model_text = ("Read a file from the workspace.", "Refused: the sandbox",
+              "You are a coding agent", "the probe answered nothing",
+              "this went to the debug channel")
+check(not any(text in offender for text in model_text
+              for offender in planted_offenders),
+      "text the model reads and a --debug note are not mistaken for interface "
+      f"text ({planted_offenders})")
+
+# The whole package as it stands, which is what makes this a check and not a
+# demonstration.
+live_offenders = []
+for path in sorted((HERE.parent / "tool_harness").glob("*.py")):
+    live_offenders += i18n_scan.interface_literals(
+        path.name, path.read_text(encoding="utf-8"))
+check(not live_offenders,
+      f"no module writes interface text outside the catalogues: {live_offenders}")
+
+# Every excuse in the table has to still describe something real. An entry that
+# outlives the line it excused is how a table like this turns into the place a
+# rule goes to be forgotten: it silently pre-approves whatever text is written
+# next with those exact words.
+declared_stale = sorted(
+    f"{name}:{text!r}" for name, texts in i18n_scan.DECLARED.items()
+    for text in texts
+    if text not in {
+        found for _line, _sink, found in i18n_scan.screen_literals(
+            name, (HERE.parent / "tool_harness" / name).read_text(encoding="utf-8"))
+    }
+)
+check(not declared_stale,
+      f"every declared exception still names a line that exists: {declared_stale}")
+
 # `--help` is the first thing anybody sees of this program, and every row of the
 # commands section ran past 80 columns, the longest at 132. A terminal that
 # narrow wraps them itself, wherever the character happens to land, which breaks
