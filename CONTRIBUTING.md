@@ -52,21 +52,31 @@ level, and the ones that need a container or a real model under
 `tests/integration/`. `scripts/` holds development utilities that are not
 tests.
 
+One command runs all of them:
+
 ```bash
-python3 tests/check_cli.py
-python3 tests/check_agent_config.py
-python3 tests/check_setup.py
-python3 tests/check_tools.py
-python3 tests/check_sandbox.py
-python3 tests/check_execution.py
-python3 tests/check_hardware.py
-python3 tests/check_kaggle.py
-python3 tests/check_model_discovery.py
+./scripts/check.sh
 ```
 
-Run `check_execution.py` outside a nested sandbox: `bwrap` needs to create
-its own loopback interface, which fails inside another sandboxed
-environment (for example, inside a container without that capability).
+It discovers `tests/check_*.py` rather than listing them, so a new check
+joins the suite by being written, and it runs each one under a memory and
+time ceiling. Individual files still run on their own if you are working on
+one:
+
+```bash
+python3 tests/check_cli.py
+```
+
+Run the suite outside a nested sandbox: `check_execution.py` needs `bwrap`
+to map uids and create its own loopback interface, and a systemd `TasksMax`
+ceiling to hit. Where the host cannot provide that, including hosted CI,
+`./scripts/check.sh --no-privileged` skips that one check and names it in
+the output, so a green run is never mistaken for coverage it does not have.
+
+## Continuous integration
+
+Pull requests run the same `scripts/check.sh` on GitHub Actions, so there is
+one definition of a passing suite instead of two that drift apart.
 
 Two checks are not part of that pass because they need more than Python:
 `tests/check_commit_workflow.py` calls a real model through `isaacli`, and
