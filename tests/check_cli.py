@@ -359,7 +359,13 @@ try:
         if not answered and b"Compact now" in drawn:
             answered = True
             os.write(master_fd, b"\r")
-    check(child.poll() is not None, "the context offer answers a keypress on a TTY")
+    answered_in_time = child.poll() is not None
+    check(answered_in_time, "the context offer answers a keypress on a TTY")
+    if not answered_in_time:
+        # A child that never drew its menu has to be killed here. Waiting on it
+        # would raise out of the whole file, which turns one failed check into
+        # no report at all, and would leave a python holding this pty behind.
+        child.kill()
     child.wait(timeout=5)
     drain = time.monotonic() + 1
     while time.monotonic() < drain:
