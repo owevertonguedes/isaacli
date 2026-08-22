@@ -1334,10 +1334,21 @@ def _settle_unfinished_kernel(executable, slug, input_fn, run_fn=subprocess.run,
                    f"already {state}, nothing left to stop")
         return
     if terminal_ui.interactive(input_fn):
-        index = _choose(
-            t("cli.kaggle.unfinished.title", slug=slug, state=state),
-            [t("cli.kaggle.unfinished.stop"), t("cli.kaggle.unfinished.keep")],
-            input_fn)
+        try:
+            index = _choose(
+                t("cli.kaggle.unfinished.title", slug=slug, state=state),
+                [t("cli.kaggle.unfinished.stop"), t("cli.kaggle.unfinished.keep")],
+                input_fn)
+        except (KeyboardInterrupt, EOFError):
+            # This screen runs inside run_kaggle's error handler, so an
+            # interrupt raised here escapes past the KeyboardInterrupt branch
+            # that stops the kernel when a launch is cancelled: measured, it
+            # left a traceback on screen and a GPU kernel spending with no
+            # delete ever issued, which is the exact hole this function exists
+            # to close. Interrupting the question is not an answer to it, so it
+            # falls back to the answer given when there is nobody to ask.
+            print()
+            index = 0
         if index != 0:
             print(t("cli.kaggle.stop_spending", url=page))
             return

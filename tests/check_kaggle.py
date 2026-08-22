@@ -1967,6 +1967,44 @@ check(not any("delete" in command for command in settle_commands)
       and "isaacli kaggle --stop" in kept_alive_output.getvalue(),
       "choosing to leave the kernel running deletes nothing and says how to stop it")
 
+# Ctrl+C is the one way out of this screen that is not one of its options, and
+# it used to be the way out that kept the quota running: this is called from
+# inside run_kaggle's error handler, so the interrupt went straight past the
+# KeyboardInterrupt branch that stops a cancelled launch's kernel. Measured on a
+# pseudo-terminal before the fix: a traceback, and no delete ever issued.
+interrupted_commands = []
+
+
+def interrupted_run(command, check=False, capture_output=False, text=False,
+                    env=None, **kwargs):
+    interrupted_commands.append(list(map(str, command)))
+    return SimpleNamespace(
+        returncode=0, stdout='has status "KernelWorkerStatus.RUNNING"', stderr="")
+
+
+def interrupt_the_question(*_args, **_kwargs):
+    raise KeyboardInterrupt
+
+
+original_interactive = cli_kaggle.terminal_ui.interactive
+original_preference_select = cli_kaggle.terminal_ui.select
+try:
+    cli_kaggle.terminal_ui.interactive = lambda *args, **kwargs: True
+    cli_kaggle.terminal_ui.select = interrupt_the_question
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle._settle_unfinished_kernel(
+            "/fake/kaggle", "owner/isaacli-gpu-interrupted", lambda _prompt: "1",
+            interrupted_run, {})
+    escaped = False
+except KeyboardInterrupt:
+    escaped = True
+finally:
+    cli_kaggle.terminal_ui.interactive = original_interactive
+    cli_kaggle.terminal_ui.select = original_preference_select
+check(not escaped
+      and any("delete" in command for command in interrupted_commands),
+      "interrupting the question stops the kernel instead of letting it spend")
+
 # A kernel Kaggle already calls terminal has nothing left to stop, and offering
 # to stop it would mean offering to delete the log the failure message just told
 # the user to go read.
