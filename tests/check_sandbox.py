@@ -91,6 +91,16 @@ def check_mount_policy() -> int:
         checkout = home / "project"
         (checkout / ".git").mkdir(parents=True)
         (checkout / "bin").mkdir()
+        # An executable loose in the home, so the home and the symlink to it are
+        # refused by the guard being tested and not by "it holds no executable",
+        # which would make both of those cases pass for the wrong reason.
+        (home / "stray-script").write_text("#!/bin/sh\ntrue\n")
+        (home / "stray-script").chmod(0o755)
+        # A PATH entry that is a SYMLINK to the home. Every comparison-based
+        # refusal passes for it, because the link is not equal to the home, so
+        # the only thing that stops it is resolving before deciding.
+        disguised = home / "looks_like_a_bin_dir"
+        disguised.symlink_to(home)
 
         previous = {name: os.environ.get(name)
                     for name in ("HOME", "PATH", "XDG_CONFIG_HOME",
@@ -106,6 +116,7 @@ def check_mount_policy() -> int:
             str(home / ".ssh"),           # keys: never
             str(home / ".config"),        # an XDG base: never
             str(checkout),                # a project checkout: never
+            str(disguised),               # a symlink to the home: never
             str(workspace),               # already mounted, and writable
             str(home / "does_not_exist"),
         ])
@@ -128,6 +139,7 @@ def check_mount_policy() -> int:
             "the ssh directory": home / ".ssh",
             "an XDG base directory": home / ".config",
             "a project checkout": checkout,
+            "a symlink pointing at the home": disguised,
             "the workspace, which is writable": workspace,
         }
         for description, path in must_not_mount.items():

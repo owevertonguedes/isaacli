@@ -294,6 +294,13 @@ LAUNCHER_HOMES = (
 )
 
 
+# Not a refusal like the others: the directory is fine, it is simply reachable
+# already, through /usr or through a mount an earlier PATH entry brought in. It
+# still belongs on the jail's PATH, or a tool would be mounted and unreachable
+# by name, which is the exact failure this whole mechanism exists to remove.
+ALREADY_COVERED = "already covered by another mount"
+
+
 def _xdg_base_dirs(home):
     """The XDG base directories themselves, which are never mounted.
 
@@ -324,8 +331,16 @@ def _mountable(path, home, xdg_bases, root, already):
     "the user's toolchain" means. Returns the REASON when it refuses, so the
     caller can put it on `--debug` instead of dropping it in silence.
     """
+    # Every guard below compares paths, so they all have to run on the RESOLVED
+    # path: `--ro-bind` follows a symlinked source, so a PATH entry that is a
+    # link to the home would otherwise pass every check here (it is not equal to
+    # the home, not an XDG base) and then mount the home anyway. The caller
+    # mounts what this function was given, so callers resolve first and this
+    # refuses anything unresolved rather than trusting them.
     if not path.is_absolute():
         return "not an absolute path"
+    if path != Path(os.path.realpath(path)):
+        return "a symlink, and what it points at is judged instead"
     if not path.is_dir():
         return "not a directory"
     if path == Path("/") or path == home or path in home.parents:
@@ -341,7 +356,7 @@ def _mountable(path, home, xdg_bases, root, already):
         # shadow the one directory the model is supposed to be able to write.
         return "inside the workspace, which is already mounted"
     if any(path == mount or mount in path.parents for mount in already):
-        return "already covered by another mount"
+        return ALREADY_COVERED
     if (path / ".git").exists():
         # A git checkout is somebody's project, not a toolchain. This is not
         # hypothetical: on this machine `~/.local/bin/isaacli` is a symlink into
@@ -351,6 +366,32 @@ def _mountable(path, home, xdg_bases, root, already):
         # stays unreachable, and says so through the not-found note.
         return "a git checkout, which is a project and not a toolchain"
     return None
+
+
+def _argument_budget():
+    """How many bytes of mount arguments the bwrap line may carry.
+
+    Not an invented number: it comes from the kernel's own `ARG_MAX` on this
+    machine, and only a quarter of it is spent here so the command itself, the
+    environment and the rest of the jail's options keep room. It exists because
+    the failure it prevents is total: a PATH long enough to overflow the
+    argument list makes `Popen` raise for EVERY command, not just for the tool
+    that needed the last mount.
+    """
+    try:
+        arg_max = os.sysconf("SC_ARG_MAX")
+    except (ValueError, OSError):
+        debug.swallowed("execution._argument_budget")
+        arg_max = 0
+    if not arg_max or arg_max < 0:
+        arg_max = 128 * 1024        # POSIX floor, when the system will not say
+    return arg_max // 4
+
+
+def _over_argument_budget(binds, budget):
+    """Whether the mounts decided so far already fill the argument budget."""
+    # Three arguments per mount: --ro-bind-try, source, destination.
+    return sum(len(str(path)) * 2 + 16 for path in binds) >= budget
 
 
 def _executables_in(directory):
@@ -407,7 +448,7 @@ def _install_tree(executable, home, xdg_bases, root, already):
                 debug.swallowed("execution._install_tree")
                 siblings = []
             for sibling in siblings:
-                candidate = Path(sibling)
+                candidate = Path(os.path.realpath(sibling))
                 if _mountable(candidate, home, xdg_bases, root,
                               already + found) is None:
                     found.append(candidate)
@@ -451,12 +492,21 @@ def _toolchain_mounts(root):
     # re-binding it would be noise at best and a shadowed symlink at worst.
     real, links = _system_binaries()
     system = [Path(path) for path in real] + [Path(link) for _, link in links]
+    budget = _argument_budget()
 
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
             continue                      # an empty PATH element means CWD
-        directory = Path(entry)
+        # Resolved before anything is decided about it: the guards compare
+        # paths, and a symlink would slip past comparisons that the target
+        # fails. The resolved path is also what goes on the jail's PATH, since
+        # the link itself does not exist in there.
+        directory = Path(os.path.realpath(entry))
         refusal = _mountable(directory, home, xdg_bases, root, system + mounted)
+        if refusal == ALREADY_COVERED:
+            if str(directory) not in path_dirs:
+                path_dirs.append(str(directory))
+            continue
         if refusal is not None:
             # Aggregated into a single note below: `debug.note` reports once per
             # site, so one call per refusal would show the first and hide the
@@ -474,6 +524,10 @@ def _toolchain_mounts(root):
             refused.append(f"{directory} (no executable in it, so it is not a "
                            f"toolchain directory)")
             continue
+        if _over_argument_budget(binds, budget):
+            refused.append(f"{directory} (the bwrap argument list would go past "
+                           f"the kernel's limit)")
+            break
         binds.append(directory)
         mounted.append(directory)
         path_dirs.append(str(directory))
@@ -485,7 +539,8 @@ def _toolchain_mounts(root):
             except OSError:
                 debug.swallowed("execution._toolchain_mounts.launcher")
                 continue
-            store = Path(os.environ.get(variable) or (home / default))
+            store = Path(os.path.realpath(
+                os.environ.get(variable) or (home / default)))
             refusal = _mountable(store, home, xdg_bases, root, system + mounted)
             if refusal is not None:
                 refused.append(f"{store} ({refusal})")
@@ -499,6 +554,10 @@ def _toolchain_mounts(root):
         # Follow those executables into their install trees, which is what makes
         # a symlinked toolchain work instead of arriving as a dangling link.
         for item in executables:
+            if _over_argument_budget(binds, budget):
+                refused.append("further install trees (the bwrap argument list "
+                               "would go past the kernel's limit)")
+                break
             for tree in _install_tree(item, home, xdg_bases, root,
                                       system + mounted):
                 binds.append(tree)
@@ -750,11 +809,16 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
     # it, and its absence is not silent, it comes back as the "not reachable
     # from inside the sandbox" note on the command that needed it.
     toolchain_binds, toolchain_path, toolchain_env = _toolchain_mounts(root)
-    if toolchain_path:
-        # Appended, never prepended: the system directories keep resolving the
-        # allowlisted names, so `python3` cannot silently become some other
-        # python because a shim directory came first on the user's PATH.
-        path_env = os.pathsep.join([path_env, *toolchain_path])
+    # Appended, never prepended: the system directories keep resolving the
+    # allowlisted names, so `python3` cannot silently become some other python
+    # because a shim directory came first on the user's PATH. Entries already on
+    # the line are dropped rather than repeated, since /usr/bin is normally on
+    # the user's PATH too.
+    already_on_path = path_env.split(os.pathsep)
+    extra = [directory for directory in toolchain_path
+             if directory not in already_on_path]
+    if extra:
+        path_env = os.pathsep.join([path_env, *extra])
     line += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
     for path in toolchain_binds:
         line += ["--ro-bind-try", str(path), str(path)]
@@ -815,6 +879,7 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
 # nothing here keys off the exit code); an approved line goes through `sh -c`,
 # and the shell says `sh: line 1: cargo: command not found`, or `sh: 1: cargo:
 # not found` on dash.
+MISSING_PROGRAMS_REPORTED = 3
 NOT_FOUND_PATTERNS = (
     re.compile(r"^bwrap: execvp (?P<name>\S+): No such file or directory", re.M),
     re.compile(r"^[^\n:]*: ?(?:line )?\d*:? ?(?P<name>[^\s:]+): (?:command )?not found",
@@ -823,13 +888,22 @@ NOT_FOUND_PATTERNS = (
 
 
 def _missing_programs(err: str):
-    """Names the sandbox could not start, in the order they were reported."""
+    """Names the sandbox could not start, in the order they were reported.
+
+    Bounded, because the input is a command's stderr and a loop can print
+    `foo: command not found` a hundred thousand times: without the bound each
+    line would cost a PATH search and a line of note, turning one bad script
+    into a slow command and an output made of nothing else. Three is enough to
+    explain what is missing; the raw stderr above it is still complete.
+    """
     names = []
     for pattern in NOT_FOUND_PATTERNS:
         for match in pattern.finditer(err):
             name = match.group("name")
             if name and name not in names:
                 names.append(name)
+                if len(names) >= MISSING_PROGRAMS_REPORTED:
+                    return names
     return names
 
 
