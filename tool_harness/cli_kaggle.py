@@ -1217,6 +1217,11 @@ def _prepare_assets(executable, username, model, available, input_fn,
 # Lines the rendered kernel prints to name the step it is starting, so a wait
 # that lasts half an hour shows what it is waiting for.
 STAGE_PREFIX = "[setup]"
+# Lines the rendered kernel prints with what the cards really hold and what is
+# really on them. It is the one measurement of borrowed memory that exists, and
+# it is diagnosis rather than work, so it goes to --debug and never to a screen
+# somebody is watching for their URL.
+VRAM_PREFIX = "[vram]"
 
 
 def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
@@ -1284,6 +1289,16 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                     announced.add(stage)
                     print(t("cli.kaggle.url.stage",
                             stage=stage[len(STAGE_PREFIX):].strip()))
+                elif stage.startswith(VRAM_PREFIX) and stage not in announced:
+                    announced.add(stage)
+                    measurement = stage[len(VRAM_PREFIX):].strip()
+                    # One site per moment measured, deliberately. `debug.note`
+                    # reports once per site, so naming them all after this
+                    # function would print the reading taken before the load
+                    # and drop the one taken after it, which is the only one
+                    # that says what the runtime costs.
+                    moment = measurement.split(":", 1)[0].strip()
+                    debug.note(f"cli_kaggle.kernel_vram[{moment}]", measurement)
         finally:
             if process.poll() is None:
                 process.terminate()

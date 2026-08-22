@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2565,6 +2565,60 @@ try:
 finally:
     cli_kaggle.terminal_ui.select = original_context_select
 check(backed_out is None, "the last row of the context screen is a way back out")
+
+# The context a launch may ask for is decided from a nominal VRAM figure and a
+# reserve for the runtime, and the only place either can be checked is inside a
+# session that costs quota. So every launch has to bring the reading back, and
+# it has to bring back both moments: an empty card before the server starts,
+# which is the only reading that survives a load that dies out of memory, and a
+# loaded one after it answers, which is the only reading that says what the
+# runtime costs beyond weights and cache.
+measured_folder = Path(tempfile.mkdtemp())
+cli_kaggle._render_kernel(
+    measured_folder, "user/isaacli-gpu-vram",
+    {"repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+     "file": "Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+     "alias": "qwen3-coder-30b-a3b", "machine_shape": "NvidiaTeslaT4",
+     "cuda_arch": "75", "gpu_count": 2},
+    "kkQ9-_ab", dataset_sources=[])
+measured = (measured_folder / "isaacli-gpu-vram.py").read_text(encoding="utf-8")
+before_call = measured.find('report_vram("before the server starts")')
+loaded_call = measured.find('report_vram("with the model loaded and answering")')
+server_start = measured.find("subprocess.Popen(server_command")
+url_publish = measured.find('print("TUNNEL_URL=')
+check(-1 < before_call < server_start < loaded_call < url_publish,
+      "the kernel reads the cards before the server starts and again once it answers")
+
+vram_lines = [
+    "[setup] starting llama-server, which reads the whole weight\n",
+    "[vram] plan: weight=24192837632 bytes context=24576 gpu_count=2\n",
+    "[vram] before the server starts: gpu0=1/15360 MiB gpu1=1/15360 MiB\n",
+    "[vram] with the model loaded and answering: "
+    "gpu0=14700/15360 MiB gpu1=14650/15360 MiB\n",
+    "TUNNEL_URL=https://measured-one.trycloudflare.com\n",
+]
+vram_stdout, vram_stderr = io.StringIO(), io.StringIO()
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    cli_kaggle.debug.enable(True)
+    with redirect_stdout(vram_stdout), redirect_stderr(vram_stderr):
+        vram_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-vram", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog(list(vram_lines)),
+            run_fn=queued_status)
+finally:
+    cli_kaggle.debug.enable(False)
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+reported = vram_stderr.getvalue()
+check(vram_url == "https://measured-one.trycloudflare.com"
+      and "before the server starts" in reported
+      and "with the model loaded and answering" in reported
+      and "14700" in reported
+      and "15360" not in vram_stdout.getvalue(),
+      "both readings reach --debug, and neither reaches the screen")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")
