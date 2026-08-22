@@ -8,6 +8,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
 import agent
+import context_budget
 import tools
 
 failures = []
@@ -91,7 +92,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     original_diff = difflib.unified_diff
     original_input_cap = tools.MAX_DIFF_INPUT_BYTES
-    original_read_cap = tools.MAX_READ_BYTES
+    original_read_cap = context_budget.CEILINGS["read"]
     try:
         tools.MAX_DIFF_INPUT_BYTES = 500
         oversized = "x" * 4000
@@ -114,11 +115,11 @@ with tempfile.TemporaryDirectory() as tmp:
           "the oversized path still wrote the real bytes to disk")
 
     try:
-        tools.MAX_READ_BYTES = 100
+        context_budget.CEILINGS["read"] = 100
         tools.write_file("long.txt", "y" * 900)
         partial = tools.read_file("long.txt")
     finally:
-        tools.MAX_READ_BYTES = original_read_cap
+        context_budget.CEILINGS["read"] = original_read_cap
     check(partial.startswith("y" * 100) and "y" * 101 not in partial
           and "FILE TRUNCATED BY ISAACLI LIMITS" in partial
           and "of 900 bytes" in partial,
@@ -309,6 +310,68 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         tools.set_read_budget(None)
 
+# Every path that pushes bytes into the model's window used to decide its own
+# limit, in bytes, written for a machine and a model nobody knew. Measured on
+# 2026-08-22: one call of each carried 338.768 bytes, around 96.790 tokens,
+# against windows of 8.192, 16.384 and 32.768. One place decides now, and the
+# question a budget has to answer is whether one call of each can fit at once.
+
+PATHS = ("read", "web", "command_output", "workspace_instructions",
+         "mutation_diff")
+try:
+    context_budget.set_window(32_768)
+    roomy = {name: context_budget.bytes_for(name) for name in PATHS}
+    context_budget.set_window(8_192)
+    tight = {name: context_budget.bytes_for(name) for name in PATHS}
+finally:
+    context_budget.set_window(None)
+check(all(tight[name] < roomy[name] for name in PATHS),
+      "every path that fills the window scales with the window, not with a constant")
+check(sum(context_budget.tokens_for(name, 8_192) for name in PATHS)
+      <= int(8_192 * agent.CONTEXT_INPUT_SHARE),
+      "one call of each fits at once in the smallest window this program supports")
+
+# A limit nobody can explain becomes a magic number again at the next review, so
+# each one says what it came from, and it says it where diagnosis belongs.
+budget_notes = []
+original_budget_note = context_budget.debug.note
+try:
+    context_budget.debug.note = lambda source, message: budget_notes.append(message)
+    context_budget.set_window(16_384)
+    context_budget.bytes_for("web")
+finally:
+    context_budget.debug.note = original_budget_note
+    context_budget.set_window(None)
+check(any("16384" in note and "web" in note for note in budget_notes),
+      "each derived limit says the window it came from, in --debug")
+
+# The absolute ceilings are a different promise: they protect the memory of the
+# machine this runs on, not the window of a model, so they hold when no window
+# was declared at all.
+check(context_budget.bytes_for("read") == tools.MAX_READ_BYTES
+      and context_budget.bytes_for("web") == context_budget.CEILINGS["web"],
+      "with no window declared the absolute ceilings are what hold")
+
+# The rule has to outlive whoever remembers it, so it is a scan that fails with
+# the file and the line, like the one that refuses a translator without a
+# language. Proven both ways: it has to accept the module as it stands and
+# refuse a new hand-written limit planted in it.
+offenders = context_budget.undeclared_limits(
+    "tools.py", "MAX_SOMETHING_BYTES = 40_000\nSANDBOX_ROOT = 1\n")
+check(any("MAX_SOMETHING_BYTES" in offender for offender in offenders),
+      "a new hand-written limit in a context path is refused with its name")
+check(context_budget.undeclared_limits(
+    "tools.py", "MAX_READ_BYTES = 200_000\n") == [],
+      "the limits that already have a written reason are not flagged again")
+
+real_offenders = []
+for module in ("tools.py", "execution.py", "workspace_instructions.py", "agent.py"):
+    real_offenders += context_budget.undeclared_limits(
+        module,
+        (HERE.parent / "tool_harness" / module).read_text(encoding="utf-8"))
+check(real_offenders == [],
+      f"no context path carries an unexplained hand-written limit today: {real_offenders}")
+
 # Where the conversation stands against the window is measured, not guessed. The
 # server answers it exactly in prompt_eval_count after every call, and dividing
 # characters by 3.5 was both unnecessary and wrong in the dangerous direction:
@@ -417,11 +480,12 @@ try:
     agent.call = lambda *args, **kwargs: {"role": "assistant", "content": "done"}
     tools.set_read_budget(None)
     agent.run("anything", "some-model", max_steps=1, verbose=False, num_ctx=32_768)
-    wired = tools._read_budget
+    wired = context_budget.bytes_for("read")
 finally:
     agent.call = original_call
     tools.set_read_budget(None)
-check(wired == int(32_768 * tools.CONTEXT_READ_SHARE * tools.CHARS_PER_TOKEN),
+check(wired == int(context_budget.tokens_for("read", 32_768)
+                   * context_budget.CHARS_PER_TOKEN),
       "the window a turn runs in is what sets the read cap for that turn")
 
 # A budget that only the function which sets it can see is worth nothing, so

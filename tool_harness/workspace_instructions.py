@@ -1,4 +1,5 @@
 """Load project instructions without crossing the selected workspace boundary."""
+import context_budget
 import json
 import os
 import stat
@@ -7,7 +8,7 @@ from pathlib import Path
 
 
 INSTRUCTIONS_NAME = "AGENTS.md"
-MAX_INSTRUCTIONS_BYTES = 32 * 1024
+MAX_INSTRUCTIONS_BYTES = context_budget.CEILINGS["workspace_instructions"]
 
 
 @dataclass(frozen=True)
@@ -50,15 +51,16 @@ def load_workspace_instructions(workspace):
         source_stat = os.fstat(descriptor)
         if not stat.S_ISREG(source_stat.st_mode):
             return _warning("cli.workspace.instructions.not_file")
-        if source_stat.st_size > MAX_INSTRUCTIONS_BYTES:
+        limit = context_budget.bytes_for("workspace_instructions")
+        if source_stat.st_size > limit:
             return _warning("cli.workspace.instructions.too_large",
-                            limit=MAX_INSTRUCTIONS_BYTES)
+                            limit=limit)
         with os.fdopen(descriptor, "rb") as instructions_file:
             descriptor = None
-            raw = instructions_file.read(MAX_INSTRUCTIONS_BYTES + 1)
-        if len(raw) > MAX_INSTRUCTIONS_BYTES:
+            raw = instructions_file.read(limit + 1)
+        if len(raw) > limit:
             return _warning("cli.workspace.instructions.too_large",
-                            limit=MAX_INSTRUCTIONS_BYTES)
+                            limit=limit)
         content = raw.decode("utf-8")
     except UnicodeError:
         return _warning("cli.workspace.instructions.invalid_utf8")

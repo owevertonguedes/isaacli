@@ -19,6 +19,7 @@ import urllib.request
 import urllib.error
 
 import config
+import context_budget
 import debug
 import tools
 
@@ -86,7 +87,7 @@ def _add_usage(total, item):
 # the direction of its error: on source code the real ratio is smaller than 3.5,
 # so this undershoots, and a warning built on it alone would arrive after the
 # request had already been refused.
-CHARS_PER_TOKEN = 3.5
+CHARS_PER_TOKEN = context_budget.CHARS_PER_TOKEN
 # How much of the window the request may occupy. The rest is the answer, and a
 # request that fills the window leaves the model no room to reply.
 CONTEXT_INPUT_SHARE = 0.75
@@ -134,7 +135,7 @@ def context_report(messages, num_ctx, measured=0, measured_upto=0):
     # on that is already derived from this same window. Warning any earlier
     # would be a fraction chosen by hand; warning any later is warning after
     # the request has already been refused.
-    headroom = int(num_ctx * tools.CONTEXT_READ_SHARE) if num_ctx else 0
+    headroom = context_budget.tokens_for("read", num_ctx) if num_ctx else 0
     return {
         "num_ctx": num_ctx or 0,
         "used": used,

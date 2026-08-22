@@ -12,6 +12,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import context_budget
 import debug
 from itertools import islice
 from html.parser import HTMLParser
@@ -20,9 +21,12 @@ from pathlib import Path
 # The agent's working directory. Overridable by env so it can operate on a real
 # project instead of the test sandbox. It stays confined, only the root changes.
 SANDBOX_ROOT = Path(os.environ.get("ISAACLI_ROOT", Path(__file__).parent / "sandbox"))
-MAX_WEB_BYTES = 80_000
+# The ceilings keep their old names because they are still what holds when
+# nothing declared a window, but the number each of them stands for now lives in
+# one place, next to the share of the window that usually binds first.
+MAX_WEB_BYTES = context_budget.CEILINGS["web"]
 MAX_MUTATION_DIFF_LINES = 80
-MAX_MUTATION_DIFF_BYTES = 6_000
+MAX_MUTATION_DIFF_BYTES = context_budget.CEILINGS["mutation_diff"]
 # The diff output is bounded, but bounding only the output still costs the
 # memory of building it: two full line lists plus difflib's quadratic matcher.
 # On a large file that peaks at several times the file size on the user's
@@ -33,25 +37,18 @@ MAX_DIFF_INPUT_BYTES = 1_000_000
 # smaller than this. Reading more only spends the user's memory and fills the
 # session log; the cut is explicit so nobody mistakes a partial read for a
 # whole file.
-MAX_READ_BYTES = 200_000
-# A quarter of the window is what one file may take. The absolute ceiling above
-# is not a budget: 200 KB is roughly 57.000 tokens, so a single read of one
-# ordinary source file used to overflow a 32.768 token window and end the turn
-# with the whole conversation refused. The window is known only at run time, so
-# the effective cap is set from it and falls back to the ceiling when nothing
-# said how big the window is.
-CONTEXT_READ_SHARE = 0.25
-CHARS_PER_TOKEN = 3.5
-_read_budget = MAX_READ_BYTES
+MAX_READ_BYTES = context_budget.CEILINGS["read"]
 
 
 def set_read_budget(num_ctx):
-    """Tie the read cap to the window the endpoint was actually started with."""
-    global _read_budget
-    _read_budget = (
-        min(MAX_READ_BYTES, int(num_ctx * CONTEXT_READ_SHARE * CHARS_PER_TOKEN))
-        if num_ctx else MAX_READ_BYTES)
-    return _read_budget
+    """Tie every input cap to the window the endpoint was actually started with.
+
+    The name is about reads because reads are the path that overflowed first,
+    but a cap that only bound reads left four other paths deciding their own
+    size, which is how one call of each came to 96.790 tokens.
+    """
+    context_budget.set_window(num_ctx)
+    return context_budget.bytes_for("read")
 
 
 def _safe(path: str) -> Path:
@@ -67,7 +64,7 @@ def read_file(path: str) -> str:
     if not p.is_file():
         return f"ERROR: file does not exist: {path}"
     size = p.stat().st_size
-    cap = min(MAX_READ_BYTES, _read_budget)
+    cap = context_budget.bytes_for("read")
     if size <= cap:
         return p.read_text()
     with p.open("rb") as f:
@@ -265,11 +262,12 @@ def _mutation_result(summary: str, path: str, before, after,
     lines = lines[:MAX_MUTATION_DIFF_LINES]
     diff = "\n".join(lines)
     encoded = diff.encode("utf-8")
-    if len(encoded) > MAX_MUTATION_DIFF_BYTES:
+    diff_cap = context_budget.bytes_for("mutation_diff")
+    if len(encoded) > diff_cap:
         truncated = True
     if truncated:
         marker = "\n... DIFF TRUNCATED BY ISAACLI LIMITS ..."
-        budget = MAX_MUTATION_DIFF_BYTES - len(marker.encode("utf-8"))
+        budget = diff_cap - len(marker.encode("utf-8"))
         diff = encoded[:max(0, budget)].decode("utf-8", errors="ignore") + marker
     if not diff:
         diff = "(no line-level textual difference)"
@@ -398,7 +396,7 @@ def fetch_url(url: str) -> str:
     )
     try:
         with opener.open(request, timeout=20) as response:
-            data = response.read(MAX_WEB_BYTES + 1)
+            data = response.read(context_budget.bytes_for("web") + 1)
             final = response.geturl()
             kind = response.headers.get_content_type()
             charset = response.headers.get_content_charset() or "utf-8"
@@ -410,8 +408,9 @@ def fetch_url(url: str) -> str:
     if not (kind.startswith("text/") or kind in (
             "application/json", "application/xml", "application/xhtml+xml")):
         return f"ERROR: non-textual content refused ({kind})"
-    truncated = len(data) > MAX_WEB_BYTES
-    text = data[:MAX_WEB_BYTES].decode(charset, errors="replace")
+    web_cap = context_budget.bytes_for("web")
+    truncated = len(data) > web_cap
+    text = data[:web_cap].decode(charset, errors="replace")
     if kind in ("text/html", "application/xhtml+xml"):
         parser = _HTMLExtractor()
         parser.feed(text)

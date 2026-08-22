@@ -120,11 +120,14 @@ from pathlib import Path
 
 # Not named `seccomp`: that is the module name the system `python3-seccomp`
 # package installs, and shadowing it would depend on sys.path ordering.
+import context_budget
 import debug
 import seccomp_filter
 
 TIMEOUT_SECONDS = 60        # ceiling per command
-OUTPUT_LIMIT = 20_000       # truncate huge output BEFORE it goes back to the model
+OUTPUT_LIMIT = context_budget.CEILINGS["command_output"]  # absolute ceiling; the
+# effective cut is this command's share of the window the turn runs in, taken
+# before the output goes back to the model rather than after it was built.
 
 # cgroup ceilings via `systemd-run --user --scope`. MemorySwapMax=0 is not
 # decorative: MemoryMax alone is not a limit while swap exists (measured on
@@ -572,9 +575,10 @@ def run_command(cmd: str, authorized=False) -> str:
             f"sandbox layers still applied.")
     text = "\n".join(parts)
 
-    if len(text) > OUTPUT_LIMIT:
-        cut = len(text) - OUTPUT_LIMIT
-        text = text[:OUTPUT_LIMIT] + f"\n… (truncated {cut} characters)"
+    limit = context_budget.bytes_for("command_output")
+    if len(text) > limit:
+        cut = len(text) - limit
+        text = text[:limit] + f"\n… (truncated {cut} characters)"
     return text
 
 
