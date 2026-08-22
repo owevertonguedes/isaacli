@@ -598,7 +598,8 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
                 "model.discovery.entry", name=report["name"],
                 size=f"{report['model_bytes'] / 1024 ** 3:.2f}",
                 origin=model_discovery.origin_label(report, tr.t),
-                benchmark=report["benchmark"], fit=label)
+                benchmark=model_discovery.benchmark_cell(report, tr.t),
+                fit=label)
             for report, label in ranked
         ],
         model_discovery.text("model.discovery.exact"),

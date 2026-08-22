@@ -681,6 +681,29 @@ check(unknown_pick["file"] == "Model-Q4_K_M.gguf" and unknown_cursor == 3
       and not any("prepared" in row for row in unknown_rows),
       "a lookup that fails leaves the screen unmarked instead of breaking it")
 
+# Every scored row in the catalogue is a quantized GGUF whose number was measured
+# on the original weights: all six `benchmark_source` values are the upstream
+# model page. The sentence that says so was only printed after the choice, and
+# the choice happens on the list, where the number sat on the row of a file
+# nobody had scored. That is the same error as inheriting a score for a
+# derivative build, and the rule against it does not care which direction the
+# inheritance runs.
+scored_row = model_discovery.benchmark_cell({"benchmark": "SWE-bench Verified 73.4"})
+unscored_row = model_discovery.benchmark_cell({"benchmark": ""})
+check("73.4" in scored_row and scored_row != "SWE-bench Verified 73.4",
+      "a score on a row never appears without saying whose score it is")
+check(unscored_row == model_discovery.no_public_score()
+      and "(" not in unscored_row,
+      "a model with no score is not given an owner it does not have")
+
+catalogue = json.loads(
+    (HERE.parent / "tool_harness" / "model_catalog.json").read_text(encoding="utf-8"))
+unsourced = [item["name"] for section in catalogue.values() for item in section
+             if item.get("benchmark") and not item.get("benchmark_source")]
+check(not unsourced,
+      "no row carries a number without a source to check it against"
+      + (f" (found {', '.join(unsourced)})" if unsourced else ""))
+
 # The Kaggle path used to hand `_choose_quantization` a translator built on the
 # spot, which is always English, so this one screen came out in English inside a
 # Portuguese session while every screen around it was translated. Comparing the

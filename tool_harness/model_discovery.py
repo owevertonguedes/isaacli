@@ -522,6 +522,24 @@ def benchmark_line(model):
                 score=model.get("benchmark") or no_public_score())
 
 
+def benchmark_cell(model, translate=None):
+    """The score as it may appear on a row of a list, never without its owner.
+
+    Every scored row in the catalogue is a quantized GGUF whose number was
+    measured on the original weights at full precision: the `benchmark_source`
+    of all six of them is the upstream model page. `benchmark_line` says so, but
+    it is only printed after the choice has been made, and the choice is made on
+    the list. A number sitting on the row of a file nobody scored is the same
+    error as inheriting a score for a derivative build, so the row carries the
+    owner with it or it carries no number.
+    """
+    translate = translate or text
+    score = model.get("benchmark")
+    if not score:
+        return no_public_score(translate)
+    return translate("model.score.upstream", score=score)
+
+
 def matched_ruler(model, task):
     """The first ruler of this task the model has a score on, or None."""
     scores = model.get("scores") or {}

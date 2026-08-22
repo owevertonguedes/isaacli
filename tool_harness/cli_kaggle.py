@@ -735,9 +735,9 @@ def model_entry(model, no_score=None):
         size=f"{model['model_bytes'] / 1024 ** 3:.2f}",
         machine=model.get("machine_label", ""),
         origin=model_discovery.origin_label(model, t),
-        benchmark=(model.get("benchmark")
-                   or (no_score if no_score is not None
-                       else model_discovery.no_public_score(t))),
+        benchmark=(model_discovery.benchmark_cell(model, t)
+                   if model.get("benchmark") or no_score is None
+                   else no_score),
     )
 
 
