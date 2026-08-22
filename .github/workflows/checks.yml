@@ -1,0 +1,43 @@
+name: checks
+
+# A contributor's pull request used to arrive with nothing run against it, so
+# the first signal was a human reading the diff. This runs the same suite the
+# pre-push hook runs locally, from the same script, so there is one definition
+# of "the checks pass" rather than two that drift.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install bubblewrap
+        # The sandbox and execution checks drive bwrap for real rather than
+        # reading a refusal message, so the binary has to be here or those
+        # checks are skipped honestly instead of passing on nothing.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Run the check suite
+        # --no-privileged skips check_execution.py, and only that one. Measured
+        # on this runner 2026-08-22: bwrap cannot map uids or create its own
+        # loopback interface here, and there is no systemd TasksMax ceiling to
+        # hit, so the containment it verifies cannot be exercised. The skip is
+        # printed in the log by name. check_sandbox.py does run here and is not
+        # skipped, because throwing away a check that works would be worse than
+        # the gap it was meant to cover. Containment is verified on a real host
+        # before a push, by the same script through the pre-push hook.
+        run: ./scripts/check.sh --no-privileged
