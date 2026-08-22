@@ -298,6 +298,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
         print(_color(self._pending_workspace_instruction_warning, "warn"))
         self._pending_workspace_instruction_warning = ""
 
+    def _context_trimmed(self, count):
+        # A layer that quietly discards part of the conversation is worse than
+        # no layer, because the user stops looking for it. Losing older results
+        # changes what the model can still see, so it is said on screen.
+        print(t("cli.context.trimmed", count=count))
+
     def _show_working(self):
         continuing = self._working_visible
         if continuing:
@@ -532,6 +538,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                     history=self.history,
                     thinking=self.thinking,
                     num_ctx=self.num_ctx,
+                    on_context_trim=self._context_trimmed,
                     provider=self.provider,
                     **({} if self.temperature is None
                        else {"temperature": self.temperature}),

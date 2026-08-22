@@ -78,6 +78,67 @@ def _add_usage(total, item):
         total[key] = total.get(key, 0) + int((item or {}).get(key) or 0)
 
 
+# No tokenizer ships with this program and none is needed here. What this has
+# to answer is one question, "will the next request be refused", and the server
+# answers it exactly after every call in prompt_eval_count, which is what this
+# constant was calibrated against on real sessions of this repository.
+CHARS_PER_TOKEN = 3.5
+# How much of the window the request may occupy. The rest is the answer, and a
+# request that fills the window leaves the model no room to reply.
+CONTEXT_INPUT_SHARE = 0.75
+DROPPED_RESULT_NOTE = (
+    "... RESULT DROPPED BY ISAACLI: this tool result was removed to keep the "
+    "conversation inside the model's context window. Nothing about the file "
+    "changed. Read it again, or a narrower part of it, if you still need it ...")
+
+
+def estimate_tokens(messages):
+    """A cheap upper hand on how much of the window these messages occupy."""
+    chars = 0
+    for msg in messages:
+        chars += len(msg.get("content") or "")
+        for tc in msg.get("tool_calls") or []:
+            arguments = (tc.get("function") or {}).get("arguments")
+            chars += len(arguments if isinstance(arguments, str)
+                         else json.dumps(arguments or {}))
+    return int(chars / CHARS_PER_TOKEN)
+
+
+def fit_to_context(messages, num_ctx, on_note=None):
+    """Make room by dropping the oldest tool results, oldest first.
+
+    Without this, one `read_file` of a large source file ends the turn: the
+    endpoint refuses the whole request and everything the model had done up to
+    there is lost. That is not a model failing the task, it is the harness
+    handing it more bytes than the window it was given, and it killed the first
+    Part B case of task 036 after 56 seconds.
+
+    Only tool results are dropped, and only their content. The system prompt is
+    the contract, the user's request is the task, and the assistant's own
+    tool_calls have to keep matching their results or the protocol breaks. A
+    tool result is the one thing that can be fetched again, so it is the one
+    thing that goes, and the model is told in place that it went and why.
+    """
+    if not num_ctx:
+        return 0
+    budget = int(num_ctx * CONTEXT_INPUT_SHARE)
+    dropped = 0
+    for msg in messages:
+        if estimate_tokens(messages) <= budget:
+            break
+        if msg.get("role") != "tool" or msg.get("content") == DROPPED_RESULT_NOTE:
+            continue
+        msg["content"] = DROPPED_RESULT_NOTE
+        dropped += 1
+    if dropped:
+        debug.note("agent.fit_to_context",
+                   f"dropped {dropped} tool result(s) to fit {budget} tokens "
+                   f"of a {num_ctx} token window")
+        if on_note:
+            on_note(dropped)
+    return dropped
+
+
 def _messages_for_ollama(messages):
     """Native Ollama expects tool_calls.function.arguments as an object, not a string."""
     out = json.loads(json.dumps(messages))
@@ -756,7 +817,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         tools_schema=None, thinking=None, on_working=None, provider=None,
         on_thinking=None, num_ctx=None, require_change=False,
         is_changing_tool=None, changing_tool_succeeded=None, on_progress=None,
-        temperature=0.0, seed=None):
+        temperature=0.0, seed=None, on_context_trim=None):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
@@ -788,9 +849,13 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
     # schema-constrained call. Returning to an unconstrained turn after each
     # tool lets a model that really finished stop, while max_steps remains the
     # hard cap for a model that keeps requesting work forever.
+    # The window the endpoint was started with is the one hard number here, and
+    # the tool that can overflow it in a single call reads from the same place.
+    tools.set_read_budget(num_ctx)
     for step in range(max_steps):
         if on_working:
             on_working()
+        fit_to_context(msgs, num_ctx, on_note=on_context_trim)
         provider_kind = (provider or {}).get("provider", "ollama")
         active_schema = tools_schema or tools.SCHEMA
 

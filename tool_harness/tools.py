@@ -34,6 +34,24 @@ MAX_DIFF_INPUT_BYTES = 1_000_000
 # session log; the cut is explicit so nobody mistakes a partial read for a
 # whole file.
 MAX_READ_BYTES = 200_000
+# A quarter of the window is what one file may take. The absolute ceiling above
+# is not a budget: 200 KB is roughly 57.000 tokens, so a single read of one
+# ordinary source file used to overflow a 32.768 token window and end the turn
+# with the whole conversation refused. The window is known only at run time, so
+# the effective cap is set from it and falls back to the ceiling when nothing
+# said how big the window is.
+CONTEXT_READ_SHARE = 0.25
+CHARS_PER_TOKEN = 3.5
+_read_budget = MAX_READ_BYTES
+
+
+def set_read_budget(num_ctx):
+    """Tie the read cap to the window the endpoint was actually started with."""
+    global _read_budget
+    _read_budget = (
+        min(MAX_READ_BYTES, int(num_ctx * CONTEXT_READ_SHARE * CHARS_PER_TOKEN))
+        if num_ctx else MAX_READ_BYTES)
+    return _read_budget
 
 
 def _safe(path: str) -> Path:
@@ -49,13 +67,14 @@ def read_file(path: str) -> str:
     if not p.is_file():
         return f"ERROR: file does not exist: {path}"
     size = p.stat().st_size
-    if size <= MAX_READ_BYTES:
+    cap = min(MAX_READ_BYTES, _read_budget)
+    if size <= cap:
         return p.read_text()
     with p.open("rb") as f:
-        head = f.read(MAX_READ_BYTES)
+        head = f.read(cap)
     return (head.decode("utf-8", errors="ignore")
             + f"\n\n... FILE TRUNCATED BY ISAACLI LIMITS: showing the first "
-              f"{MAX_READ_BYTES} of {size} bytes ...")
+              f"{cap} of {size} bytes ...")
 
 
 def write_file(path: str, content: str) -> str:

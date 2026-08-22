@@ -7,6 +7,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
+import agent
 import tools
 
 failures = []
@@ -283,6 +284,62 @@ with tempfile.TemporaryDirectory() as tmp:
         except (ValueError, OSError):
             refused_nul.append(True)
     check(len(refused_nul) == 2, "a path holding a null byte is refused")
+
+# One read of one ordinary source file used to be allowed to carry 200 KB, which
+# is around 57.000 tokens, into a 32.768 token window. The endpoint then refuses
+# the entire request and the turn dies with everything the model had done in it.
+# That is what ended the first Part B case of task 036 after 56 seconds, so the
+# cap is measured against the window instead of being a constant.
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    tools.SANDBOX_ROOT = root
+    big = "x" * 200_000
+    (root / "huge.ts").write_text(big)
+    try:
+        tools.set_read_budget(32_768)
+        narrow = tools.read_file("huge.ts")
+        check(len(narrow) < 40_000 and "TRUNCATED" in narrow,
+              "one read cannot swallow a window it was told the size of")
+        check(agent.estimate_tokens([{"role": "tool", "content": narrow}])
+              < 32_768 * agent.CONTEXT_INPUT_SHARE,
+              "what one read returns still leaves the window room to answer")
+        tools.set_read_budget(None)
+        check(len(tools.read_file("huge.ts")) == 200_000,
+              "with no window declared the old absolute ceiling is what holds")
+    finally:
+        tools.set_read_budget(None)
+
+# Dropping the oldest results is what lets a long turn continue instead of being
+# refused whole. The system prompt and the user's request are not droppable: one
+# is the contract and the other is the task.
+history = [
+    {"role": "system", "content": "contract"},
+    {"role": "user", "content": "fix the bug"},
+    {"role": "assistant", "tool_calls": [
+        {"id": "a", "function": {"name": "read_file", "arguments": "{}"}}]},
+    {"role": "tool", "tool_call_id": "a", "content": "y" * 60_000},
+    {"role": "tool", "tool_call_id": "b", "content": "z" * 60_000},
+    {"role": "tool", "tool_call_id": "c", "content": "recent and small"},
+]
+seen = []
+dropped = agent.fit_to_context(history, 32_768, on_note=seen.append)
+check(dropped and seen == [dropped],
+      "trimming the conversation is announced instead of happening in silence")
+check(agent.estimate_tokens(history) <= 32_768 * agent.CONTEXT_INPUT_SHARE,
+      "after trimming, the request fits the window the endpoint was started with")
+check(history[0]["content"] == "contract" and history[1]["content"] == "fix the bug"
+      and history[2].get("tool_calls"),
+      "the contract, the task and the calls that results answer to all survive")
+check(history[3]["content"] == agent.DROPPED_RESULT_NOTE
+      and history[-1]["content"] == "recent and small",
+      "the oldest result goes first and the newest work is what is kept")
+check(all(m.get("tool_call_id") for m in history if m["role"] == "tool"),
+      "a dropped result keeps the id its call is waiting on")
+
+untouched = [{"role": "tool", "tool_call_id": "a", "content": "y" * 60_000}]
+check(agent.fit_to_context(untouched, None) == 0
+      and len(untouched[0]["content"]) == 60_000,
+      "with no window declared nothing is dropped behind the model's back")
 
 print()
 if failures:
