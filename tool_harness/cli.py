@@ -69,6 +69,7 @@ from cli_kaggle import (
     stop_profile_session as _kaggle_stop_session,
     uninstall_managed_kaggle as _uninstall_managed_kaggle,
 )
+from cli_config import ConfigMixin
 from cli_providers import ProvidersMixin
 from installation import (
     install_launcher as _install_launcher,
@@ -205,7 +206,8 @@ def _read_input():
     return input(_colored_prompt("❯ "))
 
 
-class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
+class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
+               ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
                  thinking=None, num_ctx=None, config_file=None, provider=None,
                  temperature=None, workspace_instructions_snapshot=None):
