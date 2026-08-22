@@ -1261,10 +1261,23 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
     deadline = time.monotonic() + timeout
     announced = set()
     state = ""
+    # Reading the follower through a pipe is what makes it buffer. The Kaggle
+    # CLI is Python, and Python writing to a pipe rather than a terminal fills
+    # a block before it flushes any of it, so the last few hundred bytes of the
+    # log sit in the child and never arrive. Measured on 2026-08-22: the kernel
+    # published its URL, this saw every line up to the one before it, and then
+    # waited with the URL stuck in that buffer while the GPU billed. The kernel
+    # goes quiet exactly when it starts serving, so nothing was ever going to
+    # push that block out. Unbuffering the child is the whole fix, and it has
+    # to be added to the account environment rather than replacing it, because
+    # that environment is what isolates which Kaggle account this speaks for.
+    stream_env = dict(os.environ if env is None else env)
+    stream_env["PYTHONUNBUFFERED"] = "1"
     while time.monotonic() < deadline:
         process = popen_fn(
             [str(executable), "kernels", "logs", "-f", slug],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env=stream_env,
         )
         try:
             while time.monotonic() < deadline:

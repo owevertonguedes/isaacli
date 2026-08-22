@@ -2589,6 +2589,68 @@ url_publish = measured.find('print("TUNNEL_URL=')
 check(-1 < before_call < server_start < loaded_call < url_publish,
       "the kernel reads the cards before the server starts and again once it answers")
 
+# Parsing the rendered kernel proves it is Python, not that the reading works.
+# The function is therefore lifted out of the rendered file and run against a
+# card that answers, one that answers nonsense, and one that is not there at
+# all. It runs before the server starts, so an exception inside it would end a
+# kernel that has already been pushed and paid for out of a weekly allowance.
+report_source = measured[measured.index("def report_vram"):]
+report_source = report_source[:report_source.index("\narchive = ")]
+report_scope = {"subprocess": subprocess}
+exec(compile(report_source, "gpu-server-report", "exec"), report_scope)
+
+
+def _card_answer(returncode, stdout, stderr=""):
+    def answer(command, capture_output=False, text=False, timeout=None, **kwargs):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    return answer
+
+
+report_scope["subprocess"] = SimpleNamespace(
+    run=_card_answer(0, "0, 15360, 11657\n1, 15360, 12985\n"),
+    SubprocessError=subprocess.SubprocessError)
+good_reading = io.StringIO()
+with redirect_stdout(good_reading):
+    report_scope["report_vram"]("loaded")
+check(good_reading.getvalue().strip()
+      == "[vram] loaded: gpu0 used 11657 MiB of 15360 MiB "
+         "gpu1 used 12985 MiB of 15360 MiB",
+      "the reading names which number is used and which is the whole card")
+
+survived = []
+for name, fake in (
+        ("nonsense", _card_answer(0, "this is not a csv row\n")),
+        ("a failure", _card_answer(9, "", "no devices were found")),
+):
+    report_scope["subprocess"] = SimpleNamespace(
+        run=fake, SubprocessError=subprocess.SubprocessError)
+    noise = io.StringIO()
+    try:
+        with redirect_stdout(noise):
+            report_scope["report_vram"]("loaded")
+        survived.append(bool(noise.getvalue().strip()))
+    except Exception:  # noqa: BLE001 - any escape at all is the defect
+        survived.append(False)
+
+
+def _card_missing(command, capture_output=False, text=False, timeout=None, **kwargs):
+    raise OSError("nvidia-smi is not installed")
+
+
+report_scope["subprocess"] = SimpleNamespace(
+    run=_card_missing, SubprocessError=subprocess.SubprocessError)
+absent = io.StringIO()
+try:
+    with redirect_stdout(absent):
+        report_scope["report_vram"]("loaded")
+    survived.append("nvidia-smi did not answer" in absent.getvalue())
+except Exception:  # noqa: BLE001
+    survived.append(False)
+check(all(survived) and len(survived) == 3,
+      "a card that answers nonsense, fails or is absent says so instead of "
+      "ending a kernel that was already paid for")
+
 vram_lines = [
     "[setup] starting llama-server, which reads the whole weight\n",
     "[vram] plan: weight=24192837632 bytes context=24576 gpu_count=2\n",
@@ -2619,6 +2681,35 @@ check(vram_url == "https://measured-one.trycloudflare.com"
       and "14700" in reported
       and "15360" not in vram_stdout.getvalue(),
       "both readings reach --debug, and neither reaches the screen")
+
+# A URL that was published and never arrived is the same cost as one that was
+# never published: the kernel bills either way. Measured on 2026-08-22, the
+# follower is Python writing into a pipe, so it filled a block before flushing
+# any of it and kept the last lines, the URL among them, inside the child.
+follow_env = {}
+
+
+def _follow_popen(command, **kwargs):
+    follow_env.update(kwargs.get("env") or {})
+    return _FakeLog(["TUNNEL_URL=https://unbuffered-one.trycloudflare.com\n"])
+
+
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-buffered", timeout=60,
+            popen_fn=_follow_popen, run_fn=queued_status,
+            env={"HOME": "/fake/account-home", "KAGGLE_KEY": "secret"})
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+check(follow_env.get("PYTHONUNBUFFERED") == "1"
+      and follow_env.get("HOME") == "/fake/account-home"
+      and follow_env.get("KAGGLE_KEY") == "secret",
+      "the log follower is unbuffered, and still speaks for the same account")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")
