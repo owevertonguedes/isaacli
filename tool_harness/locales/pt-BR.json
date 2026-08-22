@@ -515,6 +515,7 @@
   "cli.context.compact": "Compactar agora",
   "cli.context.keep": "Deixar como está",
   "cli.context.prompt": "Compactar a conversa?",
+  "cli.context.chosen": "Contexto: {option}",
   "cli.context.compacted": "{count} resultado(s) de ferramenta viraram resumo. O modelo foi informado do que era cada um.",
   "cli.context.recoverable": "Nada se perdeu: os resultados inteiros estão no log desta sessão, e {command} reconstrói a conversa a partir dele.",
   "cli.context.unmanaged": "A gestão de contexto está desligada, então nada foi compactado. O próximo pedido pode ser recusado pelo endpoint por passar da janela."

@@ -320,6 +320,67 @@ with redirect_stdout(compacted_out):
 check(f"--resume {cli.session_id}" in compacted_out.getvalue(),
       "what was compacted is recoverable, and the screen says with which command")
 
+# The two checks above replace select_inline, which is the half of the screen a
+# real terminal draws and a captured buffer never does: the line left behind
+# after the answer only exists in the TTY branch. That is how this screen came
+# to confirm a decision about the context window with the word "Permission",
+# borrowed from the screen it was copied from. Drive the real menu on a real
+# pseudo-terminal and read what stays on screen.
+context_child = f"""
+import sys
+sys.path.insert(0, {str(HERE.parent / "tool_harness")!r})
+import cli as app
+from cli_i18n import set_language
+set_language("en")
+report = {{"num_ctx": 32768, "used": 26000, "measured": 24000,
+           "estimated": 2000, "budget": 24576, "headroom": 8192,
+           "over": True, "approaching": True, "compactable": 3}}
+screen = app.IsaacCLI.__new__(app.IsaacCLI)
+app.IsaacCLI._context_pressure(screen, report)
+"""
+master_fd, slave_fd = pty.openpty()
+try:
+    child = subprocess.Popen(
+        [sys.executable, "-c", context_child],
+        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
+    os.close(slave_fd)
+    drawn = b""
+    answered = False
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and child.poll() is None:
+        ready, _, _ = select.select([master_fd], [], [], 0.2)
+        if ready:
+            try:
+                drawn += os.read(master_fd, 4096)
+            except OSError:
+                break
+        # Answer only once the menu is on screen: tty.setraw flushes whatever
+        # arrived before it, so a key sent too early is a key thrown away.
+        if not answered and b"Compact now" in drawn:
+            answered = True
+            os.write(master_fd, b"\r")
+    check(child.poll() is not None, "the context offer answers a keypress on a TTY")
+    child.wait(timeout=5)
+    drain = time.monotonic() + 1
+    while time.monotonic() < drain:
+        ready, _, _ = select.select([master_fd], [], [], 0.1)
+        if not ready:
+            break
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        drawn += chunk
+    drawn = drawn.decode(errors="replace")
+finally:
+    os.close(master_fd)
+check("Context: Compact now" in drawn,
+      "on a real terminal the answered offer is confirmed as a context decision")
+check("Permission" not in drawn,
+      "nothing about the window is announced as a permission")
+
 out = io.StringIO()
 (root / "AGENTS.md").write_text("project-two-rule", encoding="utf-8")
 with redirect_stdout(out):

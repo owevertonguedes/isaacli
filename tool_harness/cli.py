@@ -328,7 +328,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, OllamaMixin, ProvidersMixin):
                 [t("cli.context.compact"), t("cli.context.keep")],
                 shortcuts={"k": 1}, input_fn=input, initial=0,
                 prompt=t("cli.context.prompt"),
-                chosen_label=t("cli.permission.chosen", option="{option}"),
+                # The line left on screen has to name the decision that was
+                # made. Borrowing the permission screen's label answered a
+                # question about the window with the word "Permission", which
+                # only shows on a real terminal: the fallback branch of
+                # select_inline never draws it, so no check could have seen it.
+                chosen_label=t("cli.context.chosen", option="{option}"),
             )
         except (EOFError, KeyboardInterrupt):
             print()

@@ -515,6 +515,7 @@
   "cli.context.compact": "Compact now",
   "cli.context.keep": "Leave it as it is",
   "cli.context.prompt": "Compact the conversation?",
+  "cli.context.chosen": "Context: {option}",
   "cli.context.compacted": "{count} tool result(s) were compacted into summaries. The model was told what each one was.",
   "cli.context.recoverable": "Nothing was lost: the full results are in this session's log, and {command} rebuilds the conversation from it.",
   "cli.context.unmanaged": "Context management is off, so nothing was compacted. The next request may be refused by the endpoint for exceeding the window."
