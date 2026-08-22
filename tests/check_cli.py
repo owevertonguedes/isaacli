@@ -1518,4 +1518,38 @@ check(len(readmes["README.md"]) == len(readmes["README.pt-BR.md"])
       == [line.split(" ", 1)[0] for line in readmes["README.pt-BR.md"]],
       "the two READMEs still have the same sections at the same depth")
 
+# Sections were the only shape being compared, and drift does not arrive as a
+# missing section. It arrives as a feature listed in one language and not the
+# other, which is exactly how the AGENTS.md bullet was added on 2026-08-21: by
+# hand, in both, with nothing that would have noticed had it landed in one.
+readme_bodies = {
+    name: (HERE.parent / name).read_text(encoding="utf-8")
+    for name in ("README.md", "README.pt-BR.md")
+}
+readme_bullets = {name: [line for line in text.splitlines()
+                         if line.startswith("- ")]
+                  for name, text in readme_bodies.items()}
+check(len(readme_bullets["README.md"]) == len(readme_bullets["README.pt-BR.md"]),
+      "the two READMEs list the same number of bullet points")
+
+# The label is translated, the destination is not. A link that exists in one
+# README and not the other is a promise made to only half the readers, and a
+# target that points nowhere is worse in either language.
+readme_links = {
+    # Each README links to the other on purpose, and that is the one target
+    # that is supposed to differ, so it is the one target excluded here.
+    name: sorted(target for target in re.findall(r"\]\(([^)]+)\)", text)
+                 if target not in ("README.md", "README.pt-BR.md"))
+    for name, text in readme_bodies.items()
+}
+check(readme_links["README.md"] == readme_links["README.pt-BR.md"],
+      "the two READMEs point at exactly the same targets")
+missing_targets = sorted(
+    target for target in readme_links["README.md"]
+    if not target.startswith(("http://", "https://", "#"))
+    and not (HERE.parent / target.split("#", 1)[0]).exists()
+)
+check(not missing_targets,
+      f"every local link in the READMEs resolves: {missing_targets}")
+
 print("ISAAC CLI OK: workspace, model and basic output without Ollama")
