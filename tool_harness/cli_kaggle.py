@@ -1214,12 +1214,9 @@ def _prepare_assets(executable, username, model, available, input_fn,
     return available
 
 
-# The reusable inputs remove the 34 minute build and download path. The same
-# model took 43.5 seconds to load in the measured T4 x2 run. A CPU probe with
-# the attached 15.33 GiB dataset took 11 minutes 26 seconds from push to status
-# check after completion, although its script ran in one second. Thirty minutes
-# covers input staging, scheduling, loading and tunnel startup.
-URL_DISCOVERY_TIMEOUT = 30 * 60
+# Lines the rendered kernel prints to name the step it is starting, so a wait
+# that lasts half an hour shows what it is waiting for.
+STAGE_PREFIX = "[setup]"
 
 
 def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
@@ -1231,10 +1228,10 @@ def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
     return match.group(1) if match else ""
 
 
-def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
+def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                         popen_fn=subprocess.Popen, env=None,
                         run_fn=subprocess.run):
-    """Wait for the kernel to publish its tunnel URL, for as long as promised.
+    """Wait for the kernel to publish its tunnel URL, for as long as it can.
 
     `kernels logs -f` returns immediately while the kernel is still queued,
     because there is nothing to follow yet. Treating the end of that stream as
@@ -1244,8 +1241,21 @@ def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
     was spending quota and should be deleted. The deadline is a clock, not a
     process, so the stream is reopened until the clock runs out, and only a
     state Kaggle calls terminal ends the wait early.
+
+    That clock used to be thirty minutes, calibrated against one 15.33 GiB
+    weight, and it was the calibration that was wrong rather than the number:
+    the same step measured 3 minutes for a 17.28 GiB weight and over 30 for a
+    22.53 GiB one, so no rate derived from those points would be a measurement.
+    What does bound the wait without inventing anything is the kernel's own
+    life. It cannot publish a URL after the ceiling its own push carries, and
+    it raises rather than hang if the server never answers, so waiting that long
+    can only end in a URL or in a state Kaggle calls terminal. Twice on
+    2026-08-22 the old clock ended a dense launch that was still loading, and
+    left the kernel spending quota with nothing to show for it.
     """
     deadline = time.monotonic() + timeout
+    announced = set()
+    state = ""
     while time.monotonic() < deadline:
         process = popen_fn(
             [str(executable), "kernels", "logs", "-f", slug],
@@ -1267,6 +1277,13 @@ def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
                 match = URL_PATTERN.search(line)
                 if match:
                     return match.group(1)
+                stage = line.strip()
+                # Reopening the stream replays what it already carried, so the
+                # same stage must not be announced twice.
+                if stage.startswith(STAGE_PREFIX) and stage not in announced:
+                    announced.add(stage)
+                    print(t("cli.kaggle.url.stage",
+                            stage=stage[len(STAGE_PREFIX):].strip()))
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -1280,7 +1297,59 @@ def discover_tunnel_url(executable, slug, timeout=URL_DISCOVERY_TIMEOUT,
         debug.note("cli_kaggle.discover_tunnel_url",
                    f"{slug} has not published a URL yet, state {state or 'unknown'}")
         time.sleep(10)
-    raise RuntimeError(t("cli.kaggle.url.failed", slug=slug))
+    # Naming the end of the log stream describes a symptom that happens on every
+    # queued kernel and reads as a kernel that died. The kernel is alive, Kaggle
+    # says so, and it is spending quota right now: that is the cause and the
+    # thing the user has to act on. The state is asked for again here rather
+    # than reused from the last poll, because it is the answer being reported.
+    state = _kernel_state(executable, slug, run_fn, env) or state
+    raise RuntimeError(t(
+        "cli.kaggle.url.expired", slug=slug, minutes=f"{timeout / 60:.0f}",
+        state=state or t("cli.kaggle.url.state_unknown")))
+
+
+def _settle_unfinished_kernel(executable, slug, input_fn, run_fn=subprocess.run,
+                              env=None):
+    """Decide what happens to a kernel whose launch never finished.
+
+    A launch that fails after the push leaves a GPU kernel running with no URL,
+    no profile and nobody watching it. Twice on 2026-08-22 that cost quota until
+    it was noticed and deleted by hand, which is the opposite of the rule that
+    what this program starts, this program can stop. Nothing is decided silently:
+    whoever is at the terminal is asked, with the cost named. With nobody there
+    the answer is to stop, because losing a launch costs one push and leaving a
+    GPU kernel alone costs quota that does not come back.
+    """
+    page = f"https://www.kaggle.com/code/{slug}"
+    try:
+        state = _kernel_state(executable, slug, run_fn, env)
+    except RuntimeError as error:
+        # Not knowing is not the same as knowing it stopped, so say the kernel
+        # may still be spending rather than deciding on its behalf.
+        debug.note(f"cli_kaggle._settle_unfinished_kernel {slug}", error)
+        print(t("cli.kaggle.stop_spending", url=page))
+        return
+    if state in TERMINAL_STATES:
+        debug.note(f"cli_kaggle._settle_unfinished_kernel {slug}",
+                   f"already {state}, nothing left to stop")
+        return
+    if terminal_ui.interactive(input_fn):
+        index = _choose(
+            t("cli.kaggle.unfinished.title", slug=slug, state=state),
+            [t("cli.kaggle.unfinished.stop"), t("cli.kaggle.unfinished.keep")],
+            input_fn)
+        if index != 0:
+            print(t("cli.kaggle.stop_spending", url=page))
+            return
+    else:
+        print(t("cli.kaggle.unfinished.stopping", slug=slug, state=state))
+    try:
+        stop_kernel(executable, slug, run_fn, env)
+    except (OSError, RuntimeError) as error:
+        print(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
+        print(t("cli.kaggle.stop_spending", url=page))
+    else:
+        print(t("cli.kaggle.stop.stopped", slug=slug))
 
 
 def save_kaggle_profile(url, slug, model, api_key, config_file=None,
@@ -2203,12 +2272,10 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         print(t("cli.kaggle.cancelled"))
         return 130
     except (OSError, RuntimeError) as error:
-        # Giving up here does not stop anything: the kernel was already pushed
-        # and keeps spending quota that does not come back, so say that instead
-        # of only offering a link.
+        # Giving up here does not stop anything on its own: the kernel was
+        # already pushed and keeps spending quota that does not come back.
         print(t("cli.kaggle.failed", error=error))
-        print(t("cli.kaggle.stop_spending",
-                url=f"https://www.kaggle.com/code/{slug}"))
+        _settle_unfinished_kernel(executable, slug, input_fn, run_fn, environment)
         return 1
     print(t("cli.kaggle.ready", profile=profile, url=url + "/v1"))
     print(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))

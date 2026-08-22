@@ -200,16 +200,19 @@ module_source = (HERE.parent / "tool_harness" / "cli_kaggle.py").read_text(encod
 check('"sudo"' not in module_source and "'sudo'" not in module_source,
       "no Kaggle orchestration command can invoke sudo")
 
-# Attached inputs leave model loading as the long step. The measured T4 x2 load
-# took 43.5 seconds, while a real attached-weight CPU probe took 11 minutes 26
-# seconds wall clock despite one second of script time. The ceiling also has to
-# cover scheduling and tunnel startup without retaining the old 75 minutes.
+# How long the launch may wait for the URL is not a calibration, because there
+# is no rate to calibrate against: the same push-to-URL step measured 3 minutes
+# for a 17.28 GiB weight and over 30 for a 22.53 GiB one. A calibrated 30 minutes
+# cut off a dense launch on 2026-08-22 that was still loading, twice, and left
+# the kernel spending quota with no URL. What does bound the wait is the kernel's
+# own life: it cannot publish a URL after the ceiling its own push carries, and
+# it kills itself before that if the server never answers.
 import inspect
 
 discovery_default = inspect.signature(
     cli_kaggle.discover_tunnel_url).parameters["timeout"].default
-check(20 * 60 <= discovery_default <= 40 * 60,
-      "the discovery ceiling fits attached-input startup with scheduling room")
+check(discovery_default == cli_kaggle.SESSION_TIMEOUT_SECONDS,
+      "the wait for the URL is bounded by the kernel's own life, not by a calibration")
 
 gpu_dir = root / "gpu-render"
 gpu_t4_dir = root / "gpu-t4-render"
@@ -1888,6 +1891,103 @@ check(interrupted_launch_code == 130
       and "cancelled" in interrupted_launch_output.getvalue().lower(),
       "Ctrl+C during launch ends the pushed kernel without a traceback")
 
+# Giving up on the wait is the other way out of the same launch, and it used to
+# leave the kernel running with no URL, no profile and nobody watching. It
+# happened twice on 2026-08-22 and both kernels had to be deleted by hand. With
+# nobody at the terminal the answer is to stop: losing a launch costs one push,
+# leaving a GPU kernel alone costs quota that does not come back.
+expired_launch_commands = []
+
+
+def expired_launch_run(command, check=False, capture_output=False, text=False,
+                       env=None, **kwargs):
+    expired_launch_commands.append(list(map(str, command)))
+    joined = " ".join(map(str, command))
+    if " quota" in joined:
+        return SimpleNamespace(returncode=0, stdout=REAL_QUOTA_TABLE, stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout='has status "KernelWorkerStatus.RUNNING"', stderr="")
+    if "kernels list" in joined or "datasets list" in joined:
+        return SimpleNamespace(returncode=0, stdout="ref,title\n", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: user\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+original_discover = cli_kaggle.discover_tunnel_url
+try:
+    cli_kaggle.terminal_ui.select = preference_select
+    cli_kaggle.discover_tunnel_url = lambda *args, **kwargs: (
+        _ for _ in ()).throw(RuntimeError("the wait ran out with the kernel alive"))
+    with redirect_stdout(io.StringIO()) as expired_launch_output:
+        expired_launch_code = cli_kaggle.run_kaggle(
+            input_fn=lambda prompt: "y" if "Push" in prompt else "n",
+            run_fn=expired_launch_run, which_fn=lambda _name: "/fake/kaggle",
+            config_file=preference_file, home_dir=home,
+        )
+finally:
+    cli_kaggle.terminal_ui.select = original_preference_select
+    cli_kaggle.discover_tunnel_url = original_discover
+expired_launch_deletes = [
+    command for command in expired_launch_commands if "delete" in command]
+check(expired_launch_code == 1 and len(expired_launch_deletes) == 1
+      and expired_launch_deletes[0][1:3] == ["kernels", "delete"],
+      "giving up on the wait stops the kernel it pushed instead of leaving quota burning")
+check("the wait ran out with the kernel alive" in expired_launch_output.getvalue(),
+      "the reason the wait ended is on the screen next to what was done about it")
+
+# With somebody at the terminal it is their kernel and their quota, so the
+# choice is theirs. Deleting is destructive and takes the log that explains the
+# failure with it, which is exactly what somebody who wants to look would lose.
+settle_commands = []
+
+
+def settle_run(command, check=False, capture_output=False, text=False, env=None,
+               **kwargs):
+    settle_commands.append(list(map(str, command)))
+    if "status" in command:
+        return SimpleNamespace(
+            returncode=0, stdout='has status "KernelWorkerStatus.RUNNING"', stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+original_interactive = cli_kaggle.terminal_ui.interactive
+try:
+    cli_kaggle.terminal_ui.interactive = lambda *args, **kwargs: True
+    cli_kaggle.terminal_ui.select = lambda title, options, **kwargs: 1
+    with redirect_stdout(io.StringIO()) as kept_alive_output:
+        cli_kaggle._settle_unfinished_kernel(
+            "/fake/kaggle", "owner/isaacli-gpu-kept", lambda _prompt: "2",
+            settle_run, {})
+finally:
+    cli_kaggle.terminal_ui.interactive = original_interactive
+    cli_kaggle.terminal_ui.select = original_preference_select
+check(not any("delete" in command for command in settle_commands)
+      and "isaacli kaggle --stop" in kept_alive_output.getvalue(),
+      "choosing to leave the kernel running deletes nothing and says how to stop it")
+
+# A kernel Kaggle already calls terminal has nothing left to stop, and offering
+# to stop it would mean offering to delete the log the failure message just told
+# the user to go read.
+finished_commands = []
+
+
+def finished_run(command, check=False, capture_output=False, text=False, env=None,
+                 **kwargs):
+    finished_commands.append(list(map(str, command)))
+    return SimpleNamespace(
+        returncode=0, stdout='has status "KernelWorkerStatus.ERROR"', stderr="")
+
+
+with redirect_stdout(io.StringIO()) as finished_output:
+    cli_kaggle._settle_unfinished_kernel(
+        "/fake/kaggle", "owner/isaacli-gpu-done", lambda _prompt: "1",
+        finished_run, {})
+check(not any("delete" in command for command in finished_commands)
+      and finished_output.getvalue().strip() == "",
+      "a kernel that already ended is neither stopped nor announced as spending")
+
 # The quantization screen has to know which precision this account already has,
 # because the alias is built from the file name: moving one row unhooks the
 # prepared dataset and the kernel goes back to downloading the weight.
@@ -2231,6 +2331,89 @@ finally:
     cli_kaggle.select.select = original_select
 check(gave_up,
       "a kernel that really ended stops the wait instead of burning the deadline")
+
+# The launch that motivated this: the weight was 47% larger than the one the old
+# thirty minutes had been calibrated against, the kernel was still loading when
+# the clock ran out, and the program gave up on a launch that would have served.
+# The clock here is driven, not slept through, so simulated time passes the old
+# ceiling long before the URL line arrives.
+slow_attempts = []
+
+
+class _Clock:
+    """A monotonic clock that jumps ten minutes every time it is read."""
+
+    def __init__(self, step):
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+def slow_popen(command, **kwargs):
+    slow_attempts.append(list(map(str, command)))
+    if len(slow_attempts) < 4:
+        return _FakeLog(["[setup] using the attached weight at /kaggle/input/w\n"])
+    return _FakeLog(["TUNNEL_URL=https://slow-but-alive.trycloudflare.com\n"])
+
+
+def running_status(command, check=False, capture_output=False, text=False,
+                   env=None, **kwargs):
+    return SimpleNamespace(
+        returncode=0, stdout='has status "KernelWorkerStatus.RUNNING"', stderr="")
+
+
+original_monotonic = cli_kaggle.time.monotonic
+slow_clock = _Clock(10 * 60)
+slow_screen = io.StringIO()
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.time.monotonic = slow_clock
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(slow_screen):
+        slow_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-slow",
+            popen_fn=slow_popen, run_fn=running_status)
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.select.select = original_select
+check(slow_url == "https://slow-but-alive.trycloudflare.com" and slow_clock.now > 30 * 60,
+      f"a launch that passes the old thirty minutes still reaches the URL "
+      f"({slow_clock.now / 60:.0f} simulated minutes)")
+
+# The wait used to be silent for as long as it lasted, so a loading kernel and a
+# hung one looked identical from here. The kernel names each stage before it
+# starts it, and those lines were being read and thrown away.
+check("using the attached weight" in slow_screen.getvalue(),
+      "the stages the kernel prints while it loads reach the screen during the wait")
+
+# Giving up has to name the cause. Saying the log ended describes the symptom of
+# a stream that always ends while the kernel is queued, and the user reads it as
+# a kernel that died when it is alive and spending quota.
+expired = ""
+expired_clock = _Clock(60 * 60)
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.time.monotonic = expired_clock
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: ([], [], [])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-expired", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog([]),
+            run_fn=running_status)
+except RuntimeError as error:
+    expired = str(error)
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.select.select = original_select
+check("RUNNING" in expired and "owner/isaacli-gpu-expired" in expired
+      and "TUNNEL_URL" not in expired,
+      "giving up names the deadline and the live state, not the end of a log stream")
 
 # A fixed 16384 ceiling is a floor dressed as a measurement: a model reaches
 # the list only if it fits at that size, so any room left on the cards was
