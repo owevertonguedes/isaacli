@@ -7,6 +7,7 @@ Run it after ANY change to tools.py or to the app's folder selector:
 It tests ../, absolute paths and symlinks, including after switching the root
 at runtime (which is what the app's folder selector does).
 """
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
+import execution
 import tools
 
 
@@ -59,8 +61,122 @@ def check_root(root: Path) -> int:
     return leaks
 
 
+def check_mount_policy() -> int:
+    """What the jail agrees to mount read-only, decided against a fake home.
+
+    `check_execution.py` proves the mounts by running commands inside the real
+    jail, and that check cannot run on a hosted runner, where bwrap cannot map
+    uids. This one needs no bwrap: it drives the PLANNER with a home built for
+    the purpose, so the policy is still verified everywhere the suite runs. A
+    directory that should never be mounted and is counts as a leak here, exactly
+    like a path escaping the root above.
+    """
+    print("\n--- what the sandbox agrees to mount read-only ---")
+    leaks = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "fakehome"
+        workspace = Path(tmp) / "workspace"
+        workspace.mkdir(parents=True)
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+        (home / ".config" / "isaacli").mkdir(parents=True)
+        (home / ".config" / "isaacli" / "secrets.json").write_text("{}")
+        (home / ".local" / "share").mkdir(parents=True)
+        prefix = home / ".local" / "share" / "toolchain"
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "lib").mkdir()
+        (prefix / "lib" / "real-tool").write_text("#!/bin/sh\ntrue\n")
+        (prefix / "lib" / "real-tool").chmod(0o755)
+        (prefix / "bin" / "tool").symlink_to("../lib/real-tool")
+        checkout = home / "project"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / "bin").mkdir()
+        # An executable loose in the home, so the home and the symlink to it are
+        # refused by the guard being tested and not by "it holds no executable",
+        # which would make both of those cases pass for the wrong reason.
+        (home / "stray-script").write_text("#!/bin/sh\ntrue\n")
+        (home / "stray-script").chmod(0o755)
+        # A PATH entry that is a SYMLINK to the home. Every comparison-based
+        # refusal passes for it, because the link is not equal to the home, so
+        # the only thing that stops it is resolving before deciding.
+        disguised = home / "looks_like_a_bin_dir"
+        disguised.symlink_to(home)
+
+        previous = {name: os.environ.get(name)
+                    for name in ("HOME", "PATH", "XDG_CONFIG_HOME",
+                                 "XDG_DATA_HOME", "XDG_STATE_HOME",
+                                 "XDG_CACHE_HOME", "XDG_RUNTIME_DIR")}
+        os.environ["HOME"] = str(home)
+        for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+                     "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
+            os.environ.pop(name, None)
+        os.environ["PATH"] = os.pathsep.join([
+            str(prefix / "bin"),          # a real toolchain: must be mounted
+            str(home),                    # the home itself: never
+            str(home / ".ssh"),           # keys: never
+            str(home / ".config"),        # an XDG base: never
+            str(checkout),                # a project checkout: never
+            str(disguised),               # a symlink to the home: never
+            str(workspace),               # already mounted, and writable
+            str(home / "does_not_exist"),
+        ])
+        os.environ["ISAACLI_POLICY_FAKE_TOKEN"] = "sk-planted-token"
+        os.environ["ISAACLI_POLICY_TOOL_HOME"] = str(prefix / "lib")
+        try:
+            binds, path_dirs, forwarded = execution._toolchain_mounts(workspace)
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            os.environ.pop("ISAACLI_POLICY_FAKE_TOKEN", None)
+            os.environ.pop("ISAACLI_POLICY_TOOL_HOME", None)
+
+        mounted = {str(path) for path in binds}
+        must_not_mount = {
+            "the home itself": home,
+            "the ssh directory": home / ".ssh",
+            "an XDG base directory": home / ".config",
+            "a project checkout": checkout,
+            "a symlink pointing at the home": disguised,
+            "the workspace, which is writable": workspace,
+        }
+        for description, path in must_not_mount.items():
+            if str(path) in mounted:
+                print(f"[LEAK  ] {description} was mounted: {path}")
+                leaks += 1
+            else:
+                print(f"[ok    ] not mounted: {description}")
+
+        for description, path in (("the toolchain bin on PATH", prefix / "bin"),
+                                  ("the install tree behind its symlink",
+                                   prefix / "lib")):
+            if str(path) in mounted:
+                print(f"[ok    ] mounted: {description}")
+            else:
+                print(f"[LEAK  ] {description} was NOT mounted, so the toolchain "
+                      f"is unreachable: {path}")
+                leaks += 1
+
+        if str(prefix / "bin") not in path_dirs:
+            print("[LEAK  ] the toolchain directory did not reach the jail's PATH")
+            leaks += 1
+        if "ISAACLI_POLICY_FAKE_TOKEN" in forwarded:
+            print("[LEAK  ] a secret in the environment was forwarded into the jail")
+            leaks += 1
+        else:
+            print("[ok    ] a secret in the environment is not forwarded")
+        if forwarded.get("ISAACLI_POLICY_TOOL_HOME") != str(prefix / "lib"):
+            print("[LEAK  ] a variable naming a mounted directory was dropped, so "
+                  "the toolchain would not find its own files")
+            leaks += 1
+    return leaks
+
+
 def main():
     leaks = 0
+    leaks += check_mount_policy()
     with tempfile.TemporaryDirectory() as tmp:
         # the default root and a root swapped at runtime (what the app's selector does)
         leaks += check_root(Path(tmp) / "root_a" / "sandbox")

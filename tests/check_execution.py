@@ -70,6 +70,75 @@ check("stderr" in out, "stderr appears labelled")
 check("No such file" in out, f"the real system message appears: {out!r}")
 check("(exit code: 1)" in out, "a non-zero exit code shows up")
 
+print("\n=== 2b. a program that is missing says WHICH kind of missing ===")
+# `command not found` alone is a lie by omission: in task 036 the model was told
+# `cargo: command not found` and `yarn: command not found` and concluded the
+# tools did not exist. The two absences need opposite reactions, so the output
+# has to tell them apart. Checked by effect, through the real jail, because the
+# parsing has to survive what bwrap and sh actually print (bwrap exits 1, not
+# 127, when execvp fails).
+#
+# The rule both branches must obey, and the reason this check is written around
+# a forbidden phrase rather than a required one: the note is built from
+# `shutil.which`, which looks at ONE thing, the PATH isaacli was started with.
+# So it may claim about that PATH and never about the machine. The first version
+# of this note said "not installed on this machine", which was false for exactly
+# the two tools that opened the task: on 2026-08-23 cargo was found under
+# DevTools/workspace/036/toolchains and yarn 1.22.22 in three npx caches, with
+# neither on the PATH. A note that overclaims is the defect, not a wording nit.
+ABOUT_THE_MACHINE = (
+    "not installed on this machine",
+    "DOES exist on this machine",
+    "the machine lacks",
+)
+
+absent = "isaacli-no-such-program-xyz"
+check(shutil.which(absent) is None, "the fake program name really is absent from the host")
+out = execution.run_command(f"{absent} --version", authorized=True)
+check("is not on any directory of the PATH" in out,
+      f"a program off the PATH is reported as off the PATH: {out[:300]!r}")
+check("is NOT known" in out,
+      f"and the note says outright that it does not know whether the machine has "
+      f"it elsewhere: {out[:400]!r}")
+for phrase in ABOUT_THE_MACHINE:
+    check(phrase not in out,
+          f"the note claims nothing about the machine ({phrase!r} absent), "
+          f"because the PATH is all it looked at: {out[:300]!r}")
+
+# The other half: a program that IS on the user's PATH and still cannot be
+# started inside. The bait is a real executable in a temporary directory put on
+# the host PATH, so `shutil.which` finds it exactly as it finds a real toolchain.
+outside_bin = base / "outside_bin"
+outside_bin.mkdir()
+bait_tool = outside_bin / "isaacli-bait-tool"
+bait_tool.write_text("#!/bin/sh\necho bait\n")
+bait_tool.chmod(0o755)
+previous_path = os.environ["PATH"]
+os.environ["PATH"] = f"{outside_bin}{os.pathsep}{previous_path}"
+# The planted failure: the jail is told to mount nothing of the user's
+# toolchain, which is the state of every tool the mounts cannot reach (one
+# installed outside the PATH, or in a directory the guards refuse). The program
+# exists outside and cannot be started in here, and that is what has to be said.
+original_toolchain_mounts = execution._toolchain_mounts
+execution._toolchain_mounts = lambda root: ([], [], {})
+try:
+    out = execution.run_command("isaacli-bait-tool", authorized=True)
+finally:
+    execution._toolchain_mounts = original_toolchain_mounts
+    os.environ["PATH"] = previous_path
+check("(exit code: 0)" not in out,
+      f"the bait tool really did not run inside the sandbox: {out[:300]!r}")
+check("IS on the PATH isaacli was started with" in out and str(bait_tool) in out,
+      f"a program on the PATH and unreachable inside says exactly that, with the "
+      f"path the search found: {out[:400]!r}")
+check("sandbox limit" in out,
+      f"and it names the sandbox as the cause, since the PATH search did find "
+      f"it: {out[:400]!r}")
+for phrase in ABOUT_THE_MACHINE:
+    check(phrase not in out,
+          f"this branch claims nothing about the machine either ({phrase!r} "
+          f"absent): {out[:300]!r}")
+
 print("\n=== 3. rm -rf in several forms: refused AND without effect ===")
 for attempt in [
     "rm -rf /",
@@ -267,6 +336,141 @@ check("(exit code: 0)" not in out,
 out = execution.run_command("""python3 -c "open('created.txt','w').write('ok')" """)
 check((root / "created.txt").exists(),
       f"writing INSIDE the working directory works ({out[:200]!r})")
+
+print("\n=== 7b. the host environment does not ride along into the jail ===")
+# The filesystem was closed to credentials while the environment was wide open:
+# before --clearenv, a key exported in the shell that started isaacli was
+# readable inside with one `python3 -c`. Planted failure, real effect: the
+# variable is set here, in this process, exactly as a user's shell would set it.
+os.environ["ISAACLI_FAKE_SECRET_PROBE"] = "sk-not-a-real-key-planted-by-the-check"
+try:
+    out = execution.run_command(
+        """python3 -c "import os; print('probe=', os.environ.get('ISAACLI_FAKE_SECRET_PROBE'))" """)
+finally:
+    del os.environ["ISAACLI_FAKE_SECRET_PROBE"]
+check("sk-not-a-real-key" not in out,
+      f"a secret in isaacli's own environment does not reach the sandbox: {out[:300]!r}")
+check("probe= None" in out,
+      f"and the probe really ran and looked for it (otherwise it proves nothing): {out[:300]!r}")
+# The counterpart: clearing the environment must not clear what the jail itself
+# sets, or git would lose its identity and every command would lose its PATH.
+out = execution.run_command(
+    """python3 -c "import os; print('H', os.environ.get('HOME'), 'P', bool(os.environ.get('PATH')), 'G', os.environ.get('GIT_AUTHOR_NAME'))" """)
+check(f"H {root}" in out and "P True" in out and "G None" not in out,
+      f"HOME, PATH and the git identity survive the cleared environment: {out[:300]!r}")
+
+print("\n=== 7c. the user's own toolchain is reachable, read-only, and nothing else is ===")
+# Task 044: the model was told `cargo: command not found` and `yarn: command not
+# found` on a machine that had both, so it could not run the test of the project
+# it had just edited. The criterion now is "what the user can run in their own
+# terminal, this jail can run too, read-only". Everything here is planted, so
+# the check does not depend on which toolchains this machine happens to have.
+#
+# The bait is shaped like a real toolchain and not like a loose binary: a prefix
+# with `bin/` holding a SYMLINK into `lib/`, which is how fnm, npm-installed
+# yarn and rustup all lay themselves out, and the shape that used to give the
+# jail a dangling link.
+prefix = base / "toolchain_prefix"
+(prefix / "bin").mkdir(parents=True)
+(prefix / "lib").mkdir()
+(prefix / "secrets_dir_that_is_not_layout").mkdir()
+(prefix / "secrets_dir_that_is_not_layout" / "token").write_text("tok-must-not-leak")
+(prefix / "credentials.toml").write_text("tok-loose-file-must-not-leak")
+(prefix / "lib" / "faketool.sh").write_text(
+    "#!/bin/sh\necho \"faketool $(expr 6 \\* 7)\"\n")
+(prefix / "lib" / "faketool.sh").chmod(0o755)
+(prefix / "bin" / "faketool").symlink_to("../lib/faketool.sh")
+# A python3 planted FIRST on the PATH: the jail must keep resolving allowlisted
+# names to the system copies, so a shim directory cannot silently take over.
+(prefix / "bin" / "python3").write_text("#!/bin/sh\necho HIJACKED\n")
+(prefix / "bin" / "python3").chmod(0o755)
+
+previous_path = os.environ["PATH"]
+os.environ["PATH"] = f"{prefix / 'bin'}{os.pathsep}{previous_path}"
+try:
+    out_tool = execution.run_command("faketool", authorized=True)
+    out_python = execution.run_command('python3 -c "print(6*7)"')
+    out_write = execution.run_command(
+        f"""python3 -c "open('{prefix / 'lib' / 'written.txt'}','w').write('x')" """,
+        authorized=True)
+    out_secret_dir = execution.run_command(
+        f"cat {prefix / 'secrets_dir_that_is_not_layout' / 'token'}", authorized=True)
+    out_loose = execution.run_command(
+        f"cat {prefix / 'credentials.toml'}", authorized=True)
+finally:
+    os.environ["PATH"] = previous_path
+
+check("faketool 42" in out_tool,
+      f"a tool on the user's PATH runs inside the jail, through its symlink into "
+      f"the install tree: {out_tool[:300]!r}")
+check("HIJACKED" not in out_python and "42" in out_python,
+      f"an allowlisted name still resolves to the system copy, because the "
+      f"toolchain is APPENDED to PATH and never prepended: {out_python[:300]!r}")
+check(not (prefix / "lib" / "written.txt").exists(),
+      f"the mounted toolchain is read-only: the model cannot change the tool "
+      f"instead of the project ({out_write[:300]!r})")
+check("tok-must-not-leak" not in out_secret_dir,
+      f"a directory of the prefix that is not part of the runtime layout is not "
+      f"mounted: {out_secret_dir[:300]!r}")
+check("tok-loose-file-must-not-leak" not in out_loose,
+      f"a loose file at the top of a tool home, which is where credentials live "
+      f"(~/.cargo/credentials.toml), is not mounted: {out_loose[:300]!r}")
+
+# The guards, by effect where an effect exists and by decision where planting one
+# would mean writing into the real home. A PATH entry pointing at the home is the
+# case the task refuses by name, because the home is where the keys are.
+home = Path.home()
+xdg = execution._xdg_base_dirs(home)
+check(execution._mountable(home, home, xdg, root, []) is not None,
+      "the home directory itself is refused as a mount")
+check(execution._mountable(home.parent, home, xdg, root, []) is not None,
+      "an ancestor of the home is refused as a mount")
+check(execution._mountable(Path("/"), home, xdg, root, []) is not None,
+      "the filesystem root is refused as a mount")
+for base_dir in xdg:
+    check(execution._mountable(base_dir, home, xdg, root, []) is not None,
+          f"the XDG base {base_dir} is refused, because that is where credentials live")
+check(execution._mountable(root, home, xdg, root, []) is not None,
+      "the workspace is refused, so a read-only mount cannot shadow the one "
+      "writable directory")
+checkout = base / "someones_project"
+(checkout / ".git").mkdir(parents=True)
+check(execution._mountable(checkout, home, xdg, root, []) is not None,
+      "a git checkout is refused: a project is not a toolchain")
+
+# Forwarding an environment variable is decided by the mounts, not by its name,
+# which is what keeps a credential from riding along inside a variable.
+os.environ["ISAACLI_FAKE_TOOL_HOME"] = str(prefix / "lib")
+os.environ["ISAACLI_FAKE_TOKEN"] = "sk-planted-token-value"
+os.environ["PATH"] = f"{prefix / 'bin'}{os.pathsep}{previous_path}"
+try:
+    _, _, forwarded = execution._toolchain_mounts(root)
+finally:
+    os.environ["PATH"] = previous_path
+    del os.environ["ISAACLI_FAKE_TOOL_HOME"]
+    del os.environ["ISAACLI_FAKE_TOKEN"]
+check(forwarded.get("ISAACLI_FAKE_TOOL_HOME") == str(prefix / "lib"),
+      f"a variable naming a directory that WAS mounted is forwarded: {forwarded!r}")
+check("ISAACLI_FAKE_TOKEN" not in forwarded,
+      f"a variable holding a secret is not, because a secret is not a mounted "
+      f"path: {forwarded!r}")
+for owned in ("PATH", "HOME", "GH_CONFIG_DIR"):
+    check(owned not in forwarded,
+          f"{owned} is the jail's to set and is never forwarded from the host")
+
+# And the whole point of the guards: the real credentials on this machine stay
+# out, checked against the actual files rather than against the idea of them.
+for private in (home / ".config" / "isaacli" / "config.json",
+                home / ".config" / "isaacli" / "secrets.json",
+                home / ".kaggle" / "kaggle.json",
+                home / ".kaggle" / "credentials.json",
+                home / ".ssh" / "id_rsa",
+                home / ".ssh" / "config"):
+    if not private.exists():
+        continue
+    out = execution.run_command(f"cat {private}", authorized=True)
+    check("(exit code: 0)" not in out,
+          f"{private} is not readable from inside the sandbox: {out[:200]!r}")
 
 print("\n=== 8. no network for what the user was never shown ===")
 # Careful writing this assert: looking for a sentinel word in the output does not

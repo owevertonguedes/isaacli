@@ -42,6 +42,40 @@ log, but they can still repeat sensitive file content. They therefore have the
 same private-data status as prompts and tool arguments, not a weaker telemetry
 classification.
 
+## What the command sandbox can reach
+
+The jail mounts the system directories read-only, the workspace read-write, and
+one more category: the directories on the user's own PATH, read-only, together
+with the install trees their executables are symlinked into. That is what lets
+an agent run `cargo test` or `yarn test` on a project whose toolchain lives in
+the user's home, which it previously could not, receiving `command not found`
+for a tool the machine had. The criterion is the user's PATH, never a list of
+tool names.
+
+It is a widening of what the model can read, and the boundaries are explicit.
+Refused, each with a reason returned by `_mountable` and reported on `--debug`:
+the home directory itself and any ancestor of it, the XDG base directories,
+which is where `config.json`, `secrets.json` and the Kaggle account folders
+live, a git checkout, since a project is not a toolchain, the workspace itself,
+which stays the only writable mount, and any directory holding no executable, so
+a directory of private keys is not mounted even if it is on PATH. Inside an
+install prefix only the runtime layout directories come along, never the prefix
+itself, so a loose credential file at its top stays outside, which is exactly
+where `cargo` keeps the crates.io token. The toolchain is appended to the jail's
+PATH after the system directories, so an allowlisted name cannot be captured by
+a shim.
+
+The environment is built rather than inherited: `--clearenv` drops everything
+isaacli itself was started with, and a variable is forwarded only when its value
+is the path of a directory that was mounted. Before that, any variable in
+isaacli's environment, including an exported API key, was readable inside the
+jail.
+
+Residual exposure, stated rather than implied: the model can read the
+executables and runtime files of the tools on the user's PATH, and the parent
+path of a mount exists inside the jail, so directory names along it are visible
+even though their contents are not. Nothing mounted this way is writable.
+
 ## API keys
 
 Profiles store a credential identifier and load the corresponding value from

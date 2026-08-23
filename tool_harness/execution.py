@@ -89,6 +89,24 @@ never online: commands that run automatically keep the network shut, and `git
 push` plus read-only `gh` queries get it through their own narrow exception. See
 `_needs_network`.
 
+THE USER'S OWN TOOLCHAIN IS REACHABLE, READ-ONLY, AND THE CRITERION IS THEIR
+PATH. An agent that cannot run `cargo test` or `yarn test` cannot verify the fix
+it just wrote, and that is the difference between changing a file and fixing a
+bug. Measured in task 036: `cargo: command not found` and `yarn: command not
+found` on a machine that had both, while a system-installed `node` worked,
+because /usr was mounted and the home was not. So the rule is "what the user can
+run in their own terminal, this jail can run too, read-only", with the user's
+PATH as the declaration and no list of tool names anywhere. See
+`_toolchain_mounts` for the mounting and `_mountable` for every refusal.
+Mounting the whole home was never on the table: it would hand the model API
+keys, cloud credentials and isaacli's own configuration.
+
+THE ENVIRONMENT IS BUILT FROM NOTHING, not filtered. `--clearenv` drops
+everything isaacli inherited and only the variables set explicitly below survive.
+Until this was added the filesystem was closed to credentials while the
+environment was wide open: measured on this machine, a key exported in the shell
+that started isaacli was readable inside the jail with one `python3 -c`.
+
 HOME is still the working directory, never the real home: no private key or HTTPS
 credential of the user is mounted inside the sandbox. Authentication goes through
 the ssh-agent SOCKET (`SSH_AUTH_SOCK`), which only signs challenges: there is no
@@ -112,6 +130,7 @@ merely confirming that the refusal message showed up.
 """
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -228,6 +247,345 @@ def _system_binaries():
         elif os.path.isdir(link):
             real.append(link)
     return real, links
+
+
+# Directory names that hold a program's own runtime files next to its `bin`.
+# Used only to decide where an executable's install tree starts, never to guess
+# that a tool exists.
+LAUNCHER_DIRS = ("bin", "sbin", "libexec")
+
+# The subdirectories of an install prefix that a program needs at runtime. This
+# is a list of LAYOUT names, never of tool names: it says what part of a tree
+# comes along, not which tools exist. The first eight are the ordinary
+# prefix layout; `node_modules` is where a JavaScript CLI keeps the code it
+# actually runs; `toolchains` is where rustup keeps the compilers that the
+# proxies in its `bin` exec. Everything else stays out, which is what keeps a
+# `src`, a `.git` or a credentials directory from riding in behind a `bin`.
+RUNTIME_LAYOUT_DIRS = frozenset({
+    "bin", "sbin", "lib", "lib64", "libexec", "share", "include", "etc",
+    "node_modules", "toolchains",
+})
+
+# Names the jail sets itself. A variable of the user's with one of these names
+# never rides along, whatever its value, so forwarding cannot overwrite the
+# identity, the working directory or the search path the jail decided on.
+JAIL_OWNED_ENV = frozenset({
+    "PATH", "HOME", "PWD", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND",
+    "GH_CONFIG_DIR", "GH_PAGER", "PAGER",
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+})
+
+
+# The one thing PATH cannot reveal: a launcher that decides AT RUNTIME which
+# real binary to exec, out of a store that is not next to it and is not on
+# anyone's PATH. `~/.cargo/bin/cargo` is a rustup proxy; the compiler it runs
+# lives under RUSTUP_HOME (`~/.rustup` by default). Mount the proxy alone and
+# cargo starts and then says it "could not choose a version of cargo to run",
+# which is the same dead end the task set out to remove.
+#
+# Each entry is (marker executable, variable, default home under $HOME) and
+# needs all three things to earn its place: a marker that is DETECTED in a
+# mounted bin directory rather than a tool name guessed at, a home that stores
+# compilers and not credentials, and this comment saying why. It is deliberately
+# not a list of "supported toolchains": everything else is reached by PATH.
+LAUNCHER_HOMES = (
+    ("rustup", "RUSTUP_HOME", ".rustup"),
+)
+
+
+# Not a refusal like the others: the directory is fine, it is simply reachable
+# already, through /usr or through a mount an earlier PATH entry brought in. It
+# still belongs on the jail's PATH, or a tool would be mounted and unreachable
+# by name, which is the exact failure this whole mechanism exists to remove.
+ALREADY_COVERED = "already covered by another mount"
+
+
+def _xdg_base_dirs(home):
+    """The XDG base directories themselves, which are never mounted.
+
+    This is where credentials live: isaacli's own `config.json` and
+    `secrets.json`, the Kaggle account folders, and whatever else the user's
+    programs keep there. A SUBDIRECTORY of one of these is a different matter --
+    fnm keeps its node versions under the data directory, and that is exactly
+    the kind of thing this whole mechanism exists to reach -- so only the bases
+    are refused, not everything under them.
+    """
+    bases = {
+        os.environ.get("XDG_CONFIG_HOME", home / ".config"),
+        os.environ.get("XDG_DATA_HOME", home / ".local" / "share"),
+        os.environ.get("XDG_STATE_HOME", home / ".local" / "state"),
+        os.environ.get("XDG_CACHE_HOME", home / ".cache"),
+        home / ".local",
+    }
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        bases.add(runtime)
+    # Resolved, because the comparison is against resolved paths: a `~/.config`
+    # that is itself a symlink into another disk would otherwise match nothing
+    # and stop being refused.
+    return {Path(os.path.realpath(base)) for base in bases}
+
+
+def _mountable(path, home, xdg_bases, root, already):
+    """Whether this directory may be mounted read-only into the jail.
+
+    Every refusal here is a place the sandbox would otherwise widen past what
+    "the user's toolchain" means. Returns the REASON when it refuses, so the
+    caller can put it on `--debug` instead of dropping it in silence.
+    """
+    # Every guard below compares paths, so they all have to run on the RESOLVED
+    # path: `--ro-bind` follows a symlinked source, so a PATH entry that is a
+    # link to the home would otherwise pass every check here (it is not equal to
+    # the home, not an XDG base) and then mount the home anyway. The caller
+    # mounts what this function was given, so callers resolve first and this
+    # refuses anything unresolved rather than trusting them.
+    if not path.is_absolute():
+        return "not an absolute path"
+    if path != Path(os.path.realpath(path)):
+        return "a symlink, and what it points at is judged instead"
+    if not path.is_dir():
+        return "not a directory"
+    if path == Path("/") or path == home or path in home.parents:
+        # The whole point of the task this comes from: mounting the home brings
+        # API keys, cloud credentials, shell history and isaacli's own
+        # configuration into the model's reach. A PATH entry pointing at the
+        # home is not a toolchain, it is the home.
+        return "the home directory or an ancestor of it"
+    if path in xdg_bases:
+        return "an XDG base directory, which is where credentials live"
+    if path == root or root in path.parents or path in root.parents:
+        # Already mounted, and writable. Mounting it again read-only would
+        # shadow the one directory the model is supposed to be able to write.
+        return "inside the workspace, which is already mounted"
+    if any(path == mount or mount in path.parents for mount in already):
+        return ALREADY_COVERED
+    if (path / ".git").exists():
+        # A git checkout is somebody's project, not a toolchain. This is not
+        # hypothetical: on this machine `~/.local/bin/isaacli` is a symlink into
+        # the isaacli checkout, so following it would have mounted the whole
+        # repository read-only, session logs included, because a launcher
+        # happens to live there. A tool installed as a symlink out of a checkout
+        # stays unreachable, and says so through the not-found note.
+        return "a git checkout, which is a project and not a toolchain"
+    return None
+
+
+def _argument_budget():
+    """How many bytes of mount arguments the bwrap line may carry.
+
+    Not an invented number: it comes from the kernel's own `ARG_MAX` on this
+    machine, and only a quarter of it is spent here so the command itself, the
+    environment and the rest of the jail's options keep room. It exists because
+    the failure it prevents is total: a PATH long enough to overflow the
+    argument list makes `Popen` raise for EVERY command, not just for the tool
+    that needed the last mount.
+    """
+    try:
+        arg_max = os.sysconf("SC_ARG_MAX")
+    except (ValueError, OSError):
+        debug.swallowed("execution._argument_budget")
+        arg_max = 0
+    if not arg_max or arg_max < 0:
+        arg_max = 128 * 1024        # POSIX floor, when the system will not say
+    return arg_max // 4
+
+
+def _over_argument_budget(binds, budget):
+    """Whether the mounts decided so far already fill the argument budget."""
+    # Three arguments per mount: --ro-bind-try, source, destination.
+    return sum(len(str(path)) * 2 + 16 for path in binds) >= budget
+
+
+def _executables_in(directory):
+    """The regular executable files directly in this directory, resolved later.
+
+    A directory with none of them is not a place programs are run from, whatever
+    the user's PATH says, and the caller refuses to mount it on that basis. A
+    broken symlink, an unreadable entry or a directory that vanished answers
+    "none" rather than raising, and says so on --debug.
+    """
+    found = []
+    try:
+        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+    except OSError:
+        debug.swallowed("execution._executables_in")
+        return found
+    for entry in entries:
+        try:
+            if entry.is_file() and os.access(entry.path, os.X_OK):
+                found.append(entry.path)
+        except OSError:
+            debug.swallowed("execution._executables_in.entry")
+    return found
+
+
+def _install_tree(executable, home, xdg_bases, root, already):
+    """The directories an executable needs, once its symlinks are resolved.
+
+    A toolchain on PATH is almost never a plain file: `~/.local/bin/node` is a
+    symlink into `~/.local/share/fnm/node-versions/v22.22.2/installation/bin/node`,
+    and mounting only the directory holding the symlink gives the jail a
+    dangling link. So the link is followed, and the tree the real binary lives
+    in comes too.
+
+    What comes is the directory holding the binary plus, when that directory is
+    a `bin`/`sbin`/`libexec`, the SUBDIRECTORIES of its parent -- `lib`,
+    `share`, `include` and whatever else that tool keeps -- and never the parent
+    itself. That distinction is the point: a tool home keeps its credentials in
+    a loose file at the top (`~/.cargo/credentials.toml` is the crates.io
+    token), and mounting only the subdirectories leaves every such file outside.
+    """
+    found = []
+    holder = Path(os.path.realpath(executable)).parent
+    if _mountable(holder, home, xdg_bases, root, already) is None:
+        found.append(holder)
+    if holder.name in LAUNCHER_DIRS:
+        parent = holder.parent
+        if _mountable(parent, home, xdg_bases, root, already) is None:
+            try:
+                siblings = sorted(entry.path for entry in os.scandir(parent)
+                                  if entry.is_dir()
+                                  and entry.name in RUNTIME_LAYOUT_DIRS)
+            except OSError:
+                debug.swallowed("execution._install_tree")
+                siblings = []
+            for sibling in siblings:
+                candidate = Path(os.path.realpath(sibling))
+                if _mountable(candidate, home, xdg_bases, root,
+                              already + found) is None:
+                    found.append(candidate)
+    return found
+
+
+def _toolchain_mounts(root):
+    """Read-only mounts that let the jail run the toolchain the user has.
+
+    THE CRITERION, and it is the whole policy: what the user can run in their
+    own terminal, this jail can run too, read-only -- and nothing else of the
+    home comes with it. The declaration is the user's own PATH, because that is
+    the one place where "the tools I use" is already written down, by rustup, by
+    fnm, by pyenv, by bun, by the user's own dotfiles. Nothing is guessed from a
+    list of tool names, so a toolchain nobody here has heard of works the same
+    way, and nothing is mounted because a name matched.
+
+    Without this, an agent cannot run the test of the project it just edited,
+    which is what separates "I changed a file" from "I fixed the bug". Measured
+    in task 036: `cargo: command not found` and `yarn: command not found` on a
+    machine that had both, while the system-installed `node` worked, so the
+    behaviour already varied with where the tool happened to live.
+
+    What it costs, stated plainly: the model can READ the executables and
+    runtime files of every tool on the user's PATH. It cannot write to them
+    (`--ro-bind`), and it cannot reach the home, the XDG base directories, the
+    user's projects, `.ssh`, or a loose file at the top of a tool home. The
+    residual risk is a user who puts a directory holding secrets on their own
+    PATH; the refusals in `_mountable` cover the shapes that actually occur, and
+    everything refused is named on `--debug` rather than dropped silently.
+
+    Returns (binds, path_dirs, env_pass).
+    """
+    # Resolved for the same reason the PATH entries are: every guard compares
+    # paths, and a home reached through a symlink would match none of them.
+    home = Path(os.path.realpath(Path.home()))
+    xdg_bases = _xdg_base_dirs(home)
+    binds, path_dirs, mounted, refused = [], [], [], []
+    forced_env = {}
+    # What `build_bwrap` already mounts: /usr, /etc and the /bin, /lib, /sbin
+    # symlinks into them. Kept separate from `mounted` because it decides
+    # COVERAGE, not forwarding: a system directory is reachable without us, and
+    # re-binding it would be noise at best and a shadowed symlink at worst.
+    real, links = _system_binaries()
+    system = [Path(path) for path in real] + [Path(link) for _, link in links]
+    budget = _argument_budget()
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue                      # an empty PATH element means CWD
+        # Resolved before anything is decided about it: the guards compare
+        # paths, and a symlink would slip past comparisons that the target
+        # fails. The resolved path is also what goes on the jail's PATH, since
+        # the link itself does not exist in there.
+        directory = Path(os.path.realpath(entry))
+        refusal = _mountable(directory, home, xdg_bases, root, system + mounted)
+        if refusal == ALREADY_COVERED:
+            if str(directory) not in path_dirs:
+                path_dirs.append(str(directory))
+            continue
+        if refusal is not None:
+            # Aggregated into a single note below: `debug.note` reports once per
+            # site, so one call per refusal would show the first and hide the
+            # rest, which is the silence this project refuses.
+            refused.append(f"{directory} ({refusal})")
+            continue
+        # A directory earns its mount by holding executables. This is the guard
+        # that a list of forbidden places would never have got right: caught by
+        # the mount-policy check with `~/.ssh` on the PATH, which every refusal
+        # above happily allowed, since it is not the home, not an XDG base and
+        # not a checkout. A directory of private keys holds no executable, and a
+        # toolchain directory holds nothing else.
+        executables = _executables_in(directory)
+        if not executables:
+            refused.append(f"{directory} (no executable in it, so it is not a "
+                           f"toolchain directory)")
+            continue
+        if _over_argument_budget(binds, budget):
+            refused.append(f"{directory} (the bwrap argument list would go past "
+                           f"the kernel's limit)")
+            break
+        binds.append(directory)
+        mounted.append(directory)
+        path_dirs.append(str(directory))
+        for marker, variable, default in LAUNCHER_HOMES:
+            probe = directory / marker
+            try:
+                if not (probe.is_file() and os.access(probe, os.X_OK)):
+                    continue
+            except OSError:
+                debug.swallowed("execution._toolchain_mounts.launcher")
+                continue
+            store = Path(os.path.realpath(
+                os.environ.get(variable) or (home / default)))
+            refusal = _mountable(store, home, xdg_bases, root, system + mounted)
+            if refusal is not None:
+                refused.append(f"{store} ({refusal})")
+                continue
+            binds.append(store)
+            mounted.append(store)
+            # Set explicitly, not merely forwarded: HOME inside the jail is the
+            # workspace, so the launcher's default of $HOME/<default> would
+            # point at a directory that does not exist in here.
+            forced_env[variable] = str(store)
+        # Follow those executables into their install trees, which is what makes
+        # a symlinked toolchain work instead of arriving as a dangling link.
+        for item in executables:
+            if _over_argument_budget(binds, budget):
+                refused.append("further install trees (the bwrap argument list "
+                               "would go past the kernel's limit)")
+                break
+            for tree in _install_tree(item, home, xdg_bases, root,
+                                      system + mounted):
+                binds.append(tree)
+                mounted.append(tree)
+
+    # A variable rides along only when its value IS one of the directories we
+    # just mounted. That is what makes forwarding safe without a list of names:
+    # `RUSTUP_HOME` pointing at a mounted toolchain gets through, and a secret
+    # never can, because a secret is not the path of a directory in this jail.
+    mounted_paths = {str(path) for path in mounted}
+    env_pass = dict(forced_env)
+    for name, value in os.environ.items():
+        if name in JAIL_OWNED_ENV:
+            continue
+        if value in mounted_paths:
+            env_pass[name] = value
+
+    debug.note("execution.toolchain",
+               f"mounted read-only from the user's PATH: "
+               f"{', '.join(str(path) for path in binds) or 'nothing'}"
+               f" | forwarded: {', '.join(sorted(env_pass)) or 'nothing'}"
+               f" | refused: {'; '.join(refused) or 'nothing'}")
+    return binds, path_dirs, env_pass
 
 
 def review(cmd, authorized=False):
@@ -425,7 +783,15 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
     """
     real, links = _system_binaries()
     git_name, git_email = _git_identity()
-    line = [shutil.which("bwrap")]
+    # --clearenv FIRST, and before every --setenv below, which is the order
+    # bwrap needs: it drops the whole inherited environment and keeps only what
+    # is set after it. Without this the jail inherited isaacli's own environment,
+    # measured on this machine: a variable exported in the shell that started
+    # isaacli (an OPENAI_API_KEY, a cloud token) was readable inside with a plain
+    # `python3 -c "import os"`. The filesystem was already closed to credentials
+    # and the environment was not, so the environment is now built here from
+    # nothing rather than filtered afterwards.
+    line = [shutil.which("bwrap"), "--clearenv"]
     for path in real:
         line += ["--ro-bind", path, path]
     for target, link in links:
@@ -441,10 +807,29 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
         path_env = f"{GRAPHIFY_TOOL_ROOT / 'bin'}:{path_env}"
     if GRAPHIFY_PYTHON_ROOT.exists():
         line += ["--ro-bind", str(GRAPHIFY_PYTHON_ROOT), str(GRAPHIFY_PYTHON_ROOT)]
+    # The user's own toolchain, read-only. AFTER the tmpfs over /tmp, so a mount
+    # is never wiped by it, and BEFORE the workspace bind, which must stay the
+    # one writable thing. `--ro-bind-try` and not `--ro-bind`: a directory that
+    # vanished between planning and exec must not take the whole jail down with
+    # it, and its absence is not silent, it comes back as the "not reachable
+    # from inside the sandbox" note on the command that needed it.
+    toolchain_binds, toolchain_path, toolchain_env = _toolchain_mounts(root)
+    # Appended, never prepended: the system directories keep resolving the
+    # allowlisted names, so `python3` cannot silently become some other python
+    # because a shim directory came first on the user's PATH. Entries already on
+    # the line are dropped rather than repeated, since /usr/bin is normally on
+    # the user's PATH too.
+    already_on_path = path_env.split(os.pathsep)
+    extra = [directory for directory in toolchain_path
+             if directory not in already_on_path]
+    if extra:
+        path_env = os.pathsep.join([path_env, *extra])
+    line += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    for path in toolchain_binds:
+        line += ["--ro-bind-try", str(path), str(path)]
+    for name, value in sorted(toolchain_env.items()):
+        line += ["--setenv", name, value]
     line += [
-        "--proc", "/proc",
-        "--dev", "/dev",
-        "--tmpfs", "/tmp",
         # The working directory at the SAME path as outside: that way what the
         # model sees here matches what it sees through the other tools.
         "--bind", str(root), str(root),
@@ -491,6 +876,85 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
                          f"ssh -o UserKnownHostsFile={target} -o StrictHostKeyChecking=yes"]
     line += ["--", *argv]
     return line
+
+
+# How the two layers below report a program they could not start. bwrap execs
+# the program itself and dies with `bwrap: execvp cargo: No such file or
+# directory` and exit code 1 (NOT 127, measured on this machine, which is why
+# nothing here keys off the exit code); an approved line goes through `sh -c`,
+# and the shell says `sh: line 1: cargo: command not found`, or `sh: 1: cargo:
+# not found` on dash.
+MISSING_PROGRAMS_REPORTED = 3
+NOT_FOUND_PATTERNS = (
+    re.compile(r"^bwrap: execvp (?P<name>\S+): No such file or directory", re.M),
+    re.compile(r"^[^\n:]*: ?(?:line )?\d*:? ?(?P<name>[^\s:]+): (?:command )?not found",
+               re.M),
+)
+
+
+def _missing_programs(err: str):
+    """Names the sandbox could not start, in the order they were reported.
+
+    Bounded, because the input is a command's stderr and a loop can print
+    `foo: command not found` a hundred thousand times: without the bound each
+    line would cost a PATH search and a line of note, turning one bad script
+    into a slow command and an output made of nothing else. Three is enough to
+    explain what is missing; the raw stderr above it is still complete.
+    """
+    names = []
+    for pattern in NOT_FOUND_PATTERNS:
+        for match in pattern.finditer(err):
+            name = match.group("name")
+            if name and name not in names:
+                names.append(name)
+                if len(names) >= MISSING_PROGRAMS_REPORTED:
+                    return names
+    return names
+
+
+def _missing_program_note(err: str):
+    """Say what the PATH says, and nothing about the machine.
+
+    `command not found` on its own is a lie by omission: the model reads it as
+    "this machine does not have the tool" and rewrites the task around the
+    absence. Measured in task 036, where the model was told `cargo: command not
+    found` and `yarn: command not found` and concluded the tools did not exist.
+
+    The correction has a limit that the first version of this note walked
+    straight past. All this function consults is `shutil.which`, which searches
+    ONE thing: the PATH of the process that started isaacli. So the note may
+    claim about that PATH and about nothing else. Saying "not installed on this
+    machine" was false in exactly the two cases that opened the task: measured
+    on 2026-08-23, cargo is on this machine under
+    `DevTools/workspace/036/toolchains`, and yarn 1.22.22 is in three npx
+    caches, neither of them on the PATH. That is the same category of error the
+    note exists to remove, made by the note itself, so both branches below
+    speak only of the PATH.
+
+    English on purpose, like every other text the model reads.
+    """
+    lines = []
+    for name in _missing_programs(err):
+        host_path = shutil.which(name)
+        if host_path:
+            lines.append(
+                f"NOTE: '{name}' IS on the PATH isaacli was started with, at "
+                f"{host_path}, and still could not be started inside the sandbox, "
+                f"which mounts the system directories and the directories on that "
+                f"PATH read-only. Something about that directory was refused (run "
+                f"isaacli with --debug to see which refusal). This is a sandbox "
+                f"limit and not a missing tool: say so and ask the user, who can "
+                f"approve another route. Do not work around it silently.")
+        else:
+            lines.append(
+                f"NOTE: '{name}' is not on any directory of the PATH isaacli was "
+                f"started with, so it cannot be started here, and whether it is "
+                f"installed somewhere else on this machine is NOT known: that PATH "
+                f"is all this program looked at. Report it as absent from the PATH, "
+                f"never as absent from the machine, and tell the user, who can put "
+                f"it on their PATH before starting isaacli. Retrying the same "
+                f"command will not change this.")
+    return lines
 
 
 def run_command(cmd: str, authorized=False) -> str:
@@ -564,6 +1028,10 @@ def run_command(cmd: str, authorized=False) -> str:
         parts.append("--- stderr ---")
         parts.append(err.rstrip("\n"))
     parts.append(f"(exit code: {code})")
+    # Before the layer notices, because this one is about the command the user
+    # just ran, not about the machine's configuration.
+    if code != 0:
+        parts.extend(_missing_program_note(err))
     if cgroup_prefix is None:
         parts.append(
             "NOTE: systemd-run is not installed, so this command ran without "
