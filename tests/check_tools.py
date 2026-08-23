@@ -522,6 +522,42 @@ check(agent.fit_to_context(untouched, None) == []
       and len(untouched[0]["content"]) == 60_000,
       "with no window declared nothing is compacted behind the model's back")
 
+# A question whose only answer changes nothing is worse than no question. On
+# 2026-08-23 a fresh session was opened, "oi" was typed, and the screen offered
+# to compact while saying, in the same paragraph, that 0 results could be
+# compacted. Answering yes led to the same refusal, because what filled the
+# window was the fixed part of every request: the system prompt, the tool
+# schema and a 21.082 character AGENTS.md, none of which a compaction touches.
+nothing_to_compact = [
+    {"role": "system", "content": "c" * 30_000},
+    {"role": "user", "content": "oi"},
+]
+offered = []
+noted = []
+result = agent.fit_to_context(
+    [dict(m) for m in nothing_to_compact], 8192,
+    on_pressure=lambda report: offered.append(report) or True,
+    on_note=lambda report, summaries: noted.append((report, summaries)))
+pressure = agent.context_report(nothing_to_compact, 8192)
+check(pressure["over"] and pressure["compactable"] == 0,
+      "the reproduction really is under pressure with nothing to compact")
+check(not offered,
+      "compaction is not offered when no message in the conversation can be "
+      f"compacted (asked {len(offered)} time(s))")
+check(result == [], "and nothing is compacted, because there was nothing")
+check(len(noted) == 1 and noted[0][0]["compactable"] == 0,
+      "the pressure is still reported, so the turn does not fail in silence")
+
+# The offer must keep coming when there is in fact something to give up.
+still_offered = []
+agent.fit_to_context(
+    [dict(m) for m in pressure_history], 32_768,
+    on_pressure=lambda report: still_offered.append(report) or False)
+check(len(still_offered) == 1,
+      "a conversation that does hold compactable results is still offered the "
+      "choice")
+
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

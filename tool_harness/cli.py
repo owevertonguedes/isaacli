@@ -38,6 +38,7 @@ if str(HERE) not in sys.path:
 
 import agent
 import config
+import context_budget
 import debug
 import terminal_ui
 import tools
@@ -206,6 +207,11 @@ def _read_input():
     return input(_colored_prompt("❯ "))
 
 
+# Distinguishes "never assigned" from "assigned None", because a profile
+# that declares no window is a real state and must not trigger a reload.
+_WINDOW_UNSET = object()
+
+
 class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
@@ -213,7 +219,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                  temperature=None, workspace_instructions_snapshot=None):
         self.model = model
         self.thinking = thinking
-        self.num_ctx = num_ctx
+        self.num_ctx = num_ctx  # declares the window; see the property below
         # A profile that says temperature and is never read is a setting that
         # silently does nothing, which is worse than not offering it. `None`
         # means the profile did not choose, and the agent's own default holds.
@@ -273,6 +279,55 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         self._log("meta", event="start", pid=os.getpid(), model=self.model,
                   workspace=str(self.workspace))
 
+    # The window is declared the moment the profile names one, and never later.
+    #
+    # It used to be declared inside `agent.run`, which is after the workspace
+    # instructions have already been read, and every input cap is a share of
+    # this window. With no window declared, that read falls back to its
+    # absolute ceiling of 32 KiB, which is about this machine's memory and has
+    # nothing to say about the model's window. Measured on 2026-08-23: an
+    # `AGENTS.md` of 21.082 characters went in whole and occupied 6.023 of the
+    # 8.192 tokens of the profile's window, so the very first "oi" left with
+    # 8.398 tokens and the endpoint refused it. Nothing the user had typed was
+    # to blame, and nothing in the conversation could be compacted to fix it.
+    #
+    # A property rather than a call at each site because seven places assign
+    # `num_ctx`, and a rule that has to be remembered in seven places is a rule
+    # that will be missed in the eighth.
+    @property
+    def num_ctx(self):
+        return self._num_ctx
+
+    @num_ctx.setter
+    def num_ctx(self, value):
+        previous = getattr(self, "_num_ctx", _WINDOW_UNSET)
+        self._num_ctx = value
+        context_budget.set_window(value)
+        if previous is not _WINDOW_UNSET and previous != value and getattr(
+                self, "workspace", None):
+            # The instructions already in the prompt were sized against the old
+            # window. Switching to a smaller model without re-reading them would
+            # carry the larger file into the smaller window.
+            self._load_workspace_instructions(self.workspace)
+            if self.history:
+                self.history[0] = _build_history(
+                    self.workspace, self.workspace_instructions)[0]
+
+    def _load_workspace_instructions(self, root, instructions=None):
+        """Read the workspace AGENTS.md under the window in force right now."""
+        self.workspace_instructions = (
+            instructions
+            or workspace_instructions.load_workspace_instructions(root)
+        )
+        self._pending_workspace_instruction_warning = ""
+        if self.workspace_instructions.warning_key:
+            self._pending_workspace_instruction_warning = t(
+                "cli.workspace.instructions_warning",
+                path=root / workspace_instructions.INSTRUCTIONS_NAME,
+                reason=t(self.workspace_instructions.warning_key,
+                         **self.workspace_instructions.warning_values),
+            )
+
     def set_workspace(self, path, reset=False, instructions=None):
         new = Path(path).expanduser().resolve()
         if not new.exists():
@@ -281,17 +336,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             raise NotADirectoryError(t("cli.workspace.not_dir", path=new))
         self.workspace = new
         tools.SANDBOX_ROOT = new
-        self.workspace_instructions = (
-            instructions or workspace_instructions.load_workspace_instructions(new)
-        )
-        self._pending_workspace_instruction_warning = ""
-        if self.workspace_instructions.warning_key:
-            self._pending_workspace_instruction_warning = t(
-                "cli.workspace.instructions_warning",
-                path=new / workspace_instructions.INSTRUCTIONS_NAME,
-                reason=t(self.workspace_instructions.warning_key,
-                         **self.workspace_instructions.warning_values),
-            )
+        self._load_workspace_instructions(new, instructions)
         if reset or not self.history:
             self.history = _build_history(new, self.workspace_instructions)
         else:
@@ -346,6 +391,15 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         """What actually happened, after it happened, and how to get it back."""
         if not summaries:
             self._context_numbers(report)
+            if not report["compactable"]:
+                # Saying "the conversation is large" about a conversation
+                # holding one word sends the reader looking in the wrong place.
+                # What is large is the part of every request that is always
+                # there, and only the profile's window or that file can change
+                # it, so the note names both.
+                print(t("cli.context.nothing_to_compact",
+                        instructions=workspace_instructions.INSTRUCTIONS_NAME))
+                return
             print(t("cli.context.unmanaged"))
             return
         print(t("cli.context.compacted", count=len(summaries)))

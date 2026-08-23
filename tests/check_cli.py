@@ -282,6 +282,35 @@ check("project-one-rule" in cli.history[0]["content"],
       "startup injects the workspace-root AGENTS.md")
 check(cli.session_path.exists(), "the CLI creates the session's JSONL log")
 
+# The window has to be declared before the workspace file is read, because
+# every input cap is a share of it and the fallback ceiling is 32 KiB, which is
+# about this machine's memory rather than the model's window. Measured on
+# 2026-08-23 with the real config: an AGENTS.md of 21.082 characters went in
+# whole under an 8.192 token profile and occupied 6.023 of those tokens, so the
+# first "oi" of a fresh session left with 8.398 tokens and was refused. Nothing
+# the user typed was to blame and nothing in the conversation could be
+# compacted to fix it, which is why this is checked by effect on the prompt.
+big = root / "bigproject"
+big.mkdir()
+(big / "AGENTS.md").write_text("x" * 21_000, encoding="utf-8")
+narrow = app.IsaacCLI("isaac-granite", big, 4, autostart_ollama=False,
+                      num_ctx=8192)
+check("x" * 1000 not in narrow.history[0]["content"],
+      "a workspace file larger than its share of the window stays out of the "
+      f"prompt (prompt is {len(narrow.history[0]['content'])} characters)")
+check(narrow._pending_workspace_instruction_warning,
+      "and leaving it out is said out loud rather than done quietly")
+check(agent.context_report(narrow.history, 8192)["used"]
+      < agent.context_report(narrow.history, 8192)["budget"],
+      "so an empty conversation starts inside its own budget")
+
+# Switching to a profile with a different window has to re-read the file under
+# the new one, or the larger model's copy is carried into the smaller window.
+(big / "AGENTS.md").write_text("small-enough-rule", encoding="utf-8")
+narrow.num_ctx = 32768
+check("small-enough-rule" in narrow.history[0]["content"],
+      "changing the profile's window re-reads the workspace file under it")
+
 out = io.StringIO()
 with redirect_stdout(out):
     cli.internal_command("/workspace")

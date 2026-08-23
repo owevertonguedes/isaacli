@@ -218,6 +218,21 @@ def fit_to_context(messages, num_ctx, on_pressure=None, on_note=None,
         if on_note:
             on_note(report, [])
         return []
+    if not report["compactable"]:
+        # Asking a question whose only answer changes nothing is worse than not
+        # asking: the screen said "0 results can be compacted" and still offered
+        # to compact, so answering yes led straight to the same refusal. When
+        # there is nothing to compact the pressure is the fixed part of the
+        # prompt, and the fix is a larger window or smaller project
+        # instructions, neither of which this screen can do.
+        debug.note("agent.fit_to_context",
+                   f"{report['used']} tokens against a budget of "
+                   f"{report['budget']} with nothing compactable: the pressure "
+                   "is the system prompt, the tool schema and the workspace "
+                   "instructions, not the conversation")
+        if on_note:
+            on_note(report, [])
+        return []
     if on_pressure is not None and not on_pressure(report):
         debug.note("agent.fit_to_context", "compaction was offered and declined")
         return []

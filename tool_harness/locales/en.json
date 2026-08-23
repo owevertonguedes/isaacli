@@ -564,5 +564,6 @@
   "model.origin.measured": "measured here",
   "model.score.measured_short": ": {humaneval} HumanEval, {tps} tok/s{tools}",
   "model.score.measured_short_tools_yes": ", tools ok",
-  "model.score.measured_short_tools_no": ", no tool calls"
+  "model.score.measured_short_tools_no": ", no tool calls",
+  "cli.context.nothing_to_compact": "Nothing in this conversation can be compacted, so compacting is not offered. What fills the window is the part that is in every request: the system prompt, the tool definitions, and this workspace's {instructions}. Raise this profile's context with /config, or shrink that file."
 }

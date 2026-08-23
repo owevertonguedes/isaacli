@@ -564,5 +564,6 @@
   "model.origin.measured": "medido aqui",
   "model.score.measured_short": ": {humaneval} no HumanEval, {tps} tok/s{tools}",
   "model.score.measured_short_tools_yes": ", chama ferramenta",
-  "model.score.measured_short_tools_no": ", não chama ferramenta"
+  "model.score.measured_short_tools_no": ", não chama ferramenta",
+  "cli.context.nothing_to_compact": "Nada nesta conversa pode ser compactado, então compactar não é oferecido. O que enche a janela é a parte que vai em toda requisição: o prompt do sistema, as definições de ferramenta e o {instructions} deste workspace. Aumente o contexto deste perfil com /config, ou diminua esse arquivo."
 }
