@@ -74,6 +74,12 @@ CONTEXT_LEVELS = [
 ]
 MIN_CONTEXT = 8192
 
+# The provider_name a local llama.cpp profile carries. Written by
+# setup_llamacpp and read by the screens that have to tell a local engine apart
+# from somebody's remote endpoint, so it is one constant rather than three
+# copies of the same string.
+LLAMACPP_PROVIDER_NAME = "llama.cpp"
+
 
 def _base_url():
     host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434").strip()
@@ -252,6 +258,57 @@ def _origin_label(item, tr):
     if evidence is None:
         return tr.t("model.origin.installed")
     return model_discovery.origin_label(evidence, tr.t)
+
+
+def _detect_engines(tr, which_fn=None):
+    """Offer what this machine has, in place of a fixed menu of everything.
+
+    The rule, in the owner's words: use what the user has. A machine with no
+    Ollama is not offered Ollama, because installing a second program to run a
+    file it already has on disk is work nobody asked for. A machine that has
+    Ollama keeps it, listed with what it holds, and nothing is migrated.
+
+    Returns (entries, notes) where entries are (key, label) pairs.
+    """
+    import llama_cpp
+    import local_models
+
+    # Resolved when called, not when imported, so that whatever is standing in
+    # for the filesystem sees the same machine the rest of this module does.
+    which_fn = shutil.which if which_fn is None else which_fn
+    entries = []
+    notes = []
+
+    server, owner = llama_cpp.find_server(which_fn=which_fn)
+    try:
+        ollama_models = local_models.ollama_manifests()
+    except Exception:
+        # Reading somebody else's store is a convenience, so failing to read it
+        # shortens a label rather than stopping the screen.
+        debug.swallowed("setup_ollama._detect_engines ollama store")
+        ollama_models = []
+    ollama_exe = which_fn("ollama")
+
+    if server is not None:
+        entries.append(("llamacpp", tr.t(
+            "engine.llamacpp.found",
+            owner=tr.t(f"engine.llamacpp.owner.{owner}"))))
+    else:
+        entries.append(("llamacpp", tr.t("engine.llamacpp.install")))
+
+    if ollama_exe:
+        entries.append(("ollama", tr.t("engine.ollama.found",
+                                       count=len(ollama_models))))
+        # The one line the owner asked for, and the only claim it makes is one
+        # this program can keep: the weights are reused where they are. It says
+        # nothing about speed, because the measurement this project has puts
+        # the two engines inside each other's noise, pointing the other way.
+        if server is None and ollama_models:
+            notes.append(tr.t("engine.llamacpp.reuse", count=len(ollama_models)))
+
+    entries.append(("api", tr.t("engine.api")))
+    entries.append(("kaggle", tr.t("engine.kaggle")))
+    return entries, notes
 
 
 def _task_ruler(task, tr):
@@ -1087,20 +1144,31 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
             engine_explanation = tr.t("engine.explain")
             if ruler_line:
                 engine_explanation += "\n" + ruler_line
+            engines, engine_notes = _detect_engines(tr)
+            if engine_notes:
+                engine_explanation += "\n" + "\n".join(engine_notes)
             engine = _select(
                 tr, tr.t("engine.title"),
-                [tr.t("engine.ollama"), tr.t("engine.api"),
-                 tr.t("engine.kaggle")], input_fn,
+                [label for _key, label in engines], input_fn,
                 engine_explanation,
             )
-            if engine == 1:
+            chosen_engine = engines[engine][0]
+            if chosen_engine == "llamacpp":
+                import setup_llamacpp
+                result = setup_llamacpp.run(
+                    language, input_fn, config_file, tr, onboarding_task,
+                )
+                if result == "__engine__":
+                    return _run_setup(input_fn, config_file, initial_language=language)
+                return result
+            if chosen_engine == "api":
                 api_result = _setup_api(
                     language, input_fn, config_file, tr, onboarding_task,
                 )
                 if api_result == "__engine__":
                     return _run_setup(input_fn, config_file, initial_language=language)
                 return api_result
-            if engine == 2:
+            if chosen_engine == "kaggle":
                 return _setup_kaggle(
                     language, input_fn, config_file, onboarding_task,
                 )
@@ -1274,48 +1342,98 @@ def run_setup(input_fn=input, config_file=None):
     return code
 
 
-def _select_configured_api(input_fn, config_file, language, tr):
-    data = config.load(config_file)
+def model_source_entries(data, tr, which_fn=None):
+    """What the /model source screen offers, as (entries, options, initial).
+
+    Built here rather than inline in the screen so a check can ask for the
+    position of an entry by name instead of hard-coding a number. A number
+    keeps passing while quietly selecting a different source, which is the kind
+    of green that hides a regression, and this screen has already grown one
+    entry.
+    """
     kaggle_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
         if item.get("provider") == "openai_compatible"
         and item.get("provider_name") == "Kaggle"
     ]
+    # A llama.cpp profile is stored as openai_compatible because that is the
+    # protocol it speaks, but it is a local engine, not somebody's endpoint.
+    # Left in the API list it would be offered for a model swap that queries a
+    # server which is not running, so it gets its own entry and its own screen.
+    llamacpp_profiles = [
+        (name, item) for name, item in (data.get("profiles") or {}).items()
+        if item.get("provider") == "openai_compatible"
+        and item.get("provider_name") == LLAMACPP_PROVIDER_NAME
+    ]
     api_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
         if item.get("provider") == "openai_compatible"
-        and item.get("provider_name") != "Kaggle"
+        and item.get("provider_name") not in ("Kaggle", LLAMACPP_PROVIDER_NAME)
     ]
     kaggle_state = "model.configured" if kaggle_profiles else "model.not_installed"
-    options = [
-        tr.t("engine.ollama"),
-        tr.t("engine.kaggle.state", state=tr.t(kaggle_state)),
-    ]
-    options.extend(
-        f"{item.get('provider_name') or 'API'} · {item.get('model')}"
-        for _nome, item in api_profiles
-    )
+
+    # The same detection the setup screen runs, so a feature that exists in one
+    # branch exists in the other. This screen used to be a fixed list, which is
+    # how the local engine could work in setup and be unreachable from /model.
+    engines, _notes = _detect_engines(tr, which_fn=which_fn)
+    entries = []
+    options = []
+    for key, label in engines:
+        if key in ("api", "kaggle"):
+            continue
+        entries.append(key)
+        options.append(label)
+    entries.append("kaggle")
+    options.append(tr.t("engine.kaggle.state", state=tr.t(kaggle_state)))
+    for name, item in api_profiles:
+        entries.append(("api", name))
+        options.append(f"{item.get('provider_name') or 'API'} · {item.get('model')}")
+    entries.append("api_new")
     options.append(tr.t("api.configure.new"))
+
     current = data.get("default_profile")
-    if any(name == current for name, _item in kaggle_profiles):
-        initial = 1
-    else:
-        initial = next(
-            (i + 2 for i, (name, _item) in enumerate(api_profiles) if name == current),
-            0,
-        )
+    initial = next(
+        (index for index, entry in enumerate(entries)
+         if (entry == "kaggle" and any(name == current
+                                       for name, _item in kaggle_profiles))
+         or (entry == "llamacpp" and any(name == current
+                                         for name, _item in llamacpp_profiles))
+         or (isinstance(entry, tuple) and entry[1] == current)),
+        0,
+    )
+    return entries, options, initial
+
+
+def _select_configured_api(input_fn, config_file, language, tr):
+    data = config.load(config_file)
+    api_profiles = [
+        (name, item) for name, item in (data.get("profiles") or {}).items()
+        if item.get("provider") == "openai_compatible"
+        and item.get("provider_name") not in ("Kaggle", LLAMACPP_PROVIDER_NAME)
+    ]
+    entries, options, initial = model_source_entries(data, tr)
     index = _select(
         tr, tr.t("model.source.title"), options, input_fn,
         tr.t("model.source.explain"), initial=initial,
     )
-    if index == 0:
+    chosen = entries[index]
+    if chosen == "ollama":
         return "__ollama__"
-    if index == 1:
+    if chosen == "llamacpp":
+        import setup_llamacpp
+        result = setup_llamacpp.run(language, input_fn, config_file, tr)
+        # Going back out of the local screen returns to this one rather than
+        # leaving the session on whatever was selected before it opened.
+        if result == "__engine__":
+            return _select_configured_api(input_fn, config_file, language, tr)
+        return result
+    if chosen == "kaggle":
         return _setup_kaggle(language, input_fn, config_file)
-    if index == len(options) - 1:
+    if chosen == "api_new":
         return _setup_api(language, input_fn, config_file, tr)
 
-    name, original = api_profiles[index - 2]
+    name, original = next(
+        (entry for entry in api_profiles if entry[0] == chosen[1]))
     item = dict(original)
     secret_path = Path(config_file).with_name("secrets.json") if config_file else None
     try:

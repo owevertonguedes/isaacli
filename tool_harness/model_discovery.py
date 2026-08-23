@@ -649,6 +649,230 @@ def benchmark_cell(model, translate=None):
     return translate("model.score.both", measured=measured, upstream=upstream)
 
 
+def machine(vram_mb=None, gpu_count=None, bandwidth_gbs=None, name=None):
+    """The hardware a row is drawn against.
+
+    Passed explicitly because the answer changes per screen: choosing a model
+    to run here means this card, and choosing one to run on a borrowed kernel
+    means that kernel's card. Quoting a GTX 1650's throughput on a screen where
+    the model will run on a T4 is worse than quoting nothing.
+    """
+    if vram_mb is None or gpu_count is None:
+        found = hardware.detect().get("gpus") or []
+        vram_mb = sum(item.get("vram_mb", 0) for item in found)
+        gpu_count = len(found)
+        if bandwidth_gbs is None and len(found) == 1:
+            bandwidth_gbs = found[0].get("bandwidth_gbs")
+        if name is None and found:
+            name = found[0].get("name")
+    return {"vram_mb": vram_mb or 0, "gpu_count": gpu_count or 0,
+            "bandwidth_gbs": bandwidth_gbs, "name": name}
+
+
+def local_measurement(model):
+    """The report for this exact file, whether the row is resolved or curated."""
+    return model.get("measured_here") or (
+        model.get("catalog") or {}).get("measured_here")
+
+
+def throughput_cell(model, machine_profile, translate=None):
+    """Tokens per second as a bare number, or a dash.
+
+    No word inside the cell. A column of numbers each carrying "measured" or
+    "estimated" is the prose the table exists to remove, so the origin is said
+    once, in the legend under it.
+
+    The dash is not a formatting choice: when `gpu_bandwidth` has no figure for
+    this card there is nothing to compute from, and a plausible invented number
+    reads on screen exactly like a measured one.
+    """
+    measured = local_measurement(model)
+    if measured:
+        return f"{measured['tokens_per_second']:.0f}"
+    bandwidth = (machine_profile or {}).get("bandwidth_gbs")
+    if not bandwidth or not model.get("model_bytes"):
+        return EMPTY_CELL
+    estimate = hardware.estimate_tokens_per_second(
+        hardware.bytes_read_per_token(
+            model["model_bytes"], model.get("active_ratio", 1.0)),
+        bandwidth,
+    )
+    return f"{estimate:.0f}" if estimate else EMPTY_CELL
+
+
+def ranking_cell(model, translate=None):
+    """The strongest public ranking this model has, short, with its owner.
+
+    Never a number on its own. A score belongs to whoever published it and to
+    the weights they ran it on, and a quantized GGUF that inherited a figure
+    from the model it was made from was measured by nobody.
+    """
+    translate = translate or text
+    measured = local_measurement(model)
+    if measured:
+        return translate("model.row.rank.measured",
+                         humaneval=measured["humaneval"])
+    scores = model.get("scores") or {}
+    if not scores:
+        return ""
+    ruler, value = next(iter(scores.items()))
+    return translate("model.row.rank.public", ruler=ruler, score=value)
+
+
+def _row_name(model):
+    """Name and precision, with the precision written exactly once.
+
+    A weight file is normally named after its own quantization, so pasting the
+    precision next to that file name produced rows reading
+    "LFM2-1.2B-Tool-Q4_K_M Q4_K_M". The suffix comes off the name, and the
+    precision stays as its own field where every row carries it in the same
+    place and the eye can compare down the column.
+    """
+    name = str(model.get("name") or "")
+    quantization = model.get("quantization")
+    if quantization:
+        trimmed = re.sub(
+            r"[-_. ]*" + re.escape(quantization) + r"$", "", name, flags=re.I)
+        # A file called just "Q4_K_M" has no name apart from its precision, so
+        # the cell is the precision once. Falling back to the untrimmed name
+        # here is what produced "Q4_K_M Q4_K_M".
+        return f"{trimmed} {quantization}" if trimmed else quantization
+    return name
+
+
+# The columns, in order, and the only order any screen draws them in.
+MODEL_COLUMNS = ("name", "size", "fit", "tps", "rankings", "state")
+EMPTY_CELL = "-"
+
+
+def model_row(model, machine_profile=None, translate=None, fit=None, state=None):
+    """One model as its cells, never as a finished line.
+
+    Returning fields rather than text is what lets the header be written once
+    at the top instead of repeated inside every row. The old line ran to 240
+    characters because each row spelled out in prose what a column heading says
+    once: which card it fits in, what the number means, whether it is installed.
+
+    No screen assembles this into text. `model_table` does, for the whole list
+    at once, because a column width is a property of the list and not of a row.
+    """
+    translate = translate or text
+    machine_profile = machine_profile or machine()
+    return {
+        "name": _row_name(model),
+        "size": translate(
+            "model.row.size",
+            size=f"{(model.get('model_bytes') or 0) / 1024 ** 3:.1f}"),
+        "fit": fit or EMPTY_CELL,
+        "tps": throughput_cell(model, machine_profile, translate),
+        "rankings": ranking_cell(model, translate) or EMPTY_CELL,
+        "state": EMPTY_CELL if state is None else state,
+        # Read by model_table for the legend, never drawn as a column.
+        "measured": bool(local_measurement(model)),
+    }
+
+
+# What a driver calls a card and what a person calls it differ by a marketing
+# prefix. The prefix is the same on every card the machine has, so it
+# distinguishes nothing and only widens the column it heads.
+GPU_PREFIXES = re.compile(
+    r"^(nvidia|amd|intel|advanced micro devices)\b[\s.,]*"
+    r"(geforce|radeon|corporation|\(r\)|\(tm\))?[\s.,]*", re.I)
+
+
+def machine_label(machine_profile, translate=None):
+    """What to call this hardware in a column heading.
+
+    The card's name goes at the top once, which is what stops every row from
+    having to explain which machine its "fits" refers to. It is trimmed to the
+    part that names the part: "NVIDIA GeForce GTX 1650" heads a column 23
+    characters wide, and 15 of those say nothing a reader did not already know.
+    """
+    translate = translate or text
+    name = (machine_profile or {}).get("name")
+    if not name:
+        return translate("model.table.no_gpu")
+    trimmed = GPU_PREFIXES.sub("", str(name)).strip()
+    return trimmed or str(name)
+
+
+def model_table(rows, machine_profile=None, translate=None, state_header=None,
+                columns=MODEL_COLUMNS):
+    """Header and rows as aligned text, with widths taken from the whole list.
+
+    The header is drawn here, by the same code and from the same widths as the
+    rows. Drawn anywhere else it would agree with them today and drift apart at
+    the first field that changes width.
+
+    Returns {"header": str, "rows": [str], "legend": str}. The legend is where
+    the origin of the throughput column lives, because the cell itself is a
+    bare number: a "measured" or "estimated" word repeated down a column is the
+    prose this table exists to remove.
+    """
+    translate = translate or text
+    machine_profile = machine_profile or machine()
+    headings = {
+        "name": translate("model.table.name"),
+        "size": translate("model.table.size"),
+        "fit": machine_label(machine_profile, translate),
+        "tps": translate("model.table.tps"),
+        "rankings": translate("model.table.rankings"),
+        "state": state_header or translate("model.table.state"),
+    }
+    # A column whose every row says the same thing is a word repeated down the
+    # page, which is the prose this table exists to remove. It is dropped and
+    # said once in the note above the table instead.
+    uniform = {}
+    drawn = []
+    for key in columns:
+        values = {str(row.get(key, "")) for row in rows}
+        # Two rows are the least that can repeat anything. With one row every
+        # column is trivially "identical on every row", and collapsing them all
+        # turned the table into a legend listing each field of the only model
+        # in it, which is the opposite of what this does.
+        if len(rows) > 1 and len(values) == 1 and key not in ("name", "size"):
+            uniform[headings[key]] = values.pop()
+            continue
+        drawn.append(key)
+    columns = tuple(drawn)
+    widths = {
+        key: max([len(headings[key])] + [len(str(row.get(key, ""))) for row in rows])
+        for key in columns
+    }
+
+    def draw(values):
+        # The last column is not padded: trailing spaces on a selectable row
+        # widen it for no reason and show up as a highlight running past the
+        # text when the cursor lands on it.
+        cells = [str(values.get(key, "")).ljust(widths[key])
+                 for key in columns[:-1]]
+        cells.append(str(values.get(columns[-1], "")))
+        return "  ".join(cells).rstrip()
+
+    measured = [row["name"] for row in rows if row.get("measured")]
+    if measured:
+        legend = translate("model.table.legend.measured",
+                           models=", ".join(measured),
+                           gpu=machine_label(machine_profile, translate))
+    elif (machine_profile or {}).get("bandwidth_gbs"):
+        legend = translate("model.table.legend.estimated",
+                           gpu=machine_label(machine_profile, translate))
+    else:
+        # No published bandwidth for this card, so every cell in the column is
+        # a dash. Saying why beats a column of dashes nobody can explain.
+        legend = translate("model.table.legend.none",
+                           gpu=machine_label(machine_profile, translate))
+    if uniform:
+        legend = "\n".join([
+            translate("model.table.uniform",
+                      fields="; ".join(f"{name} {value}"
+                                       for name, value in uniform.items())),
+            legend,
+        ])
+    return {"header": draw(headings), "rows": [draw(row) for row in rows],
+            "legend": legend, "uniform": uniform}
+
+
 def matched_ruler(model, task):
     """The first ruler of this task the model has a score on, or None."""
     scores = model.get("scores") or {}

@@ -32,6 +32,30 @@ Flatpak environment, so it cannot loop.
 | `isaacli uninstall --purge` | Link and isaacli-owned local data | Ollama, models and clone |
 | `isaacli uninstall --purge --ollama` | Everything above plus a recognised official-script Ollama installation | Clone |
 | `isaacli uninstall --purge --kaggle` | Everything in purge plus a Kaggle CLI installed by isaacli and known Kaggle authentication files | Existing third-party Kaggle installations, remote kernels and clone |
+| `isaacli uninstall --purge --llamacpp` | Everything in purge plus a llama.cpp installed by isaacli | A llama.cpp the user installed themselves, model weights, Ollama and clone |
+
+## llama.cpp lifecycle
+
+`isaacli setup` offers the local engine only after showing which upstream build it would fetch: the exact asset name, its backend, its size and the directory. A `llama-server` already on `PATH` belongs to the user and is used as it is, with no ownership record written for it.
+
+An install this program performs downloads the published archive for this platform and backend, checks it against the `sha256` digest the release declares for that asset, refuses any archive member that names a path outside the target, unpacks it into `~/.local/share/isaacli/llama.cpp`, and only then runs `llama-server --list-devices`. The ownership record at `~/.config/isaacli/llamacpp-install.json`, mode `0600`, is written last: an install that could not prove it works records nothing and removes the directory it created.
+
+The backend follows the hardware, read from `/sys/class/drm` PCI vendor ids rather than from `nvidia-smi` alone, which by construction only ever reports NVIDIA. Upstream publishes CUDA binaries for Windows only, so on Linux an NVIDIA card is served by the Vulkan build; AMD is offered ROCm, Intel SYCL, and the CPU build is always the last resort. macOS has one build per architecture with Metal inside it and therefore no backend menu.
+
+The strong purge requires that record, refuses a path outside the directory isaacli installs into, refuses an executable the package manager owns, and refuses anything whose removal would need administrator rights, because needing `sudo` proves isaacli did not put it there. Each refusal names what it refused.
+
+## Model weights
+
+Weights live in two directories that are never one:
+
+```text
+~/.local/share/isaacli/models/downloaded/   fetched by isaacli
+~/.local/share/isaacli/models/from-ollama/  symbolic links into Ollama's blob store
+```
+
+Models Ollama already downloaded are reused where they lie, by link. Nothing is copied and nothing inside Ollama's store is ever written, so removing isaacli leaves every model Ollama downloaded exactly as it was.
+
+`--purge` removes the links, which costs nothing because a link is not the data. It deliberately does **not** delete downloaded weights: those are gigabytes somebody waited for. Their folder, count and total size are printed instead, and deleting them stays the user's decision.
 
 ## Kaggle CLI lifecycle
 

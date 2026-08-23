@@ -135,6 +135,24 @@ def fits(model_bytes, kv_bytes, vram_mb, overhead_mb=DEFAULT_OVERHEAD_MB):
     return (model_bytes + kv_bytes) <= max(0, vram_mb - overhead_mb) * 1024 * 1024
 
 
+def max_context_that_fits(model_bytes, n_layers, n_kv_heads, head_dim, vram_mb,
+                          overhead_mb=DEFAULT_OVERHEAD_MB, bytes_per_element=2):
+    """The largest context whose cache still fits beside the weights, or 0.
+
+    `fits` answers yes or no about a context somebody already chose. This
+    inverts it, which is what a program needs to decide the context itself
+    instead of inheriting whatever number a hand-written launch script froze
+    into place.
+
+    The cache grows linearly in context, so this is division, not a search.
+    """
+    free_bytes = max(0, vram_mb - overhead_mb) * 1024 * 1024 - model_bytes
+    per_token = 2 * n_layers * n_kv_heads * head_dim * bytes_per_element
+    if free_bytes <= 0 or per_token <= 0:
+        return 0
+    return int(free_bytes // per_token)
+
+
 def bytes_read_per_token(model_bytes, active_ratio=1.0):
     """Weight bytes crossing the memory bus for one token.
 

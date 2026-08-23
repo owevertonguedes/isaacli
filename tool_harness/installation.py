@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 import config
+import debug
+import local_models
 from cli_i18n import t
 from cli_ollama import _runtime_ollama_dir, _same_process
 from cli_sessions import FEEDBACK_DIR, SESSIONS_DIR
@@ -67,6 +69,10 @@ def uninstall_launcher(
 
     purge_dirs = list(data_dirs) if data_dirs is not None else [
         SESSIONS_DIR, FEEDBACK_DIR, HERE / "curation",
+        # Links into Ollama's blob store are ours and cost nothing to recreate,
+        # so they go. Removing a link never touches what it points at, which is
+        # the whole reason reuse was built out of links.
+        local_models.linked_dir(),
     ]
     purge_dirs.extend([
         Path(config_dir) if config_dir is not None else config.config_path().parent,
@@ -107,10 +113,54 @@ def uninstall_launcher(
                 if path.exists():
                     shutil.rmtree(path)
                     print(t("cli.uninstall.purged", path=path))
+            _report_kept_weights()
     except OSError as error:
         print(t("cli.uninstall.failed", error=error))
         return 1
     return 0
+
+
+def _report_kept_weights(models_dir=None):
+    """Name the model weights a purge deliberately did not delete.
+
+    These are gigabytes somebody waited on, and a download nobody wanted to
+    repeat is exactly why reuse exists at all. Deleting them because a user
+    asked to forget their sessions would be the wrong trade in the expensive
+    direction. Leaving them without saying so would be worse, so the path and
+    the size go on screen and the deletion stays the user's to make.
+    """
+    folder = Path(models_dir) if models_dir else local_models.downloaded_dir()
+    # Every failure here is the failure of a courtesy message, and the removal
+    # it reports on has already happened. Letting an OSError out would make a
+    # completed uninstall report itself as failed, so the whole thing is
+    # guarded rather than only the listing.
+    try:
+        weights = [path for path in folder.glob("*.gguf") if path.is_file()]
+        if not weights:
+            return None
+        total = sum(path.stat().st_size for path in weights)
+    except OSError:
+        debug.swallowed("installation._report_kept_weights")
+        return None
+    print(t("cli.uninstall.weights_kept", path=folder, count=len(weights),
+            size=f"{total / 1024 ** 3:.2f}"))
+    return folder
+
+
+def uninstall_managed_llamacpp(home_dir=None, record_path=None):
+    """Remove the llama.cpp isaacli installed, saying in the user's language
+    exactly what happened or exactly what was refused.
+
+    The decision lives in llama_cpp.uninstall, which answers with a key rather
+    than a sentence so that the module doing the refusing never has to know
+    which language the session is in.
+    """
+    import llama_cpp
+
+    code, key, values = llama_cpp.uninstall(
+        record_path=record_path, home_dir=home_dir)
+    print(t(key, **values))
+    return code
 
 
 def _package_owns(path):

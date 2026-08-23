@@ -54,6 +54,10 @@ worked on.
 | `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
 | `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. What the jail can reach outside the system directories is decided by `_toolchain_mounts` from the user's own PATH, always read-only; every refusal has a reason in `_mountable` and reaches `--debug`. |
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
+| `tool_harness/gguf.py` | reads geometry out of a GGUF header without loading the weights | Every read is bounded by the size of the file being read. A hybrid model declares `head_count_kv` per layer with zeros where a layer caches nothing; counting all blocks as attention layers overstates the KV cache threefold. |
+| `tool_harness/local_models.py` | weights already on this machine: folders the user names, what isaacli downloaded, and what Ollama holds | Ollama's blob store is read and never written. Its weights are reused by symlink under `models/from-ollama/`, kept apart from `models/downloaded/` so removing one can never take the other. |
+| `tool_harness/llama_cpp.py` | installing, recognising and removing a llama.cpp this program put here, and building the server invocation | Backend follows the PCI vendor read from `/sys/class/drm`, not `nvidia-smi` alone. The ownership record is written only after `--list-devices` answers. It also owns `context_ceiling`, so the context is decided here rather than frozen in a launch script. |
+| `tool_harness/setup_llamacpp.py` | the local engine's screens: install, model, device, context, profile | Saves an `openai_compatible` profile with an autostart whose every number was measured on this machine. Screens make no claim about speed. |
 | `tool_harness/config.py` | public config and local secrets | API keys live in `secrets.json` with mode `0600`, outside Git. |
 | `tool_harness/installation.py` | per-user launcher install, uninstall and explicitly confirmed purge | It never removes a launcher owned by another checkout or an unrecognised Ollama installation. |
 | `tool_harness/cli_kaggle.py` | installs a private Kaggle CLI, stores and manually selects multiple accounts, reports per-account quota, prepares private account-owned assets, pushes a generated kernel, discovers the tunnel and saves a profile | Setup, `isaacli kaggle`, `/model` and `/kaggle` call this one flow. Every Kaggle command receives the selected `KAGGLE_CONFIG_DIR`; kernels and assets stay scoped to that account. |
@@ -187,10 +191,22 @@ reachable over the network still requires one.
 
 - Ollama: native chat API, tools required, `options.num_ctx` per call.
 - Local OpenAI-compatible server (llama-server and equivalents): same contract
-  as a remote API, optionally with a lifecycle managed by isaacli. Ollama
-  remains the recommended path, because it is a single installer with a model
-  catalog; the alternative is offered, not advertised as faster. No throughput
-  claim is made in the interface without a measurement on the user's hardware.
+  as a remote API, with a lifecycle isaacli can manage end to end. Neither
+  local engine is advertised as faster than the other: the one measurement this
+  project has puts them inside each other's noise, and no throughput claim
+  reaches the interface without a measurement on the user's hardware.
+  What the llama.cpp path offers instead is reach and control. It serves a GGUF
+  file directly, so a weight in a folder is a model the program can list; it
+  reuses by link what Ollama already downloaded rather than fetching the same
+  gigabytes twice; and it decides the context itself against the card it just
+  measured, instead of inheriting a value frozen into a launch script nobody
+  reads.
+- The engine screen is built from what the machine has, never from a fixed
+  menu. A machine without Ollama is not offered Ollama; a machine with it keeps
+  it, and nothing about an existing profile is migrated. `setup` and `/model`
+  build that list through the same two functions, `_detect_engines` and
+  `model_source_entries`, because an engine reachable from one screen and not
+  the other is half a feature.
 - Remote API: OpenAI-compatible Chat Completions with streaming and function
   calling. `reasoning_effort` is optional and can be turned off.
 - Providers with their own incompatible native formats will need explicit

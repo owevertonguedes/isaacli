@@ -16,6 +16,21 @@ import model_discovery
 import setup_ollama
 
 
+def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
+    """The menu position of one engine, resolved by name.
+
+    The engine screen is built from what the machine actually has, so its
+    entries move when a machine gains or loses an engine. A check that answers
+    it with a fixed number keeps passing while silently exercising a different
+    engine, which is the kind of green that hides a regression. This asks the
+    same function the screen asks.
+    """
+    entries, _notes = setup_ollama._detect_engines(
+        setup_ollama.Translator("en"), which_fn=which)
+    return str(next(index for index, (name, _label) in enumerate(entries, 1)
+                    if name == key))
+
+
 failures = []
 
 
@@ -194,9 +209,11 @@ try:
 
     setup_ollama._choose_other_ollama = choose_other
     setup_ollama._download_model = download
-    # Language, the onboarding task skipped, the "other model" entry, then the
-    # download confirmation.
-    answers = iter(["1", "4", "1", "7", "1", "1"])
+    # Language, the onboarding task skipped, the engine, the "other model"
+    # entry, then the download confirmation. The engine is answered by name
+    # rather than by position: the menu is built from what the machine has, so
+    # a fixed number would quietly start meaning a different engine.
+    answers = iter(["1", "4", engine_answer("ollama"), "7", "1", "1"])
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             lambda _prompt="": next(answers),

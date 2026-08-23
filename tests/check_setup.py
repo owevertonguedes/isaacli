@@ -17,6 +17,37 @@ import model_discovery
 import setup_ollama
 
 
+def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
+    """The menu position of one engine, resolved by name.
+
+    The engine screen is built from what the machine actually has, so its
+    entries move when a machine gains or loses an engine. A check that answers
+    it with a fixed number keeps passing while silently exercising a different
+    engine, which is the kind of green that hides a regression. This asks the
+    same function the screen asks.
+    """
+    entries, _notes = setup_ollama._detect_engines(
+        setup_ollama.Translator("en"), which_fn=which)
+    return str(next(index for index, (name, _label) in enumerate(entries, 1)
+                    if name == key))
+
+
+def source_answer(key, config_file, tr=None, which=lambda _name: "/usr/bin/ollama"):
+    """The /model source screen's position for one entry, resolved by name.
+
+    Entered through model_source_entries, which is the function the screen
+    itself runs. A check that entered through anything else would be proving a
+    list nobody draws, which is the trap task 055 names.
+    """
+    entries, _options, _initial = setup_ollama.model_source_entries(
+        config.load(config_file), tr or setup_ollama.Translator("en"),
+        which_fn=which)
+    for index, entry in enumerate(entries, 1):
+        if entry == key or (isinstance(entry, tuple) and entry[0] == key):
+            return str(index)
+    raise AssertionError(f"no {key} entry in the model source screen")
+
+
 failures = []
 
 
@@ -85,7 +116,7 @@ try:
     out = io.StringIO()
     with redirect_stdout(out):
         code = setup_ollama.run_setup(
-            answers("1", "4", "1", "1", "6", "12K", "1"), config_file=config_file,
+            answers("1", "4", engine_answer("ollama"), "1", "6", "12K", "1"), config_file=config_file,
         )
     data = json.loads(config_file.read_text())
     qwen_profile = data["profiles"][data["default_profile"]]
@@ -124,7 +155,7 @@ try:
     selector_out = io.StringIO()
     with redirect_stdout(selector_out):
         code = setup_ollama.run_model_selector(
-            answers("1", "6", "1"), config_file=selector_config,
+            answers(engine_answer("ollama"), "6", "1"), config_file=selector_config,
         )
     _, micro_profile = config.profile(config.load(selector_config))
     check(code == 0 and micro_profile["model"] == "granite4:micro-h",
@@ -137,7 +168,7 @@ try:
 
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", "1", "5", "3", "3"), config_file=config_file,
+            answers("1", "4", engine_answer("ollama"), "5", "3", "3"), config_file=config_file,
         )
     data = config.load(config_file)
     gpt_profile = data["profiles"][data["default_profile"]]
@@ -155,23 +186,76 @@ try:
         "model_info": {"qwen3.context_length": 262144},
     }
     with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers("1", "4", "1", "1"), config_file=config_file)
+        code = setup_ollama.run_setup(answers("1", "4", engine_answer("ollama"), "1"), config_file=config_file)
     check(code == 1 and config_file.read_text() == before_failure,
           "a model without tools is refused without touching the previous profile")
     client.infos[qwen36] = original_qwen_info
 
+    # A machine without Ollama is not offered Ollama. Installing a second
+    # program to run a file the machine already has was the old answer, and it
+    # is not this program's answer any more: the engine screen lists what is
+    # here. So the check is no longer "the instructions appear", it is "the
+    # entry is absent", which is a stronger statement about the same screen.
     setup_ollama.shutil.which = lambda _name: None
-    missing = root / "missing.json"
-    with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers("1", "4", "1"), config_file=missing)
-    check(code == 2 and not missing.exists(),
-          "a missing Ollama gives instructions and writes no partial config")
+    bare_entries, _bare_notes = setup_ollama._detect_engines(
+        pt, which_fn=lambda _name: None)
+    bare_keys = [key for key, _label in bare_entries]
+    check("ollama" not in bare_keys,
+          f"a machine with no Ollama is not offered Ollama (menu was {bare_keys})")
+    check(bare_keys[0] == "llamacpp",
+          "and the local engine it can actually install comes first")
+
+    ollama_entries, ollama_notes = setup_ollama._detect_engines(
+        pt, which_fn=lambda name: "/usr/bin/ollama" if name == "ollama" else None)
+    check("ollama" in [key for key, _label in ollama_entries],
+          "a machine that has Ollama keeps being offered it, and nothing is migrated")
+    check(all("tok" not in note and "/s" not in note for note in ollama_notes),
+          "and the line suggesting the other engine claims no speed nobody measured")
+
+    # A feature that works in setup and cannot be reached from /model is half a
+    # feature. Both screens are asked, through the functions they themselves
+    # run, whether the local engine is there.
+    source_entries, _options, _initial = setup_ollama.model_source_entries(
+        config.load(config_file), pt, which_fn=lambda _name: "/usr/bin/ollama")
+    source_keys = [entry[0] if isinstance(entry, tuple) else entry
+                   for entry in source_entries]
+    check("llamacpp" in source_keys,
+          f"/model offers the local llama.cpp engine, not only Ollama and APIs "
+          f"(got {source_keys})")
+    setup_entries, _notes = setup_ollama._detect_engines(
+        pt, which_fn=lambda _name: "/usr/bin/ollama")
+    check("llamacpp" in [key for key, _label in setup_entries],
+          "and setup offers the same engine, from the same detection")
+
+    # A llama.cpp profile speaks the OpenAI protocol, so it lands in the same
+    # config section as a remote endpoint. Offered as one, /model would try to
+    # list its models over HTTP against a server that is not running.
+    local_config = root / "local-engine.json"
+    local_data = dict(config.empty_config(), language="pt-BR")
+    local_data["profiles"]["llamacpp-fixture"] = {
+        "provider": "openai_compatible",
+        "provider_name": setup_ollama.LLAMACPP_PROVIDER_NAME,
+        "base_url": "http://127.0.0.1:8080/v1", "model": "fixture",
+    }
+    local_data["default_profile"] = "llamacpp-fixture"
+    config.save(local_data, local_config)
+    local_entries, local_options, local_initial = setup_ollama.model_source_entries(
+        config.load(local_config), pt, which_fn=lambda _name: "/usr/bin/ollama")
+    check(not any(isinstance(entry, tuple) and entry[1] == "llamacpp-fixture"
+                  for entry in local_entries),
+          "a saved llama.cpp profile is not listed as somebody's remote API")
+    check(local_entries[local_initial] == "llamacpp",
+          "and opening /model on it starts the cursor on the local engine")
+    # Back to the machine the rest of this file describes. engine_answer asks
+    # the same question the screen will ask, so the two have to be looking at
+    # the same machine when they ask it.
+    setup_ollama.shutil.which = lambda _name: "/usr/bin/ollama"
 
     setup_ollama._validate_api = lambda url, key, model: None
     api_config = root / "api-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", "2", "Groq", "https://api.groq.com/openai/v1",
+            answers("1", "4", engine_answer("api"), "Groq", "https://api.groq.com/openai/v1",
                     "openai/gpt-oss-20b", "test-secret", "3"),
             config_file=api_config,
         )
@@ -194,7 +278,7 @@ try:
     )
     with redirect_stdout(io.StringIO()):
         swap_result = setup_ollama._select_configured_api(
-            answers("3", "2", "1"), api_config, "pt-BR", pt,
+            answers(source_answer("api", api_config), "2", "1"), api_config, "pt-BR", pt,
         )
     _, swapped_profile = config.profile(config.load(api_config))
     check(swap_result == 0 and swapped_profile["model"] == "qwen/qwen3.6-27b",
@@ -216,7 +300,7 @@ try:
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             answers(
-                "1", "4", "2", "Server", "https://api.test/v1/chat/completions",
+                "1", "4", engine_answer("api"), "Server", "https://api.test/v1/chat/completions",
                 "test-model", "wrong-key", "1",
                 "Server", "https://api.test/v1", "test-model", "right-key", "1",
             ),
@@ -233,7 +317,7 @@ try:
     back_config = root / "back-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", "1", "8", "4", "2", "Server", "https://api.test/v1",
+            answers("1", "4", engine_answer("ollama"), "8", "4", engine_answer("api"), "Server", "https://api.test/v1",
                     "test-model", "key", "1"),
             config_file=back_config,
         )
@@ -397,7 +481,7 @@ try:
         task_out = io.StringIO()
         with redirect_stdout(task_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", "1", "6", "12K", "1"), config_file=task_config,
+                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"), config_file=task_config,
             )
         task_data = config.load(task_config)
         screen = task_out.getvalue()
@@ -426,7 +510,7 @@ try:
         skip_out = io.StringIO()
         with redirect_stdout(skip_out):
             code = setup_ollama.run_setup(
-                answers("1", "4", "1", "1", "6", "12K", "1"),
+                answers("1", "4", engine_answer("ollama"), "1", "6", "12K", "1"),
                 config_file=skip_config,
             )
         skip_data = config.load(skip_config)
@@ -465,7 +549,7 @@ try:
         headless_out = io.StringIO()
         with redirect_stdout(headless_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", "1", "6", "12K", "1"),
+                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"),
                 config_file=root / "headless-config.json",
             )
         headless = headless_out.getvalue()
@@ -485,7 +569,7 @@ try:
         broken_out = io.StringIO()
         with redirect_stdout(broken_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", "1", "6", "12K", "1"),
+                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"),
                 config_file=root / "broken-detect-config.json",
             )
         check(code == 0 and "Traceback" not in broken_out.getvalue()
