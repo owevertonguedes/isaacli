@@ -22,6 +22,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+import agent
 import config
 import debug
 from cli_i18n import t
@@ -173,6 +174,58 @@ def _probe_health(url, timeout=2):
 
 
 class OllamaMixin:
+    def prewarm_engine(self):
+        """Bring the engine up when the session opens instead of on the first
+        question.
+
+        Only for an engine on this machine: starting one costs a little VRAM
+        and nothing else, so making the user wait for it after typing is a
+        wait for nothing. A remote endpoint is the opposite case, which is why
+        it is left alone here: a Kaggle kernel burns quota by wall clock, and
+        the session start already decides that separately, with the user's
+        permission, in cli.main.
+        """
+        if self.provider.get("provider") != "ollama" and not self.provider.get("autostart"):
+            return None
+        try:
+            version = self.ensure_ollama(warn=True)
+            if version and self.provider.get("provider") == "ollama":
+                print(_color(t("cli.engine.preloading", model=self.model), "warn"))
+                self._preload_ollama_model()
+            return version
+        except KeyboardInterrupt:
+            # Waiting for a model file to be read can take minutes, and this
+            # wait happens before the user has asked for anything. Ctrl+C here
+            # means "give me the prompt", not "quit": the server keeps loading
+            # and the first question waits for it as it did before.
+            print()
+            debug.note("cli_ollama.prewarm_engine", "interrupted by the user")
+            return None
+
+    def _preload_ollama_model(self):
+        """A running Ollama daemon is not a loaded model: it answers at once
+        and reads the weights on the first request. Asking /api/chat with no
+        messages is how Ollama itself documents "load this model now", so this
+        is the step that makes the first question start generating.
+
+        Not the case for an autostart server: llama-server and friends read
+        the whole file before they answer the health probe, so by the time
+        ensure_ollama returns, the loading already happened."""
+        body = json.dumps({"model": self.model}).encode()
+        req = urllib.request.Request(
+            agent.URL, data=body, headers={"Content-Type": "application/json"})
+        try:
+            # Same budget as an autostarted server, and for the same reason:
+            # what is being waited on is a model file being read from disk.
+            with urllib.request.urlopen(req, timeout=AUTOSTART_TIMEOUT) as r:
+                r.read()
+            return True
+        except Exception:
+            # Not the user's problem and not fatal: the model still loads on
+            # the first question, exactly as it did before this call existed.
+            debug.swallowed("cli_ollama._preload_ollama_model")
+            return False
+
     def ensure_ollama(self, warn=False):
         if self.provider.get("provider") != "ollama":
             autostart = self.provider.get("autostart")

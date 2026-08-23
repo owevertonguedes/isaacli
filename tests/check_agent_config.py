@@ -738,6 +738,97 @@ assert len(inline_payloads) == 2, "no extra correction turn may be spent"
 print("AGENT INLINE JSON OK: prose that mentions an object still ends the run")
 
 
+# The correction used to depend on the request reading as a mutation, which was
+# a list of verbs per language: "que tal demonstrar criando algo nessa pasta"
+# missed it, and the call the model had already written was thrown away. What
+# arms it now is the answer itself, so the same run works with require_change
+# off, and it works the same in a language the verb list never had.
+unasked_payloads = []
+unasked_executed = []
+
+
+def urlopen_unasked(req, timeout=0):
+    payload = json.loads(req.data.decode())
+    unasked_payloads.append(payload)
+    if "response_format" in payload:
+        return openai_response({
+            "role": "assistant",
+            "content": json.dumps({"name": "write_file", "arguments": {
+                "path": "hello.py", "content": "print('Olá, mundo!')"}}),
+        })
+    if len(unasked_payloads) == 1:
+        # Exactly what Qwen2.5-Coder-3B answered on 2026-08-23: the right call
+        # in a Markdown fence instead of its own <tool_call> tags.
+        return openai_response({
+            "role": "assistant",
+            "content": "```json\n" + json.dumps({
+                "name": "write_file",
+                "arguments": {"path": "hello.py",
+                              "content": "print('Olá, mundo!')"},
+            }) + "\n```",
+        })
+    return openai_response({"role": "assistant", "content": "Pronto."})
+
+
+with tempfile.TemporaryDirectory() as unasked_dir:
+    try:
+        agent.urllib.request.urlopen = urlopen_unasked
+        agent.tools.SANDBOX_ROOT = Path(unasked_dir)
+        unasked_result = agent.run(
+            "que tal demonstrar criando algo nessa pasta local?",
+            "weak-local-model", verbose=False, provider=openai_provider(),
+            require_change=False,
+        )
+        unasked_written = Path(unasked_dir, "hello.py").read_text()
+    finally:
+        agent.urllib.request.urlopen = original
+        agent.tools.SANDBOX_ROOT = original_sandbox_root
+
+assert unasked_written == "print('Olá, mundo!')", (
+    "a call the model wrote in the wrong wrapper has to reach the disk without "
+    "the request having to match a verb list")
+assert [call[3] for call in unasked_result["calls"]] == ["constrained"], (
+    "the call must come from the constrained correction, never from parsing "
+    "the loose object")
+assert "response_format" in unasked_payloads[1], (
+    "the correction turn has to carry the schema constraint")
+print("AGENT WRONG WRAPPER OK: the answer's shape arms the correction, in any "
+      "language and with no mutation verb in the request")
+
+
+# The other half of the same decision: an object that is not a call to a tool
+# that was offered is a legitimate answer. Asking for a JSON example must not
+# be turned into a tool call, which is exactly the failure a verb list in the
+# request produced.
+example_payloads = []
+
+
+def urlopen_example(req, timeout=0):
+    example_payloads.append(json.loads(req.data.decode()))
+    return openai_response({
+        "role": "assistant",
+        "content": '{"theme": "dark", "font_size": 14}',
+    })
+
+
+try:
+    agent.urllib.request.urlopen = urlopen_example
+    example_result = agent.run(
+        "me mostre um exemplo de arquivo de configuração em JSON",
+        "weak-local-model", verbose=False, provider=openai_provider(),
+        require_change=False,
+    )
+finally:
+    agent.urllib.request.urlopen = original
+
+assert example_result["final"] == '{"theme": "dark", "font_size": 14}'
+assert example_result["calls"] == []
+assert len(example_payloads) == 1, (
+    "an answer that is an object but not a call must not spend a correction")
+print("AGENT JSON EXAMPLE OK: an object that names no offered tool stays the "
+      "final answer")
+
+
 # Measured on 2026-08-20 against llama-server: after creating both files,
 # Qwen2.5-Coder-3B answered with four call objects in a row, separated by
 # newlines and wrapped in nothing. That is not one object, and it reached the

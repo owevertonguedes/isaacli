@@ -30,6 +30,7 @@ os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 import agent
 import cli as app
 import cli_ollama
+import cli_presentation
 import config
 import installation
 import setup_ollama
@@ -911,6 +912,86 @@ check("**" not in markdown and "```" not in markdown
       and "\x1b[2J" not in markdown and "https://example.test" in markdown,
       "common Markdown gets styled and the model's control codes are stripped")
 
+# A terminal wraps on the column, so it cuts words in half. What is checked
+# here is the visible result: no rendered line goes past the width, and no word
+# is split, which is the defect that was on screen.
+wrap_width = 40
+
+
+def visible_lines(rendered):
+    return [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in rendered.splitlines()]
+
+
+prose = ("Claro, vou criar um arquivo Python simples para demonstrar minha "
+         "capacidade com **negrito atravessando** a quebra de linha.")
+wrapped_prose = visible_lines(app._format_markdown_terminal(
+    prose, colors=True, width=wrap_width, first_offset=len("isaac: ")))
+check(all(len(line) <= wrap_width for line in wrapped_prose[1:])
+      and len(wrapped_prose[0]) + len("isaac: ") <= wrap_width
+      and " ".join(wrapped_prose).split() == re.sub(r"\*\*", "", prose).split(),
+      "a long answer wraps by word, and the label's columns count on the first line")
+
+structure = ("- item de lista bem comprido que precisa quebrar em mais de uma linha\n"
+             "1. numerado tambem comprido o suficiente para quebrar em duas linhas\n"
+             "> citacao comprida o bastante para quebrar em duas linhas no terminal\n"
+             "## Um cabecalho bem comprido que tambem deveria quebrar por palavra")
+wrapped_structure = visible_lines(app._format_markdown_terminal(
+    structure, colors=True, width=wrap_width))
+check(all(len(line) <= wrap_width for line in wrapped_structure)
+      and [line[:3] for line in wrapped_structure] == [
+          "• i", "  q", "1. ", "   ", "│ c", "│ q", "▌ U", "  d"],
+      "list, quote and heading continuations line up under their own text")
+
+# Code is the exception: breaking it produces a command nobody can copy.
+code_block = "```sh\n" + "echo " + "a" * 80 + "\n```"
+code_lines = visible_lines(app._format_markdown_terminal(
+    code_block, colors=True, width=wrap_width))
+check(any(len(line) > wrap_width for line in code_lines),
+      "a code block is never rewrapped")
+
+# An unbreakable word is left whole on its own line instead of being cut.
+long_path = "/home/weverton/um/caminho/muito/longo/que/nao/pode/ser/cortado.txt"
+path_lines = visible_lines(app._format_markdown_terminal(
+    "final " + long_path, colors=True, width=wrap_width))
+check(path_lines == ["final", long_path],
+      "a path longer than the terminal stays whole on a line of its own")
+
+# Everything that already fitted has to come out byte for byte as before, so
+# alignment nobody asked us to touch is not collapsed.
+short = "linha curta   com   espacos alinhados"
+check(app._format_markdown_terminal(short, colors=True, width=wrap_width)
+      == cli_presentation._markdown_inline(short, colors=True),
+      "a line that already fits is returned untouched")
+
+# The program's own notices are written as one long line in the catalogue on
+# purpose, so the terminal decides where they break. They go out through say(),
+# which decides it by word.
+notice = EN.t("cli.error.step_limit", steps=12)
+notice_out = io.StringIO()
+with redirect_stdout(notice_out):
+    cli_presentation.say(notice, "warn", width=wrap_width)
+notice_lines = visible_lines(notice_out.getvalue().strip())
+check(len(notice_lines) > 1
+      and all(len(line) <= wrap_width for line in notice_lines)
+      and " ".join(notice_lines) == notice,
+      "a long notice is wrapped by word without a character being lost")
+
+# Redirected output has no width to respect, and a command in a log has to
+# survive being copied out of it whole.
+piped = io.StringIO()
+with redirect_stdout(piped):
+    cli_presentation.say(notice)
+check(piped.getvalue().strip() == notice,
+      "output that is not a terminal stays on one line")
+
+# Style has to survive the cut: the second half of a bold run stays bold.
+split_bold = app._format_markdown_terminal(
+    "um texto com **negrito bem comprido que atravessa a quebra** e o resto",
+    colors=True, width=30).splitlines()
+check(all(line.startswith("\033[1m") for line in split_bold[1:2])
+      and split_bold[0].endswith("\033[0m"),
+      "a bold run broken across lines closes and reopens instead of leaking")
+
 out = io.StringIO()
 with redirect_stdout(out):
     cli._show_working()
@@ -1518,6 +1599,105 @@ check(loading is None and answering == "ok",
 # model on demand, while llama-server reads the whole file before answering.
 check(cli_ollama.AUTOSTART_TIMEOUT >= 60,
       "the autostart budget allows for a model that takes real time to load")
+
+# An engine on this machine is brought up when the session opens, because the
+# only thing that costs is a little VRAM. A remote endpoint is left alone: a
+# Kaggle kernel burns quota by wall clock and is decided elsewhere, with the
+# user's permission.
+prewarm = app.IsaacCLI("model", sub, 2, config_file=root / "cfg-prewarm.json")
+prewarm_calls = []
+prewarm.ensure_ollama = lambda warn=False: (
+    prewarm_calls.append(("ensure", warn)) or "test")
+prewarm._preload_ollama_model = lambda: prewarm_calls.append(("preload",)) or True
+
+prewarm.provider = {"provider": "openai_compatible", "provider_name": "Groq",
+                    "base_url": "https://api.groq.com/openai/v1", "api_key": "k"}
+with redirect_stdout(io.StringIO()):
+    remote_prewarm = prewarm.prewarm_engine()
+check(remote_prewarm is None and prewarm_calls == [],
+      "a remote endpoint is not started when the session opens")
+
+prewarm.provider = {"provider": "openai_compatible", "provider_name": "llama-server",
+                    "base_url": "http://127.0.0.1:8080/v1",
+                    "autostart": {"cmd": ["llama-server"],
+                                  "health_url": "http://127.0.0.1:8080/health"}}
+with redirect_stdout(io.StringIO()):
+    autostart_prewarm = prewarm.prewarm_engine()
+check(autostart_prewarm == "test" and prewarm_calls == [("ensure", True)],
+      "an autostart server is launched when the session opens, with no separate preload")
+
+prewarm_calls.clear()
+prewarm.provider = {"provider": "ollama"}
+with redirect_stdout(io.StringIO()):
+    ollama_prewarm = prewarm.prewarm_engine()
+check(ollama_prewarm == "test"
+      and prewarm_calls == [("ensure", True), ("preload",)],
+      "Ollama gets its daemon and its weights before the first question")
+
+
+def _interrupt(warn=False):
+    raise KeyboardInterrupt
+
+
+prewarm_calls.clear()
+prewarm.ensure_ollama = _interrupt
+with redirect_stdout(io.StringIO()):
+    interrupted_prewarm = prewarm.prewarm_engine()
+check(interrupted_prewarm is None,
+      "Ctrl+C during the wait opens the prompt instead of raising out of startup")
+
+# The daemon answering is not the model being loaded, so the preload has to
+# reach Ollama itself. Tested by effect against a socket: what the server
+# receives is the assertion.
+import http.server
+import threading
+
+preload_seen = {}
+
+
+class _PreloadHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        preload_seen["path"] = self.path
+        preload_seen["body"] = json.loads(self.rfile.read(length) or b"{}")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"done": true}')
+
+    def log_message(self, *_args):
+        pass
+
+
+preload_server = http.server.HTTPServer(("127.0.0.1", 0), _PreloadHandler)
+preload_thread = threading.Thread(target=preload_server.serve_forever, daemon=True)
+preload_thread.start()
+original_agent_url = cli_ollama.agent.URL
+try:
+    host, port = preload_server.server_address
+    cli_ollama.agent.URL = f"http://{host}:{port}/api/chat"
+    loaded = app.IsaacCLI("qwen-test", sub, 2, config_file=root / "cfg-preload.json")
+    preloaded = loaded._preload_ollama_model()
+finally:
+    cli_ollama.agent.URL = original_agent_url
+    preload_server.shutdown()
+    preload_server.server_close()
+    preload_thread.join(timeout=5)
+check(preloaded is True and preload_seen.get("path") == "/api/chat"
+      and preload_seen.get("body") == {"model": "qwen-test"},
+      "the preload asks Ollama to load exactly the session's model")
+
+# A daemon that refuses the load is not the user's problem: the model still
+# loads on the first question, so this reports false instead of crashing the
+# opening screen.
+original_preload_urlopen = cli_ollama.urllib.request.urlopen
+try:
+    cli_ollama.urllib.request.urlopen = _raise_http(404)
+    refused_preload = loaded._preload_ollama_model()
+finally:
+    cli_ollama.urllib.request.urlopen = original_preload_urlopen
+check(refused_preload is False,
+      "a refused preload is reported as failed instead of breaking the session opening")
 
 # --resume takes the session id, so it belongs on the opening panel, where it
 # can still be copied before the conversation scrolls it away.

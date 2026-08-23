@@ -50,7 +50,7 @@ from cli_permissions import (
 from cli_presentation import (
     APP_VERSION, WORDMARK_ISAAC, _color, _colored_prompt,
     _format_markdown_terminal, _print_welcome, _terminal_safe_text,
-    _visual_width, _welcome_lines,
+    _visual_width, _welcome_lines, say,
 )
 from cli_sessions import (
     FEEDBACK_DIR, SESSION_ID_UUID, SESSIONS_DIR, SessionsMixin, _build_history,
@@ -75,6 +75,7 @@ from cli_providers import ProvidersMixin
 from installation import (
     install_launcher as _install_launcher,
     uninstall_launcher as _uninstall_launcher,
+    uninstall_managed_llamacpp as _uninstall_managed_llamacpp,
     uninstall_official_ollama as _uninstall_official_ollama,
 )
 
@@ -352,10 +353,10 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
 
     def _context_numbers(self, report):
         """The state of the window, saying which part of it was measured."""
-        print(_color(t("cli.context.approaching", used=report["used"],
-                       budget=report["budget"], num_ctx=report["num_ctx"]), "warn"))
+        say(t("cli.context.approaching", used=report["used"],
+              budget=report["budget"], num_ctx=report["num_ctx"]), "warn")
         if report["estimated"] and report["measured"]:
-            print(t("cli.context.parts", measured=report["measured"],
+            say(t("cli.context.parts", measured=report["measured"],
                     estimated=report["estimated"]))
         elif not report["measured"]:
             print(t("cli.context.all_estimated"))
@@ -369,7 +370,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         otherwise. The offer comes first now, or it is not an offer.
         """
         self._context_numbers(report)
-        print(t("cli.context.explain", count=report["compactable"]))
+        say(t("cli.context.explain", count=report["compactable"]))
         try:
             index = terminal_ui.select_inline(
                 [t("cli.context.compact"), t("cli.context.keep")],
@@ -397,13 +398,13 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                 # What is large is the part of every request that is always
                 # there, and only the profile's window or that file can change
                 # it, so the note names both.
-                print(t("cli.context.nothing_to_compact",
+                say(t("cli.context.nothing_to_compact",
                         instructions=workspace_instructions.INSTRUCTIONS_NAME))
                 return
-            print(t("cli.context.unmanaged"))
+            say(t("cli.context.unmanaged"))
             return
-        print(t("cli.context.compacted", count=len(summaries)))
-        print(t("cli.context.recoverable", command=_resume_command(self.session_id)))
+        say(t("cli.context.compacted", count=len(summaries)))
+        say(t("cli.context.recoverable", command=_resume_command(self.session_id)))
 
     def _show_working(self):
         continuing = self._working_visible
@@ -430,10 +431,15 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         if self._working_visible:
             print("\r\033[2K", end="", flush=True)
             self._working_visible = False
+        # The label sits on the same line as the first words, so the wrapping
+        # has to know those columns are already spent.
+        offset = 0
         if self._assistant_label_pending:
             print(_color("isaac:", "assistant"), end=" ", flush=True)
             self._assistant_label_pending = False
-        print(_format_markdown_terminal(text), end="", flush=True)
+            offset = len("isaac: ")
+        print(_format_markdown_terminal(text, first_offset=offset),
+              end="", flush=True)
         self._stream_started = True
         self._output_block = True
         return True
@@ -524,7 +530,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             return execution.run_command(cmd, authorized=saved)
 
         print(_color(t("cli.permission.required"), "warn"))
-        print(t("cli.permission.scope_note"))
+        say(t("cli.permission.scope_note"))
         if _destructive_command(cmd):
             print(_color(t("cli.permission.dangerous"), "bad"))
         try:
@@ -612,7 +618,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                 # Blaming the credential here sends the user to /setup to fix
                 # something that is not broken. The endpoint is configured; the
                 # server it points at did not come up.
-                print(t("cli.error.local_server_unavailable",
+                say(t("cli.error.local_server_unavailable",
                         name=self.provider.get("provider_name") or "the local server"))
                 error = "local_server_unavailable"
             else:
@@ -656,7 +662,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         except agent.ConstrainedOutputError as e:
             self._clear_working()
             cause = t(f"cli.error.constrained_output.{e.reason}")
-            print(t("cli.error.constrained_output", cause=cause))
+            say(t("cli.error.constrained_output", cause=cause))
             self._log("error", error=f"constrained_output:{e.reason}")
             return 1
         except RuntimeError as e:
@@ -704,8 +710,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             # Running out of steps is not an empty answer and not a freeze: the
             # model was still working when the ceiling arrived, and the way
             # forward is a smaller request or a higher ceiling.
-            print(_color(t("cli.error.step_limit",
-                           steps=(r or {}).get("step_limit")), "warn"))
+            say(t("cli.error.step_limit",
+                    steps=(r or {}).get("step_limit")), "warn")
         elif empty_answer:
             print(_color(t("cli.error.empty_answer"), "bad"))
         eval_count = int(usage.get("eval_count") or 0)
@@ -756,6 +762,9 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         _print_welcome(self.model, self._engine_label(), self.workspace,
                        self.session_id)
         self._show_workspace_instruction_warning()
+        # Under the panel, not above it: the panel says which engine this is,
+        # and the line about starting it only makes sense after that.
+        self.prewarm_engine()
         print()
 
         if self.resume_transcript:
@@ -962,6 +971,13 @@ def main(argv=None):
     kaggle_purge_requested = (
         uninstall_requested and arguments[1:] == ["--purge", "--kaggle"]
     )
+    # Each third-party dependency gets its own explicit flag rather than being
+    # swept up by --purge. Removing somebody's llama.cpp because they asked to
+    # forget their sessions would be the kind of surprise this ladder exists to
+    # prevent.
+    llamacpp_purge_requested = (
+        uninstall_requested and arguments[1:] == ["--purge", "--llamacpp"]
+    )
     if setup_requested:
         if len(arguments) > 1:
             _print_commands_help(t("cli.setup.usage"))
@@ -981,6 +997,7 @@ def main(argv=None):
     elif uninstall_requested:
         if len(arguments) > 1 and not (
             purge_requested or ollama_purge_requested or kaggle_purge_requested
+            or llamacpp_purge_requested
         ):
             _print_commands_help(t("cli.uninstall.usage"))
             return 2
@@ -1032,10 +1049,12 @@ def main(argv=None):
             return setup_ollama.run_prepare_assets()
         return setup_ollama.run_kaggle(validation_cpu=kaggle_cpu_validation)
     if uninstall_requested:
-        if purge_requested or ollama_purge_requested or kaggle_purge_requested:
+        if (purge_requested or ollama_purge_requested or kaggle_purge_requested
+                or llamacpp_purge_requested):
             warning_key = (
                 "cli.uninstall.ollama.warning" if ollama_purge_requested else
                 "cli.uninstall.kaggle.warning" if kaggle_purge_requested else
+                "cli.uninstall.llamacpp.warning" if llamacpp_purge_requested else
                 "cli.uninstall.purge_warning"
             )
             print(t(warning_key))
@@ -1069,8 +1088,16 @@ def main(argv=None):
             kaggle_code = _uninstall_managed_kaggle(remove_credentials=True)
             if kaggle_code != 0:
                 return kaggle_code
+        if llamacpp_purge_requested:
+            uninstall_code = _uninstall_launcher(purge=True, check_only=True)
+            if uninstall_code != 0:
+                return uninstall_code
+            llamacpp_code = _uninstall_managed_llamacpp()
+            if llamacpp_code != 0:
+                return llamacpp_code
         return _uninstall_launcher(
-            purge=purge_requested or ollama_purge_requested or kaggle_purge_requested,
+            purge=purge_requested or ollama_purge_requested or kaggle_purge_requested
+            or llamacpp_purge_requested,
         )
     _profile_name, default_profile = config.profile(config_data)
     needs_setup = (

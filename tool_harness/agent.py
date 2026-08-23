@@ -900,26 +900,72 @@ def _is_json_object(content):
     or inside a Markdown fence. So the answer counts as structured output only
     when objects account for all of it, whitespace aside.
     """
+    return bool(_whole_answer_objects(content))
+
+
+def _whole_answer_objects(content):
+    """The JSON objects an answer is made of, or None when it is not.
+
+    Same test as `_is_json_object` and the source of it: objects have to
+    account for the whole answer, whitespace and one wrapping Markdown fence
+    aside.
+    """
     text = str(content or "").strip()
     if not text:
-        return False
+        return None
     body = _markdown_fence_body(text)
     if body is None:
         body = text
     decoder = json.JSONDecoder()
     position = 0
-    objects = 0
+    objects = []
     while position < len(body):
         try:
             value, position = decoder.raw_decode(body, position)
         except (json.JSONDecodeError, TypeError, ValueError):
-            return False
+            return None
         if not isinstance(value, dict):
-            return False
-        objects += 1
+            return None
+        objects.append(value)
         while position < len(body) and body[position].isspace():
             position += 1
-    return objects > 0
+    return objects or None
+
+
+def _answer_is_attempted_call(content, schema):
+    """True when the answer is a tool call the model failed to send as one.
+
+    This is the language-independent half of the correction trigger, and it
+    exists because the evidence never was in the user's phrasing. Reading
+    intent out of the request meant a list of verbs per language: a third
+    language in locales/ would silently lose the safety net, and a question
+    that merely contains "create" would arm it for an answer that was only
+    ever going to be prose.
+
+    What the answer looks like says it without any of that. A model that
+    missed its own dialect still names a tool that was offered and fills in
+    the arguments that tool declares, which is exactly what Qwen2.5-Coder-3B
+    did on 2026-08-23: a `write_file` object inside a ```json fence instead of
+    inside <tool_call> tags.
+
+    Recognising the shape is not executing it. Nothing here is turned into a
+    call: the loose object is discarded and the endpoint is asked for a fresh
+    one under the schema, which is the only route that produces an executable
+    call.
+    """
+    objects = _whole_answer_objects(content)
+    if not objects:
+        return False
+    offered = {
+        (entry.get("function") or {}).get("name")
+        for entry in (schema or [])
+    }
+    offered.discard(None)
+    for value in objects:
+        name = value.get("name")
+        if name in offered and isinstance(value.get("arguments"), (dict, str)):
+            return True
+    return False
 
 
 def _markdown_fence_body(text):
@@ -1056,11 +1102,25 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             thinking_adjusted = True
 
         if not tc:
+            if structured_step and _is_json_object(msg.get("content")):
+                raise ConstrainedOutputError("json_as_text")
+            if _answer_is_attempted_call(msg.get("content"), active_schema):
+                # The evidence is in the answer, not in how the request was
+                # phrased: the whole answer is a call object naming a tool that
+                # was offered, with its arguments. That is a model missing its
+                # own dialect, and it reads the same in every language.
+                #
+                # Not once per run, deliberately. A model that misses its own
+                # dialect misses it again after the first tool result, and the
+                # object leaking to the screen as the final answer is the very
+                # failure this catches. Every correction costs a step, so the
+                # step limit bounds it, and an object that comes back on the
+                # correction turn itself raises instead of looping.
+                correction_pending = True
+                continue
             if require_change and not successful_changes and not correction_sent:
                 correction_pending = True
                 continue
-            if structured_step and _is_json_object(msg.get("content")):
-                raise ConstrainedOutputError("json_as_text")
             if require_change and _is_json_object(msg.get("content")):
                 # The object is evidence that this was not legitimate prose
                 # completion. Discard it and ask the endpoint to decode a fresh

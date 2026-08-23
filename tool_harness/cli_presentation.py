@@ -112,12 +112,143 @@ def _markdown_inline(text, colors=True):
     return "".join(out)
 
 
-def _format_markdown_terminal(text, colors=None):
+_ANSI_SGR = re.compile(r"\033\[[0-9;]*m")
+
+
+def _terminal_columns():
+    return max(shutil.get_terminal_size((100, 24)).columns, 20)
+
+
+def _wrap_ansi(text, width, subsequent_indent="", first_offset=0):
+    """Break a styled line at spaces instead of letting the terminal cut words.
+
+    A terminal wraps on the column, so it splits words in half. Wrapping here
+    is the only place that can do it by word, because only here is it known
+    which characters are visible: an ANSI sequence takes columns from nothing,
+    and counting it would make every styled line wrap early.
+
+    Style survives the break. The sequences active at the cut close at the end
+    of the line and open again on the next one, so a break in the middle of a
+    bold run does not leave the rest of the paragraph unstyled.
+
+    A word longer than the whole width (a path, a URL) is never cut: it goes on
+    its own line and the terminal does what it always did, which is the lesser
+    evil against a broken path nobody can copy.
+    """
+    if width is None or width <= 1:
+        return [text]
+    # A line the terminal was never going to break comes back untouched. That
+    # keeps every existing rendering exactly as it was, alignment included, and
+    # limits this to the lines that were being cut in half.
+    if first_offset + len(_ANSI_SGR.sub("", text)) <= width:
+        return [text]
+    words = _styled_words(text)
+    if not words:
+        return [text]
+
+    lines = []
+    line = ""
+    column = first_offset
+    indent_width = len(_ANSI_SGR.sub("", subsequent_indent))
+    for word, visible, styles in words:
+        separator = 1 if line else 0
+        if line and column + separator + visible > width:
+            lines.append(line + (ANSI["reset"] if styles else ""))
+            line = subsequent_indent + "".join(styles) + word
+            column = indent_width + visible
+            continue
+        line += (" " if separator else "") + word
+        column += separator + visible
+    lines.append(line)
+    return lines
+
+
+def _styled_words(text):
+    """Split a styled line into (text, visible width, styles open at its start).
+
+    The escape sequences stay attached to the word they were written against,
+    so joining the words back with single spaces reproduces the original line.
+    The third field is what a continuation line has to re-open after a break.
+    """
+    words = []
+    active = []
+    current, current_width, current_active = "", 0, None
+    position = 0
+    for match in list(_ANSI_SGR.finditer(text)) + [None]:
+        chunk = text[position:match.start()] if match else text[position:]
+        for piece in re.split(r"(\s+)", chunk):
+            if not piece:
+                continue
+            if piece.isspace():
+                if current_width:
+                    words.append((current, current_width, current_active))
+                    current, current_width, current_active = "", 0, None
+                continue
+            if current_active is None:
+                current_active = list(active)
+            current += piece
+            current_width += len(piece)
+        if match is None:
+            break
+        code = match.group()
+        # Attached even with no visible character yet: it styles the word that
+        # comes next, and dropping it here would drop the colour from the line.
+        current += code
+        if code in ("\033[0m", "\033[m"):
+            active = []
+        else:
+            active.append(code)
+        position = match.end()
+    if current_width:
+        words.append((current, current_width, current_active))
+    elif current and words:
+        # Trailing sequences with nothing after them, typically the reset that
+        # closes the line. They belong to the last word, or styling leaks past
+        # the end of the line.
+        last, last_width, last_active = words[-1]
+        words[-1] = (last + current, last_width, last_active)
+    return words
+
+
+def say(text, style=None, width=None):
+    """Print a sentence to the user, wrapped by word.
+
+    For the program's own prose. A notice is written as one long line in the
+    catalogue, on purpose, so the terminal decides where it breaks; without
+    this the terminal decides that on the column and cuts words in half.
+    Anything already fitting comes out exactly as before.
+    """
+    if width is None:
+        # Only a terminal has a width to respect. Redirected output stays on
+        # one line, where a command or a path has to survive being copied out
+        # of a log by grep.
+        width = _terminal_columns() if sys.stdout.isatty() else None
+    body = "\n".join(_wrap_ansi(str(text), width))
+    print(_color(body, style) if style else body)
+
+
+def _format_markdown_terminal(text, colors=None, width=None, first_offset=0):
     """Turn chat Markdown into a simple, safe ANSI presentation."""
     text = _terminal_safe_text(text)
     colors = _uses_color() if colors is None else colors
     if not colors:
         return text
+    if width is None:
+        width = _terminal_columns()
+    pending_offset = first_offset
+
+    def laid_out(prefix, prefix_width, content, indent):
+        """One rendered block: its prefix, then the content wrapped by word.
+
+        `pending_offset` is what the caller already printed on this line (the
+        "isaac:" label), and it only counts against the very first line.
+        """
+        nonlocal pending_offset
+        pieces = _wrap_ansi(content, width, subsequent_indent=indent,
+                            first_offset=prefix_width + pending_offset)
+        pending_offset = 0
+        return prefix + "\n".join(pieces)
+
     lines = []
     in_code = False
     for line in text.splitlines(keepends=True):
@@ -140,39 +271,43 @@ def _format_markdown_terminal(text, colors=None):
             continue
         heading = re.match(r"^\s{0,3}#{1,6}\s+(.+)$", body)
         if heading:
-            lines.append(
-                f"{ANSI['assistant']}▌{ANSI['reset']} \033[1m"
-                f"{_markdown_inline(heading.group(1), colors=True)}{ANSI['reset']}" + ending
-            )
+            lines.append(laid_out(
+                f"{ANSI['assistant']}▌{ANSI['reset']} ", 2,
+                f"\033[1m{_markdown_inline(heading.group(1), colors=True)}"
+                f"{ANSI['reset']}", "  ") + ending)
             continue
         quote = re.match(r"^\s*>\s?(.*)$", body)
         if quote:
-            lines.append(
-                f"{ANSI['dim']}│{ANSI['reset']} "
-                f"{_markdown_inline(quote.group(1), colors=True)}" + ending
-            )
+            bar = f"{ANSI['dim']}│{ANSI['reset']} "
+            lines.append(laid_out(
+                bar, 2, _markdown_inline(quote.group(1), colors=True), bar) + ending)
             continue
         item = re.match(r"^(\s*)[-+*]\s+(.*)$", body)
         if item:
             content = item.group(2)
             content = re.sub(r"^\[ \]\s*", "☐ ", content)
             content = re.sub(r"^\[[xX]\]\s*", "☑ ", content)
-            lines.append(
-                f"{item.group(1)}{ANSI['assistant']}•{ANSI['reset']} "
-                f"{_markdown_inline(content, colors=True)}" + ending
-            )
+            spacing = item.group(1)
+            lines.append(laid_out(
+                f"{spacing}{ANSI['assistant']}•{ANSI['reset']} ", len(spacing) + 2,
+                _markdown_inline(content, colors=True), spacing + "  ") + ending)
             continue
         numbered = re.match(r"^(\s*)(\d+)[.)]\s+(.*)$", body)
         if numbered:
-            lines.append(
-                f"{numbered.group(1)}{ANSI['assistant']}{numbered.group(2)}.{ANSI['reset']} "
-                f"{_markdown_inline(numbered.group(3), colors=True)}" + ending
-            )
+            spacing, number = numbered.group(1), numbered.group(2)
+            marker = len(spacing) + len(number) + 2
+            lines.append(laid_out(
+                f"{spacing}{ANSI['assistant']}{number}.{ANSI['reset']} ", marker,
+                _markdown_inline(numbered.group(3), colors=True),
+                " " * marker) + ending)
             continue
         if re.match(r"^\s*(?:---+|___+|\*\*\*+)\s*$", body):
             lines.append(f"{ANSI['dim']}{'─' * 32}{ANSI['reset']}" + ending)
             continue
-        lines.append(_markdown_inline(body, colors=True) + ending)
+        indent = re.match(r"^\s*", body).group()
+        lines.append(laid_out(
+            indent, len(indent),
+            _markdown_inline(body[len(indent):], colors=True), indent) + ending)
     if in_code:
         lines.append(ANSI["reset"])
     return "".join(lines)
