@@ -72,18 +72,38 @@ check("(exit code: 1)" in out, "a non-zero exit code shows up")
 
 print("\n=== 2b. a program that is missing says WHICH kind of missing ===")
 # `command not found` alone is a lie by omission: in task 036 the model was told
-# `cargo: command not found` and `yarn: command not found` on a machine that had
-# both, and it concluded the tools did not exist. The two absences need opposite
-# reactions, so the output has to tell them apart. Checked by effect, through the
-# real jail, because the parsing has to survive what bwrap and sh actually print
-# (bwrap exits 1, not 127, when execvp fails).
+# `cargo: command not found` and `yarn: command not found` and concluded the
+# tools did not exist. The two absences need opposite reactions, so the output
+# has to tell them apart. Checked by effect, through the real jail, because the
+# parsing has to survive what bwrap and sh actually print (bwrap exits 1, not
+# 127, when execvp fails).
+#
+# The rule both branches must obey, and the reason this check is written around
+# a forbidden phrase rather than a required one: the note is built from
+# `shutil.which`, which looks at ONE thing, the PATH isaacli was started with.
+# So it may claim about that PATH and never about the machine. The first version
+# of this note said "not installed on this machine", which was false for exactly
+# the two tools that opened the task: on 2026-08-23 cargo was found under
+# DevTools/workspace/036/toolchains and yarn 1.22.22 in three npx caches, with
+# neither on the PATH. A note that overclaims is the defect, not a wording nit.
+ABOUT_THE_MACHINE = (
+    "not installed on this machine",
+    "DOES exist on this machine",
+    "the machine lacks",
+)
+
 absent = "isaacli-no-such-program-xyz"
 check(shutil.which(absent) is None, "the fake program name really is absent from the host")
 out = execution.run_command(f"{absent} --version", authorized=True)
-check("not installed on this machine" in out,
-      f"a program missing from the host too is reported as missing, not as a "
-      f"sandbox limit: {out[:300]!r}")
-check("DOES exist" not in out, f"and it is not claimed to exist: {out[:300]!r}")
+check("is not on any directory of the PATH" in out,
+      f"a program off the PATH is reported as off the PATH: {out[:300]!r}")
+check("is NOT known" in out,
+      f"and the note says outright that it does not know whether the machine has "
+      f"it elsewhere: {out[:400]!r}")
+for phrase in ABOUT_THE_MACHINE:
+    check(phrase not in out,
+          f"the note claims nothing about the machine ({phrase!r} absent), "
+          f"because the PATH is all it looked at: {out[:300]!r}")
 
 # The other half: a program that IS on the user's PATH and still cannot be
 # started inside. The bait is a real executable in a temporary directory put on
@@ -108,11 +128,16 @@ finally:
     os.environ["PATH"] = previous_path
 check("(exit code: 0)" not in out,
       f"the bait tool really did not run inside the sandbox: {out[:300]!r}")
-check("DOES exist on this machine" in out and str(bait_tool) in out,
-      f"a program present outside and unreachable inside says so, with its real "
-      f"path: {out[:400]!r}")
-check("not installed on this machine" not in out,
-      f"and it is not reported as absent from the machine: {out[:300]!r}")
+check("IS on the PATH isaacli was started with" in out and str(bait_tool) in out,
+      f"a program on the PATH and unreachable inside says exactly that, with the "
+      f"path the search found: {out[:400]!r}")
+check("sandbox limit" in out,
+      f"and it names the sandbox as the cause, since the PATH search did find "
+      f"it: {out[:400]!r}")
+for phrase in ABOUT_THE_MACHINE:
+    check(phrase not in out,
+          f"this branch claims nothing about the machine either ({phrase!r} "
+          f"absent): {out[:300]!r}")
 
 print("\n=== 3. rm -rf in several forms: refused AND without effect ===")
 for attempt in [

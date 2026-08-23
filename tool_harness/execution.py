@@ -913,16 +913,24 @@ def _missing_programs(err: str):
 
 
 def _missing_program_note(err: str):
-    """Say WHICH kind of absence this was, because the two need opposite fixes.
+    """Say what the PATH says, and nothing about the machine.
 
     `command not found` on its own is a lie by omission: the model reads it as
     "this machine does not have the tool" and rewrites the task around the
-    absence, when the truth is usually that the tool exists and the jail cannot
-    see it. Measured in task 036, where the model was told `cargo: command not
-    found` and `yarn: command not found` on a machine that had both.
+    absence. Measured in task 036, where the model was told `cargo: command not
+    found` and `yarn: command not found` and concluded the tools did not exist.
 
-    So the note names the real state: installed on the host but outside every
-    read-only mount, or genuinely not installed anywhere on the user's PATH.
+    The correction has a limit that the first version of this note walked
+    straight past. All this function consults is `shutil.which`, which searches
+    ONE thing: the PATH of the process that started isaacli. So the note may
+    claim about that PATH and about nothing else. Saying "not installed on this
+    machine" was false in exactly the two cases that opened the task: measured
+    on 2026-08-23, cargo is on this machine under
+    `DevTools/workspace/036/toolchains`, and yarn 1.22.22 is in three npx
+    caches, neither of them on the PATH. That is the same category of error the
+    note exists to remove, made by the note itself, so both branches below
+    speak only of the PATH.
+
     English on purpose, like every other text the model reads.
     """
     lines = []
@@ -930,18 +938,22 @@ def _missing_program_note(err: str):
         host_path = shutil.which(name)
         if host_path:
             lines.append(
-                f"NOTE: '{name}' DOES exist on this machine, at {host_path}, but it "
-                f"is not reachable from inside the sandbox: the jail mounts the "
-                f"system directories and the directories on the user's PATH "
-                f"read-only, and that program is under neither. This is a sandbox "
-                f"limit, not a missing tool. Do not conclude the machine lacks "
-                f"'{name}' and do not work around it silently: say so, and ask the "
-                f"user, who can put it on their PATH or approve another route.")
+                f"NOTE: '{name}' IS on the PATH isaacli was started with, at "
+                f"{host_path}, and still could not be started inside the sandbox, "
+                f"which mounts the system directories and the directories on that "
+                f"PATH read-only. Something about that directory was refused (run "
+                f"isaacli with --debug to see which refusal). This is a sandbox "
+                f"limit and not a missing tool: say so and ask the user, who can "
+                f"approve another route. Do not work around it silently.")
         else:
             lines.append(
-                f"NOTE: '{name}' is not installed on this machine either: it is on "
-                f"none of the directories of the user's own PATH, so this is not a "
-                f"sandbox limit. Say so instead of retrying the same command.")
+                f"NOTE: '{name}' is not on any directory of the PATH isaacli was "
+                f"started with, so it cannot be started here, and whether it is "
+                f"installed somewhere else on this machine is NOT known: that PATH "
+                f"is all this program looked at. Report it as absent from the PATH, "
+                f"never as absent from the machine, and tell the user, who can put "
+                f"it on their PATH before starting isaacli. Retrying the same "
+                f"command will not change this.")
     return lines
 
 
