@@ -70,6 +70,13 @@ def check_mount_policy() -> int:
     the purpose, so the policy is still verified everywhere the suite runs. A
     directory that should never be mounted and is counts as a leak here, exactly
     like a path escaping the root above.
+
+    The LOGIN SHELL is part of the fixture too (task 052), and not incidentally:
+    since the planner reads it, leaving the real one in place would drive this
+    check with whatever this machine's dotfiles happen to say, and the answer
+    would differ per machine. Planting it also buys the case that matters most
+    about the snapshot: the second PATH must obey exactly the same refusals as
+    the first, or the fix for 052 would have widened the jail.
     """
     print("\n--- what the sandbox agrees to mount read-only ---")
     leaks = 0
@@ -91,6 +98,15 @@ def check_mount_policy() -> int:
         checkout = home / "project"
         (checkout / ".git").mkdir(parents=True)
         (checkout / "bin").mkdir()
+        # An executable directly in the checkout, for the same reason the stray
+        # script below sits in the home: without it the checkout is refused for
+        # holding no executable, and the guard that this check exists to prove --
+        # "a project is not a toolchain" -- is never the thing that answered.
+        # Measured on 2026-08-23 by removing that guard for directories named by
+        # the login shell: the check stayed green, because the wrong refusal
+        # covered for the missing one.
+        (checkout / "build.sh").write_text("#!/bin/sh\ntrue\n")
+        (checkout / "build.sh").chmod(0o755)
         # An executable loose in the home, so the home and the symlink to it are
         # refused by the guard being tested and not by "it holds no executable",
         # which would make both of those cases pass for the wrong reason.
@@ -102,11 +118,48 @@ def check_mount_policy() -> int:
         disguised = home / "looks_like_a_bin_dir"
         disguised.symlink_to(home)
 
+        # Only the login shell knows about this one, and it is a real toolchain
+        # directory: it has to be mounted, or a user who started isaacli from a
+        # launcher loses it.
+        snapshot_prefix = home / ".local" / "share" / "snapshot-toolchain"
+        (snapshot_prefix / "bin").mkdir(parents=True)
+        (snapshot_prefix / "bin" / "snapshot-tool").write_text("#!/bin/sh\ntrue\n")
+        (snapshot_prefix / "bin" / "snapshot-tool").chmod(0o755)
+        # A checkout that ONLY the login shell names. It cannot be the one
+        # already on the process PATH: identical entries are deduplicated, so
+        # that one would never reach the policy through the snapshot at all, and
+        # the case would pass without ever exercising what it claims to.
+        snapshot_checkout = home / "snapshot-project"
+        (snapshot_checkout / ".git").mkdir(parents=True)
+        (snapshot_checkout / "build.sh").write_text("#!/bin/sh\ntrue\n")
+        (snapshot_checkout / "build.sh").chmod(0o755)
+        # And a symlink to the home that only the login shell names: the guard
+        # that stops it is resolving before deciding, and `home` itself is
+        # already on the process PATH, so reusing it would be deduplicated away.
+        snapshot_disguised = home / "snapshot_looks_like_a_bin_dir"
+        snapshot_disguised.symlink_to(home)
+        # A directory that a RELATIVE PATH entry would reach from the working
+        # directory this check runs in. It holds an executable, so nothing else
+        # in the policy would refuse it: only "not an absolute path" can.
+        relative_entry = Path(tmp) / "relative-bin"
+        relative_entry.mkdir()
+        (relative_entry / "relative-tool").write_text("#!/bin/sh\ntrue\n")
+        (relative_entry / "relative-tool").chmod(0o755)
+        login_shell = Path(tmp) / "login-shell"
+        login_shell.write_text(
+            "#!/bin/sh\n"
+            "echo 'a banner some dotfile prints'\n"
+            f"printf '\\n{execution.LOGIN_SHELL_MARKER}%s\\n' "
+            f"'{os.pathsep.join([str(snapshot_prefix / 'bin'), str(snapshot_checkout), str(snapshot_disguised)])}'\n")
+        login_shell.chmod(0o755)
+
         previous = {name: os.environ.get(name)
-                    for name in ("HOME", "PATH", "XDG_CONFIG_HOME",
+                    for name in ("HOME", "PATH", "SHELL", "XDG_CONFIG_HOME",
                                  "XDG_DATA_HOME", "XDG_STATE_HOME",
                                  "XDG_CACHE_HOME", "XDG_RUNTIME_DIR")}
         os.environ["HOME"] = str(home)
+        os.environ["SHELL"] = str(login_shell)
+        execution.reset_path_snapshot()
         for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
                      "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
             os.environ.pop(name, None)
@@ -119,12 +172,21 @@ def check_mount_policy() -> int:
             str(disguised),               # a symlink to the home: never
             str(workspace),               # already mounted, and writable
             str(home / "does_not_exist"),
+            relative_entry.name,          # a RELATIVE entry: never
         ])
         os.environ["ISAACLI_POLICY_FAKE_TOKEN"] = "sk-planted-token"
         os.environ["ISAACLI_POLICY_TOOL_HOME"] = str(prefix / "lib")
+        # A relative PATH entry means a directory under whatever isaacli is
+        # running in, and `os.path.realpath` would make it absolute before any
+        # guard could object. Proved from a known working directory rather than
+        # from the repository's, so the answer does not depend on where the
+        # suite was started.
+        previous_cwd = os.getcwd()
+        os.chdir(tmp)
         try:
             binds, path_dirs, forwarded = execution._toolchain_mounts(workspace)
         finally:
+            os.chdir(previous_cwd)
             for name, value in previous.items():
                 if value is None:
                     os.environ.pop(name, None)
@@ -132,6 +194,10 @@ def check_mount_policy() -> int:
                     os.environ[name] = value
             os.environ.pop("ISAACLI_POLICY_FAKE_TOKEN", None)
             os.environ.pop("ISAACLI_POLICY_TOOL_HOME", None)
+            # The snapshot is session-wide on purpose, so it has to be dropped
+            # here or every later check in this process would keep deciding
+            # against the fake home this block just took apart.
+            execution.reset_path_snapshot()
 
         mounted = {str(path) for path in binds}
         must_not_mount = {
@@ -141,6 +207,7 @@ def check_mount_policy() -> int:
             "a project checkout": checkout,
             "a symlink pointing at the home": disguised,
             "the workspace, which is writable": workspace,
+            "a directory reached by a relative PATH entry": relative_entry,
         }
         for description, path in must_not_mount.items():
             if str(path) in mounted:
@@ -149,9 +216,25 @@ def check_mount_policy() -> int:
             else:
                 print(f"[ok    ] not mounted: {description}")
 
+        # The snapshot proposes these two as well, and the policy does not care
+        # which PATH proposed a directory: a second source of directories that
+        # skipped the refusals would be a wider jail, not a fixed one.
+        for description, path in (("a project checkout, named ONLY by the login "
+                                   "shell", snapshot_checkout),
+                                  ("a symlink to the home, named ONLY by "
+                                   "the login shell", snapshot_disguised)):
+            if str(path) in mounted:
+                print(f"[LEAK  ] {description} was mounted, so the login shell "
+                      f"PATH skipped the mount policy: {path}")
+                leaks += 1
+            else:
+                print(f"[ok    ] not mounted: {description}")
+
         for description, path in (("the toolchain bin on PATH", prefix / "bin"),
                                   ("the install tree behind its symlink",
-                                   prefix / "lib")):
+                                   prefix / "lib"),
+                                  ("a toolchain only the login shell knows about",
+                                   snapshot_prefix / "bin")):
             if str(path) in mounted:
                 print(f"[ok    ] mounted: {description}")
             else:

@@ -62,6 +62,8 @@ Inside the REPL, type `/` to open the command palette or `/help` to list every c
 
 Unattended commands execute without a shell, inside `bwrap`, with the workspace as the only writable location. Commands outside the default policy are shown before execution; after approval they may use a shell or network, but remain inside the same filesystem, resource and syscall boundaries.
 
+What the sandbox can reach beyond the system directories is your own PATH, mounted read-only, so a project's toolchain works inside it. Because the PATH of whatever started isaacli is your login shell's only when you start it from a terminal, isaacli also reads your login shell's PATH once per session and unites the two; that runs your shell profile, it never widens what may be mounted, and when it cannot be read the output says so instead of quietly losing your toolchain.
+
 Resource ceilings use `systemd-run --user`; the seccomp filter is x86_64-only. When either layer is unavailable, isaacli reports that limitation instead of claiming protection that is not present. The sandbox limits model-generated commands, but it is not a security boundary against the user, root or malware already running under the same account.
 
 Local sessions and feedback may contain prompts, answers, paths, commands and tool results. They are ignored by Git but are currently stored as plaintext. A remote provider receives the conversation and any tool results included in later model requests. Read [Security and privacy](docs/SECURITY.md) before using sensitive data or a remote endpoint.

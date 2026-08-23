@@ -65,6 +65,40 @@ where `cargo` keeps the crates.io token. The toolchain is appended to the jail's
 PATH after the system directories, so an allowlisted name cannot be captured by
 a shim.
 
+### Which PATH, and why isaacli runs your login shell once
+
+"The user's PATH" is not one thing. `os.environ["PATH"]` is the PATH of whatever
+started isaacli, and that equals the login shell's PATH only when isaacli was
+started from a terminal. Started from a `.desktop` entry or a systemd user unit,
+it is the system minimum, and the home toolchain silently left the jail:
+measured on 2026-08-23, zero toolchain mounts against fifteen, with `bun`
+answering `No such file or directory` inside the jail where the same command
+answers `1.3.14` in a terminal, and nothing reporting a problem, because nothing
+had failed.
+
+So isaacli asks the user's login shell for its PATH **once per session**, with a
+short time ceiling, and **unites** the answer with the PATH it was started with
+rather than replacing it: a terminal, a `direnv` or a `nix develop` keeps its
+precedence, and the snapshot only adds back what a launcher dropped. This is the
+same approach Claude Code takes with its shell snapshots.
+
+The trade is explicit: **this executes the user's shell profile** to decide what
+the jail mounts. It is acceptable for one reason only, that the profile is the
+user's own, runs with their privileges, and already runs in every terminal they
+open. It is not extended to a PATH from any other source: not a config file, not
+an environment variable set by a third party, and not anything inside a
+repository. The login shell is the only place isaacli takes a PATH from outside
+its own process.
+
+Nothing about this widens the mount policy. Every directory the snapshot names
+goes through exactly the same refusals in `_mountable` as one from the process
+PATH, and `check_sandbox.py` proves it by planting a git checkout and a symlink
+to the home that only the login shell reports. Failing to read the login shell
+is a normal state and not an error: the process PATH is kept, and when that PATH
+also holds nothing of the user's own, the output carries a one-time `NOTE:`
+saying the home toolchain may be out of reach and why, rather than going quiet.
+`--debug` names the origin of every mounted directory, and of every refusal.
+
 The environment is built rather than inherited: `--clearenv` drops everything
 isaacli itself was started with, and a variable is forwarded only when its value
 is the path of a directory that was mounted. Before that, any variable in

@@ -101,6 +101,20 @@ PATH as the declaration and no list of tool names anywhere. See
 Mounting the whole home was never on the table: it would hand the model API
 keys, cloud credentials and isaacli's own configuration.
 
+WHICH PATH, because there is more than one, and the difference was invisible.
+`os.environ["PATH"]` is the PATH of whoever STARTED isaacli, and that is the
+login shell's only when isaacli was started from a terminal. From a `.desktop`
+file or a systemd user unit it is the system minimum, so the home toolchain
+silently left the jail: measured on 2026-08-23, zero mounts against fifteen,
+with `bun` answering `No such file or directory` inside where the terminal
+answers `1.3.14`, and nothing anywhere reporting a problem, because nothing had
+failed. So the login shell is read ONCE per session (`_login_shell_path`) and
+UNITED with the process PATH, never substituted for it, since a terminal or a
+`direnv` already put the right thing in front. Failing to read it is a normal
+state, not an error, and it comes back as a one-time `NOTE:` rather than as
+silence. This is what Claude Code does with its shell snapshots, and it is the
+only place isaacli takes a PATH from outside its own process. See task 052.
+
 THE ENVIRONMENT IS BUILT FROM NOTHING, not filtered. `--clearenv` drops
 everything isaacli inherited and only the variables set explicitly below survive.
 Until this was added the filesystem was closed to credentials while the
@@ -458,6 +472,255 @@ def _install_tree(executable, home, xdg_bases, root, already):
     return found
 
 
+# How long the login shell gets to answer, and where the number comes from:
+# measured on this machine on 2026-08-23, `bash -lc` with the user's real
+# profile answered in 0.19s. The ceiling is deliberately about twenty-five times
+# that, because it is not a performance budget, it is the guard against a
+# profile that blocks forever (a prompt, a `read`, a network call in a dotfile)
+# taking the whole session's first command with it. Going past it is not an
+# error, it is the failure path: the process PATH is kept and the note says so.
+LOGIN_SHELL_TIMEOUT_SECONDS = 5.0
+
+# The profile prints whatever the user's dotfiles print: banners, fortunes, a
+# version check. So the answer is not "the shell's stdout", it is the last line
+# carrying this marker, and everything else on the way is noise that goes to
+# --debug. Without it a `neofetch` in `.bashrc` would become the PATH.
+LOGIN_SHELL_MARKER = "__isaacli_path__"
+LOGIN_SHELL_SCRIPT = f'printf "\\n{LOGIN_SHELL_MARKER}%s\\n" "$PATH"'
+
+# Where a mounted directory came from, for --debug. Not decoration: the whole
+# defect this mechanism exists to fix was invisible because nothing said which
+# PATH was being read.
+FROM_PROCESS = "the PATH isaacli was started with"
+FROM_SNAPSHOT = "the login shell's PATH"
+
+# Resolved once per session and reused, which is what the industry does: Claude
+# Code reads the login shell once at startup and freezes the result in
+# `~/.claude/shell-snapshots/`. Re-reading it per command would run the user's
+# profile dozens of times per session.
+_PATH_SNAPSHOT = None           # None = not resolved yet; else (dirs, failure)
+_SNAPSHOT_NOTE_SHOWN = False
+
+
+def reset_path_snapshot():
+    """Forget the session's snapshot. For tests, and for a language/config switch.
+
+    Exists because the snapshot is deliberately session-wide: without a way to
+    drop it, a check could only ever measure the first environment it saw.
+    """
+    global _PATH_SNAPSHOT, _SNAPSHOT_NOTE_SHOWN
+    _PATH_SNAPSHOT = None
+    _SNAPSHOT_NOTE_SHOWN = False
+
+
+def _login_shell():
+    """The shell to ask, or (None, reason).
+
+    `$SHELL` first, because that is the shell whose profile actually defines
+    this user's PATH, and only then the usual fallbacks. Each candidate is
+    checked for being an absolute, executable file rather than trusted: `$SHELL`
+    is inherited, and a launcher can hand over a stale or empty one.
+    """
+    candidates = [os.environ.get("SHELL"), shutil.which("bash"), "/bin/sh"]
+    tried = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_absolute():
+            tried.append(f"{candidate} (not an absolute path)")
+            continue
+        try:
+            usable = path.is_file() and os.access(path, os.X_OK)
+        except OSError:
+            debug.swallowed("execution._login_shell")
+            usable = False
+        if usable:
+            return str(path), None
+        tried.append(f"{candidate} (not an executable file)")
+    return None, f"no usable login shell: {'; '.join(tried) or 'none offered'}"
+
+
+def _read_login_shell_path():
+    """Run the user's login shell once and return (dirs, failure reason).
+
+    THIS EXECUTES THE USER'S PROFILE, and that is the deliberate trade decided
+    in task 052. The reason it is acceptable is the same reason it is acceptable
+    in Claude Code, whose shell snapshots were read on this machine to settle the
+    question: the profile is the user's own, it runs with their privileges, and
+    it already runs in every terminal they open. It is NOT
+    acceptable to extend this to a PATH coming from anywhere else -- a config
+    file, an environment variable set by a third party, a repository -- and this
+    function is the only place a PATH is ever obtained from outside the process.
+
+    Nothing here is fatal. A shell that is missing, refuses `-lc`, hangs, or
+    prints no marker is a NORMAL state: it returns a reason, the caller keeps
+    the process PATH, and the reason reaches the user through the note in
+    `_path_snapshot_note` instead of disappearing.
+    """
+    shell, refusal = _login_shell()
+    if shell is None:
+        return [], refusal
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [shell, "-lc", LOGIN_SHELL_SCRIPT],
+            stdin=subprocess.DEVNULL,     # a profile that reads must not hang
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            # Its own process group, so the kill below reaches whatever the
+            # profile spawned and not just the shell: a `wait` without a `kill`
+            # is how a timeout turns into a hung process.
+            start_new_session=True,
+        )
+        out, err = proc.communicate(timeout=LOGIN_SHELL_TIMEOUT_SECONDS)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.communicate(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            debug.swallowed("execution._read_login_shell_path.kill")
+        return [], (f"{shell} -lc did not answer within "
+                    f"{LOGIN_SHELL_TIMEOUT_SECONDS:g}s")
+    except OSError as e:
+        debug.swallowed("execution._read_login_shell_path")
+        return [], f"{shell} could not be started ({e})"
+
+    marked = [line for line in out.splitlines()
+              if line.startswith(LOGIN_SHELL_MARKER)]
+    if not marked:
+        return [], (f"{shell} -lc printed no PATH (exit code {code})")
+    value = marked[-1][len(LOGIN_SHELL_MARKER):]
+    dirs = [entry for entry in value.split(os.pathsep) if entry]
+    if not dirs:
+        return [], f"{shell} -lc reported an empty PATH"
+    debug.note("execution.login_shell",
+               f"read the PATH from {shell} -lc: {len(dirs)} directories"
+               f"{' | its stderr: ' + err.strip() if err.strip() else ''}")
+    return dirs, None
+
+
+def _login_shell_path():
+    """The snapshot, read at most once per session. Returns (dirs, failure)."""
+    global _PATH_SNAPSHOT
+    if _PATH_SNAPSHOT is None:
+        _PATH_SNAPSHOT = _read_login_shell_path()
+    return _PATH_SNAPSHOT
+
+
+def _process_path_entries():
+    """The PATH of the process that started isaacli, in order, without blanks."""
+    return [entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+            if entry]
+
+
+def _path_entries():
+    """Every directory the jail may reach, in order, each with where it came from.
+
+    UNION, never replacement, and the process PATH goes FIRST. Whoever started
+    isaacli from a terminal already has the right PATH, and a `direnv` or a
+    `nix develop` that put a project toolchain in front of the login one must
+    keep that precedence: the snapshot only adds back what a launcher dropped.
+
+    An empty element means the current directory in POSIX PATH semantics, and a
+    relative one means a directory under it. The jail has no business mounting
+    whatever directory isaacli happens to be running in, and both would be made
+    absolute by `os.path.realpath` before any guard in `_mountable` could object
+    to them, so both are dropped here and named on `--debug`.
+    """
+    ordered = []
+    seen = set()
+    dropped = []
+    snapshot, _failure = _login_shell_path()
+    for entry, origin in ([(entry, FROM_PROCESS) for entry in _process_path_entries()]
+                          + [(entry, FROM_SNAPSHOT) for entry in snapshot]):
+        if entry in seen:
+            continue
+        seen.add(entry)
+        if not os.path.isabs(entry):
+            dropped.append(f"{entry} (a relative PATH entry, which would mean a "
+                           f"directory under isaacli's own working directory; "
+                           f"from {origin})")
+            continue
+        ordered.append((entry, origin))
+    if dropped:
+        debug.note("execution.path_entries",
+                   f"dropped before the mount policy: {'; '.join(dropped)}")
+    return ordered
+
+
+def _search_path():
+    """The PATH string the jail will actually have, for `shutil.which` to search.
+
+    The not-found note used to search only `os.environ["PATH"]`, which stopped
+    being the truth the moment the snapshot started adding directories: it would
+    have told the model a tool was "not on the PATH" while the jail was mounting
+    the very directory holding it.
+    """
+    return os.pathsep.join(entry for entry, _origin in _path_entries())
+
+
+def _path_looks_like_a_launcher(home):
+    """Whether the process PATH holds nothing of the user's own.
+
+    This is the shape a `.desktop` file or a systemd user unit hands over, and
+    it is the case where losing the snapshot actually costs the user their
+    toolchain. When the process PATH already reaches into the home, a snapshot
+    that could not be read changes nothing anyone would notice, and a note about
+    it would be noise on every session with an unusual shell.
+    """
+    for entry in _process_path_entries():
+        try:
+            resolved = Path(os.path.realpath(entry))
+        except OSError:
+            debug.swallowed("execution._path_looks_like_a_launcher")
+            continue
+        if home == resolved or home in resolved.parents:
+            return False
+    return True
+
+
+def _path_snapshot_note():
+    """One NOTE, once per session, when the toolchain may be out of reach.
+
+    This is option 2 of task 052 turned into the FAILURE PATH of option 3. The
+    defect being fixed is not that the toolchain is missing, it is that it went
+    missing IN SILENCE: mounting nothing looks exactly like mounting everything
+    from the outside, and the user only ever found out by watching the same
+    repository work from a terminal and fail from an icon.
+
+    Deliberately quiet in the case that is merely unusual: it speaks only when
+    the login shell could not be read AND the process PATH holds nothing of the
+    user's own, which is the combination that actually costs them the toolchain.
+    """
+    global _SNAPSHOT_NOTE_SHOWN
+    _dirs, failure = _login_shell_path()
+    if failure is None or _SNAPSHOT_NOTE_SHOWN:
+        return []
+    try:
+        home = Path(os.path.realpath(Path.home()))
+    except (OSError, RuntimeError):
+        debug.swallowed("execution._path_snapshot_note")
+        return []
+    if not _path_looks_like_a_launcher(home):
+        debug.note("execution.snapshot_note",
+                   f"the login shell PATH could not be read ({failure}), and no "
+                   f"note was shown because the process PATH already reaches "
+                   f"the user's home")
+        return []
+    _SNAPSHOT_NOTE_SHOWN = True
+    return [
+        f"NOTE: isaacli was started with a PATH that holds no directory of the "
+        f"user's own, which is what a desktop launcher or a systemd user unit "
+        f"hands over, and the user's login shell could not be read to recover "
+        f"the rest ({failure}). Tools installed under the home (cargo, bun, "
+        f"fnm/node, uv, pyenv) are therefore NOT reachable inside the sandbox, "
+        f"even though they work in the user's terminal. Say so if a tool is "
+        f"missing: starting isaacli from a terminal fixes it. Do not conclude "
+        f"the machine does not have the tool."
+    ]
+
+
 def _toolchain_mounts(root):
     """Read-only mounts that let the jail run the toolchain the user has.
 
@@ -489,7 +752,7 @@ def _toolchain_mounts(root):
     # paths, and a home reached through a symlink would match none of them.
     home = Path(os.path.realpath(Path.home()))
     xdg_bases = _xdg_base_dirs(home)
-    binds, path_dirs, mounted, refused = [], [], [], []
+    binds, path_dirs, mounted, refused, origins = [], [], [], [], []
     forced_env = {}
     # What `build_bwrap` already mounts: /usr, /etc and the /bin, /lib, /sbin
     # symlinks into them. Kept separate from `mounted` because it decides
@@ -499,9 +762,7 @@ def _toolchain_mounts(root):
     system = [Path(path) for path in real] + [Path(link) for _, link in links]
     budget = _argument_budget()
 
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry:
-            continue                      # an empty PATH element means CWD
+    for entry, origin in _path_entries():
         # Resolved before anything is decided about it: the guards compare
         # paths, and a symlink would slip past comparisons that the target
         # fails. The resolved path is also what goes on the jail's PATH, since
@@ -516,7 +777,7 @@ def _toolchain_mounts(root):
             # Aggregated into a single note below: `debug.note` reports once per
             # site, so one call per refusal would show the first and hide the
             # rest, which is the silence this project refuses.
-            refused.append(f"{directory} ({refusal})")
+            refused.append(f"{directory} ({refusal}; from {origin})")
             continue
         # A directory earns its mount by holding executables. This is the guard
         # that a list of forbidden places would never have got right: caught by
@@ -527,15 +788,16 @@ def _toolchain_mounts(root):
         executables = _executables_in(directory)
         if not executables:
             refused.append(f"{directory} (no executable in it, so it is not a "
-                           f"toolchain directory)")
+                           f"toolchain directory; from {origin})")
             continue
         if _over_argument_budget(binds, budget):
             refused.append(f"{directory} (the bwrap argument list would go past "
-                           f"the kernel's limit)")
+                           f"the kernel's limit; from {origin})")
             break
         binds.append(directory)
         mounted.append(directory)
         path_dirs.append(str(directory))
+        origins.append(f"{directory} <- {origin}")
         for marker, variable, default in LAUNCHER_HOMES:
             probe = directory / marker
             try:
@@ -580,9 +842,20 @@ def _toolchain_mounts(root):
         if value in mounted_paths:
             env_pass[name] = value
 
+    snapshot_dirs, snapshot_failure = _login_shell_path()
+    snapshot_state = (snapshot_failure if snapshot_failure
+                      else f"{len(snapshot_dirs)} directories read")
+    # A PATH directory carries the origin that put it there; a directory pulled
+    # in behind one (an install tree, a launcher home) carries the PATH entry it
+    # came with, which is the only honest answer for it.
+    from_path = {origin.split(" <- ")[0] for origin in origins}
+    carried = [str(path) for path in binds if str(path) not in from_path]
     debug.note("execution.toolchain",
-               f"mounted read-only from the user's PATH: "
-               f"{', '.join(str(path) for path in binds) or 'nothing'}"
+               f"login shell PATH: {snapshot_state}"
+               f" | mounted read-only, each with where the directory came from: "
+               f"{'; '.join(origins) or 'nothing'}"
+               f" | mounted behind them (install trees, launcher homes): "
+               f"{', '.join(carried) or 'nothing'}"
                f" | forwarded: {', '.join(sorted(env_pass)) or 'nothing'}"
                f" | refused: {'; '.join(refused) or 'nothing'}")
     return binds, path_dirs, env_pass
@@ -922,8 +1195,9 @@ def _missing_program_note(err: str):
 
     The correction has a limit that the first version of this note walked
     straight past. All this function consults is `shutil.which`, which searches
-    ONE thing: the PATH of the process that started isaacli. So the note may
-    claim about that PATH and about nothing else. Saying "not installed on this
+    ONE thing: the PATH the jail was built from -- the process PATH plus the
+    login shell snapshot, exactly the set `_path_entries` mounted from. So the
+    note may claim about that PATH and about nothing else. Saying "not installed on this
     machine" was false in exactly the two cases that opened the task: measured
     on 2026-08-23, cargo is on this machine under
     `DevTools/workspace/036/toolchains`, and yarn 1.22.22 is in three npx
@@ -934,11 +1208,12 @@ def _missing_program_note(err: str):
     English on purpose, like every other text the model reads.
     """
     lines = []
+    search_path = _search_path()
     for name in _missing_programs(err):
-        host_path = shutil.which(name)
+        host_path = shutil.which(name, path=search_path)
         if host_path:
             lines.append(
-                f"NOTE: '{name}' IS on the PATH isaacli was started with, at "
+                f"NOTE: '{name}' IS on the PATH isaacli resolved, at "
                 f"{host_path}, and still could not be started inside the sandbox, "
                 f"which mounts the system directories and the directories on that "
                 f"PATH read-only. Something about that directory was refused (run "
@@ -947,8 +1222,9 @@ def _missing_program_note(err: str):
                 f"approve another route. Do not work around it silently.")
         else:
             lines.append(
-                f"NOTE: '{name}' is not on any directory of the PATH isaacli was "
-                f"started with, so it cannot be started here, and whether it is "
+                f"NOTE: '{name}' is not on any directory of the PATH isaacli "
+                f"resolved (the PATH it was started with, plus the user's login "
+                f"shell PATH), so it cannot be started here, and whether it is "
                 f"installed somewhere else on this machine is NOT known: that PATH "
                 f"is all this program looked at. Report it as absent from the PATH, "
                 f"never as absent from the machine, and tell the user, who can put "
@@ -1032,6 +1308,10 @@ def run_command(cmd: str, authorized=False) -> str:
     # just ran, not about the machine's configuration.
     if code != 0:
         parts.extend(_missing_program_note(err))
+    # A layer that went missing, in the same category as the two below: the jail
+    # ran without the user's toolchain within reach. Once per session, because
+    # it is about how isaacli was started and not about this command.
+    parts.extend(_path_snapshot_note())
     if cgroup_prefix is None:
         parts.append(
             "NOTE: systemd-run is not installed, so this command ran without "

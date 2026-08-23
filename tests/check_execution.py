@@ -7,6 +7,7 @@ EFFECT. A bait file is created outside the working directory and we verify it
 survived. A test that only looks at the refusal string passes identically on a
 sandbox that refuses and on one that refuses and then runs it anyway.
 """
+import io
 import os
 import platform
 import re
@@ -14,10 +15,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tool_harness"))
+import debug as debug_module
 import execution
 import tools
 
@@ -128,7 +131,7 @@ finally:
     os.environ["PATH"] = previous_path
 check("(exit code: 0)" not in out,
       f"the bait tool really did not run inside the sandbox: {out[:300]!r}")
-check("IS on the PATH isaacli was started with" in out and str(bait_tool) in out,
+check("IS on the PATH isaacli resolved" in out and str(bait_tool) in out,
       f"a program on the PATH and unreachable inside says exactly that, with the "
       f"path the search found: {out[:400]!r}")
 check("sandbox limit" in out,
@@ -471,6 +474,201 @@ for private in (home / ".config" / "isaacli" / "config.json",
     out = execution.run_command(f"cat {private}", authorized=True)
     check("(exit code: 0)" not in out,
           f"{private} is not readable from inside the sandbox: {out[:200]!r}")
+
+print("\n=== 7d. the jail's PATH does not depend on how isaacli was started ===")
+# Task 052. `os.environ["PATH"]` is the PATH of whoever STARTED isaacli, which is
+# the login shell's only from a terminal. From a `.desktop` file or a systemd
+# user unit it is the system minimum, and the home toolchain left the jail with
+# nothing reporting a problem: measured on 2026-08-23, zero mounts against
+# fifteen, `bun` answering "No such file or directory" inside where the terminal
+# answers 1.3.14. The fix reads the login shell once and UNITES it with the
+# process PATH.
+#
+# By effect, and the effect is the tool RUNNING: a check that read the note or
+# counted mounts would pass on a jail that mounts the directory and cannot start
+# anything in it. The login shell is planted rather than the real one, so this
+# measures the mechanism and not this machine's dotfiles, and it goes through the
+# real subprocess, the real marker parsing and the real union.
+def plant_tool(directory, name, says):
+    directory.mkdir(parents=True, exist_ok=True)
+    tool = directory / name
+    tool.write_text(f"#!/bin/sh\necho {says}\n")
+    tool.chmod(0o755)
+    return tool
+
+
+def plant_login_shell(path_value, banner=True, hang=False, marker=True):
+    """A stand-in for the user's login shell, shaped like the real thing.
+
+    The banner is not decoration: a dotfile that prints (a fortune, a version
+    check, a `neofetch`) is normal, and the first version of this parsing would
+    have taken that output for the PATH.
+    """
+    script = base / f"login_shell_{len(list(base.glob('login_shell_*')))}"
+    body = ["#!/bin/sh"]
+    if banner:
+        body.append("echo 'a banner some dotfile prints'")
+    if hang:
+        body.append("sleep 60")
+    if marker:
+        body.append(f"printf '\\n{execution.LOGIN_SHELL_MARKER}%s\\n' "
+                    f"'{path_value}'")
+    script.write_text("\n".join(body) + "\n")
+    script.chmod(0o755)
+    return script
+
+
+launcher_path = f"{os.path.dirname(shutil.which('sh'))}{os.pathsep}/bin"
+snapshot_bin = base / "snapshot_toolchain" / "bin"
+plant_tool(snapshot_bin, "snapshottool", "snapshottool 42")
+process_bin = base / "process_toolchain" / "bin"
+plant_tool(process_bin, "processtool", "processtool 42")
+
+
+def with_environment(path_value, shell, run):
+    """Run `run()` under a planted PATH and login shell, then put both back."""
+    keep = {name: os.environ.get(name) for name in ("PATH", "SHELL")}
+    execution.reset_path_snapshot()
+    os.environ["PATH"] = path_value
+    os.environ["SHELL"] = str(shell)
+    try:
+        return run()
+    finally:
+        for name, value in keep.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        execution.reset_path_snapshot()
+
+
+# BEFORE: the launcher's PATH, and no login shell that answers. This is the
+# defect exactly as it was, and it has to stay reproducible, or the check below
+# would pass on a machine where the tool was reachable for some other reason.
+mute_shell = plant_login_shell("", marker=False, banner=False)
+out_before = with_environment(
+    launcher_path, mute_shell,
+    lambda: execution.run_command("snapshottool", authorized=True))
+check("snapshottool 42" not in out_before,
+      f"the planted tool really is out of reach from a launcher-style PATH when "
+      f"the login shell cannot be read: {out_before[:300]!r}")
+check("NOTE: isaacli was started with a PATH that holds no directory of the "
+      "user's own" in out_before,
+      f"and that state is NOT silent: the output says the toolchain may be out "
+      f"of reach: {out_before[:500]!r}")
+check("could not be read to recover the rest" in out_before
+      and str(mute_shell) in out_before,
+      f"the note carries the REASON, naming the shell it asked: "
+      f"{out_before[:500]!r}")
+
+# AFTER: same launcher PATH, and a login shell that reports the toolchain.
+good_shell = plant_login_shell(f"{snapshot_bin}{os.pathsep}{launcher_path}")
+out_after = with_environment(
+    launcher_path, good_shell,
+    lambda: execution.run_command("snapshottool", authorized=True))
+check("snapshottool 42" in out_after,
+      f"a tool that only the LOGIN shell's PATH knows about runs inside the jail, "
+      f"so the jail no longer depends on how isaacli was started: "
+      f"{out_after[:400]!r}")
+check("NOTE: isaacli was started with a PATH" not in out_after,
+      f"and the note does not fire when nothing was lost: {out_after[:400]!r}")
+
+# UNION, not replacement. A terminal, a direnv or a nix shell already put the
+# right thing in front of the process PATH, and the snapshot must not evict it.
+out_union = with_environment(
+    f"{process_bin}{os.pathsep}{launcher_path}", good_shell,
+    lambda: execution.run_command("processtool && snapshottool", authorized=True))
+check("processtool 42" in out_union and "snapshottool 42" in out_union,
+      f"the two PATHs are UNITED: a tool only the process PATH knows and a tool "
+      f"only the snapshot knows both run: {out_union[:400]!r}")
+order = with_environment(
+    f"{process_bin}{os.pathsep}{launcher_path}", good_shell,
+    lambda: [entry for entry, _origin in execution._path_entries()])
+check(order.index(str(process_bin)) < order.index(str(snapshot_bin)),
+      f"and the process PATH keeps its precedence, since the snapshot only adds "
+      f"back what a launcher dropped: {order!r}")
+
+# The snapshot is read ONCE per session: the user's profile is a program, and
+# running it per command would run it dozens of times in one session.
+calls = []
+original_read = execution._read_login_shell_path
+execution._read_login_shell_path = lambda: (calls.append(1), original_read())[1]
+try:
+    with_environment(launcher_path, good_shell,
+                     lambda: [execution._path_entries() for _ in range(5)])
+finally:
+    execution._read_login_shell_path = original_read
+check(len(calls) == 1,
+      f"the login shell is run once per session and reused, not once per "
+      f"command: it ran {len(calls)} times")
+
+# A profile that blocks forever must not take the session's first command with
+# it. By effect: the ceiling is lowered and the wall clock is measured, because
+# a check that only read the reason would pass on a version that waited the full
+# minute and then reported the timeout.
+hanging_shell = plant_login_shell("", hang=True)
+previous_login_timeout = execution.LOGIN_SHELL_TIMEOUT_SECONDS
+execution.LOGIN_SHELL_TIMEOUT_SECONDS = 1.0
+started = time.monotonic()
+try:
+    entries = with_environment(launcher_path, hanging_shell,
+                               lambda: execution._path_entries())
+finally:
+    execution.LOGIN_SHELL_TIMEOUT_SECONDS = previous_login_timeout
+elapsed = time.monotonic() - started
+check(elapsed < 15,
+      f"a login shell that hangs is killed at the ceiling instead of blocking "
+      f"the session: it took {elapsed:.1f}s")
+check([entry for entry, _origin in entries] == launcher_path.split(os.pathsep),
+      f"and the process PATH is kept when the shell does not answer, since "
+      f"failing to read it is a normal state and not an error: {entries!r}")
+
+# --debug says where each mounted directory came from. The defect this task
+# fixes was invisible precisely because nothing named which PATH was read.
+debug_module.enable(True)
+captured = io.StringIO()
+previous_stderr = sys.stderr
+sys.stderr = captured
+try:
+    with_environment(f"{process_bin}{os.pathsep}{launcher_path}", good_shell,
+                     lambda: execution._toolchain_mounts(root))
+finally:
+    sys.stderr = previous_stderr
+    debug_module.enable(False)
+reported = captured.getvalue()
+check(f"{process_bin} <- {execution.FROM_PROCESS}" in reported,
+      f"--debug names the origin of a directory that came from the process "
+      f"PATH: {reported[:600]!r}")
+check(f"{snapshot_bin} <- {execution.FROM_SNAPSHOT}" in reported,
+      f"--debug names the origin of a directory that came from the login shell "
+      f"snapshot: {reported[:600]!r}")
+
+# A refusal keeps saying WHY, and now also which PATH proposed it. Planted: a
+# git checkout on the login shell's PATH, which `_mountable` refuses by name.
+refused_checkout = base / "snapshot_checkout"
+plant_tool(refused_checkout, "checkouttool", "checkouttool")
+(refused_checkout / ".git").mkdir(exist_ok=True)
+refusing_shell = plant_login_shell(f"{refused_checkout}{os.pathsep}{launcher_path}")
+debug_module.enable(True)
+captured = io.StringIO()
+sys.stderr = captured
+try:
+    with_environment(launcher_path, refusing_shell,
+                     lambda: execution._toolchain_mounts(root))
+finally:
+    sys.stderr = previous_stderr
+    debug_module.enable(False)
+reported = captured.getvalue()
+check(f"{refused_checkout} (a git checkout" in reported
+      and f"from {execution.FROM_SNAPSHOT}" in reported,
+      f"a directory refused by _mountable is named with its reason AND with the "
+      f"PATH that proposed it: {reported[:600]!r}")
+check(str(refused_checkout) not in
+      [str(path) for path in with_environment(
+          launcher_path, refusing_shell,
+          lambda: execution._toolchain_mounts(root)[0])],
+      "and the snapshot does not widen what may be mounted: a git checkout it "
+      "names is refused exactly as one on the process PATH is")
 
 print("\n=== 8. no network for what the user was never shown ===")
 # Careful writing this assert: looking for a sentinel word in the output does not

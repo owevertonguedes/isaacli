@@ -52,7 +52,7 @@ worked on.
 | `tool_harness/agent.py` | Ollama/API calls, streaming, normalisation and the tool loop | Ollama uses `/api/chat`; remote APIs use `/chat/completions`. |
 | `tool_harness/workspace_instructions.py` | loads the selected workspace's root `AGENTS.md` as bounded untrusted project text | It never walks above the workspace, loads `CLAUDE.md` or persists a copy. Built-in tool, approval, sandbox and safety rules stay first. |
 | `tool_harness/tools.py` | schemas and implementations of the agent's tools | `fetch_url` is the general web reader; unapproved terminal commands stay offline in the sandbox. |
-| `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. What the jail can reach outside the system directories is decided by `_toolchain_mounts` from the user's own PATH, always read-only; every refusal has a reason in `_mountable` and reaches `--debug`. |
+| `tool_harness/execution.py` | classification, approval and confined execution of programs | Never add a shell, pipes or redirection as a UI shortcut. Never add a veto the user cannot see: once a command is approved, only the kernel says no. What the jail can reach outside the system directories is decided by `_toolchain_mounts` from the user's own PATH, always read-only; every refusal has a reason in `_mountable` and reaches `--debug`. That PATH is the union of the process PATH and a login-shell snapshot read once per session (`_login_shell_path`), never one substituted for the other, because the PATH of whoever launched isaacli is the login shell's only from a terminal; the snapshot obeys the same refusals and its absence is reported, never silent. |
 | `tool_harness/seccomp_filter.py` | assembles the seccomp-BPF program `execution.py` hands to `bwrap` | Pure Python, no `libseccomp` dependency and no committed blob, so the deny-list stays reviewable. Syscall numbers are x86_64's; `build_filter()` returns `None` elsewhere instead of guessing. |
 | `tool_harness/gguf.py` | reads geometry out of a GGUF header without loading the weights | Every read is bounded by the size of the file being read. A hybrid model declares `head_count_kv` per layer with zeros where a layer caches nothing; counting all blocks as attention layers overstates the KV cache threefold. |
 | `tool_harness/local_models.py` | weights already on this machine: folders the user names, what isaacli downloaded, and what Ollama holds | Ollama's blob store is read and never written. Its weights are reused by symlink under `models/from-ollama/`, kept apart from `models/downloaded/` so removing one can never take the other. |
@@ -312,6 +312,19 @@ may stop fitting entirely in the GPU.
   `clone3` alone: seccomp cannot read the flags behind its struct pointer, and
   denying it would break threads in `python3` and `pytest`, so "no nested user
   namespaces" is not a claim this project makes;
+- the toolchain the jail can reach is decided by the user's PATH and by nothing
+  else, and "the user's PATH" means the union of the PATH isaacli was started
+  with and a snapshot of the login shell's, read once per session with a time
+  ceiling. Neither replaces the other: reading only the process PATH made the
+  jail depend on whether isaacli was opened from a terminal or from an icon, and
+  reading only the login shell would evict what a `direnv` or a `nix develop`
+  put in front. Running the user's shell profile to decide this is deliberate
+  and bounded to that one source: the profile is the user's own and already runs
+  in every terminal they open, and no PATH from a config file, a third-party
+  variable or a repository is ever consulted. Directories from the snapshot pass
+  the same `_mountable` refusals as any other, and failing to read it keeps the
+  process PATH and appends a one-time `NOTE:` with the reason instead of going
+  quiet (see `tasks/done/052-o-path-da-jaula-e-o-de-quem-abriu-o-isaacli.md`);
 - no exposure of API keys in config, logs or output;
 - public URLs validated against local and private destinations;
 - child processes tied to the right lifecycle, and idempotent cleanup;
