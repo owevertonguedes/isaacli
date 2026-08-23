@@ -260,6 +260,44 @@ try:
           + (f" (found {', '.join(floating)})" if floating else ""))
     check("qwen3:4b-instruct-2507-q4_K_M" not in setup_ollama.RECOMMENDED,
           "the old test Qwen does not appear in the curation")
+
+    # The suggestion list is the screen the choice is made on. A measurement
+    # that reaches only the discovery screen and the line printed after the
+    # choice is a measurement nobody used, which is what happened the first
+    # time: the numbers landed in `benchmark_cell`, the suggestion row is built
+    # by `_model_label`, and the two never met.
+    import terminal_ui
+
+    for language in ("en", "pt-BR"):
+        speak = setup_ollama.Translator(language)
+        rows = {item["base_model"]: setup_ollama._model_label(item, [], speak)
+                for item in setup_ollama._recommended_catalog(None)}
+        for item in setup_ollama.LOCAL_CATALOG:
+            measured = item.get("measured_here")
+            if not measured:
+                continue
+            row = rows[item["reference"]]
+            check(measured["humaneval"] in row
+                  and f"{measured['tokens_per_second']:.0f}" in row,
+                  f"[{language}] the suggestion row for {item['reference']} "
+                  f"carries what was measured here ({row})")
+            check(speak.t("model.origin.measured") in row
+                  and speak.t("model.origin.curated") not in row,
+                  f"[{language}] a measured row says measured, not reviewed")
+            # Everything after the fit text is the first thing an 80-column
+            # terminal throws away, so the measurement cannot live there.
+            narrow = terminal_ui.fit(row, 77)
+            check(speak.t("model.origin.measured") in narrow
+                  and measured["humaneval"] in narrow,
+                  f"[{language}] the measurement survives an 80-column "
+                  f"terminal ({narrow})")
+
+        unmeasured = [item["reference"] for item in setup_ollama.LOCAL_CATALOG
+                      if not item.get("measured_here")]
+        for reference in unmeasured:
+            check(speak.t("model.origin.measured") not in rows[reference],
+                  f"[{language}] {reference} is not called measured, because "
+                  "nobody measured it")
     check(
         setup_ollama._normalize_api_url(
             "https://api.groq.com/openai/v1/chat/completions/"

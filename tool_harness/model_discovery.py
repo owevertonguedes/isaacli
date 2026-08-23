@@ -424,7 +424,13 @@ def origin(model):
     The user reads a list of suggestions and has no way to tell which rows this
     program stands behind. Saying it on each row is what keeps a live search
     result from borrowing the standing of a reviewed one.
+
+    A row measured on this machine outranks a curated one, because curation is
+    somebody's judgement and a measurement is a number anybody can re-run.
     """
+    if model.get("measured_here") or (model.get("catalog") or {}).get(
+            "measured_here"):
+        return "measured"
     if model.get("curated"):
         return "curated"
     return "scored" if model.get("scores") else "discovered"
@@ -570,6 +576,31 @@ def measured_cell(model, translate=None):
         tools=translate("model.score.measured_tools_yes"
                         if measured.get("native_tool_call")
                         else "model.score.measured_tools_no"),
+    )
+
+
+def measured_summary(model, translate=None):
+    """The measurement short enough to sit on a row of the suggestion list.
+
+    `measured_cell` is the full form and fits the discovery screen, which draws
+    one wide column. The suggestion list already spends its width on the name,
+    the install state, the origin and the fit, so the same sentence there would
+    wrap and take the row with it. This keeps the two numbers that decide, the
+    pass count and the throughput, plus whether the model drives tools at all,
+    which for an agent decides more than either.
+    """
+    translate = translate or text
+    measured = model.get("measured_here") or (
+        model.get("catalog") or {}).get("measured_here")
+    if not measured:
+        return ""
+    return translate(
+        "model.score.measured_short",
+        humaneval=measured["humaneval"],
+        tps=f"{measured['tokens_per_second']:.0f}",
+        tools=translate("model.score.measured_short_tools_yes"
+                        if measured.get("native_tool_call")
+                        else "model.score.measured_short_tools_no"),
     )
 
 

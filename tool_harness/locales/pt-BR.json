@@ -438,7 +438,7 @@
   "model.fit.no_gpu_sized": "Nenhuma GPU detectada, então o cabimento em VRAM não se aplica: pesos de {weights} GiB rodariam na CPU e na RAM do sistema, bem mais devagar.",
   "model.fit.report": "{fits}. Pesos {weights} GiB, cache KV a 16K {kv} GiB, total {total} GiB, VRAM disponível depois da folga do runtime {available} GiB.",
   "model.fit.unknown": "Tamanho desconhecido, então não é possível afirmar se cabe.",
-  "model.option": "{model} [{state}] [{origin}] | {fit}",
+  "model.option": "{model} [{origin}{measured}] [{state}] | {fit}",
   "onboarding.task.build_new": "Construir algo novo",
   "onboarding.task.explain": "A resposta seleciona a régua pública relevante. Ela nunca escolhe nem filtra um modelo. Execute isaacli setup novamente quando quiser mudar.",
   "onboarding.task.explain_code": "Ler e explicar o código de outra pessoa",
@@ -560,5 +560,9 @@
   "model.score.measured_tools_yes": ", chama ferramenta nativamente",
   "model.score.measured_tools_no": ", não chama ferramenta neste harness",
   "model.score.both": "{measured}; {upstream}",
-  "model.discovery.measured_line": "Medido nesta máquina em {date}: {humaneval} no HumanEval, {tps} tok/s numa {gpu}{tools}. Relatório completo: {report}"
+  "model.discovery.measured_line": "Medido nesta máquina em {date}: {humaneval} no HumanEval, {tps} tok/s numa {gpu}{tools}. Relatório completo: {report}",
+  "model.origin.measured": "medido aqui",
+  "model.score.measured_short": ": {humaneval} no HumanEval, {tps} tok/s{tools}",
+  "model.score.measured_short_tools_yes": ", chama ferramenta",
+  "model.score.measured_short_tools_no": ", não chama ferramenta"
 }

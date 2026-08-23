@@ -232,8 +232,13 @@ def _model_label(item, installed, tr):
     state = ("model.installed" if _is_installed(base, installed)
               else "model.not_installed")
     fit = item.get("fit_label") or tr.t("model.fit.unknown")
+    # The suggestion list is the screen the choice is made on, so evidence that
+    # only appears after the choice is evidence nobody used. This row carried
+    # the origin label and nothing else, which said a human picked the model
+    # and never said what anyone measured.
     return tr.t("model.option", model=base, state=tr.t(state),
-                origin=_origin_label(item, tr), fit=fit)
+                origin=_origin_label(item, tr), fit=fit,
+                measured=model_discovery.measured_summary(item, tr.t))
 
 
 def _origin_label(item, tr):

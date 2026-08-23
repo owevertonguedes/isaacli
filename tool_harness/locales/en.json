@@ -438,7 +438,7 @@
   "model.fit.no_gpu_sized": "No GPU detected, so VRAM fit does not apply: weights {weights} GiB would run on CPU and system RAM, much slower.",
   "model.fit.report": "{fits}. Weights {weights} GiB, KV cache at 16K {kv} GiB, total {total} GiB, available VRAM after runtime overhead {available} GiB.",
   "model.fit.unknown": "Size unknown, so fit cannot be stated.",
-  "model.option": "{model} [{state}] [{origin}] | {fit}",
+  "model.option": "{model} [{origin}{measured}] [{state}] | {fit}",
   "onboarding.task.build_new": "Build something new",
   "onboarding.task.explain": "This selects the relevant public ruler. It never chooses or filters a model. Run isaacli setup again whenever you want to change it.",
   "onboarding.task.explain_code": "Read and explain someone else's code",
@@ -560,5 +560,9 @@
   "model.score.measured_tools_yes": ", calls tools natively",
   "model.score.measured_tools_no": ", does not call tools in this harness",
   "model.score.both": "{measured}; {upstream}",
-  "model.discovery.measured_line": "Measured on this machine on {date}: {humaneval} on HumanEval, {tps} tok/s on {gpu}{tools}. Full report: {report}"
+  "model.discovery.measured_line": "Measured on this machine on {date}: {humaneval} on HumanEval, {tps} tok/s on {gpu}{tools}. Full report: {report}",
+  "model.origin.measured": "measured here",
+  "model.score.measured_short": ": {humaneval} HumanEval, {tps} tok/s{tools}",
+  "model.score.measured_short_tools_yes": ", tools ok",
+  "model.score.measured_short_tools_no": ", no tool calls"
 }
