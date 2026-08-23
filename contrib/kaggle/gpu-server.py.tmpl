@@ -27,6 +27,13 @@ CONTEXT = __CONTEXT__
 # gigabytes bills exactly like serving does.
 SESSION_SECONDS = __SESSION_SECONDS__
 SESSION_ENDS_AT = time.monotonic() + SESSION_SECONDS
+# The other half of the same brake, and the one the incident actually called
+# for. The wall ceiling answers "this may never cost more than N hours"; this
+# answers "and it stops as soon as nobody is on the other end". The client
+# beats while its session is open, so the beats stop when the terminal is
+# closed, killed, cut off from the network, or interrupted, which is every way
+# the window that launched a kernel has been lost so far.
+IDLE_SECONDS = __IDLE_SECONDS__
 PORT = 8080
 # The attached inputs are read-only and already expanded by Kaggle.
 SCRATCH = tempfile.gettempdir()
@@ -185,7 +192,48 @@ stage("starting llama-server, which reads the whole weight before it answers")
 print(f"[vram] plan: weight={model_path.stat().st_size} bytes context={CONTEXT} "
       f"gpu_count={GPU_COUNT}", flush=True)
 report_vram("before the server starts")
-server = subprocess.Popen(server_command, env=server_env)
+
+# Whoever is on the other end of the tunnel is only visible here through
+# llama-server's own request log. This kernel cannot see cloudflared's traffic
+# and llama-server is not ours to instrument, but it announces every request it
+# serves, and that announcement is the proof that somebody is still there.
+last_request = [None]
+last_request_lock = threading.Lock()
+
+
+def watch_server_log(stream):
+    """Pass llama-server's log through, stamping when a request arrives.
+
+    Every line is echoed unchanged: this log is also the only account of what
+    the session did, and Kaggle keeps only a few dozen records of it, so
+    swallowing lines here would cost the next investigation its evidence.
+    """
+    for line in stream:
+        if "request: " in line:
+            with last_request_lock:
+                last_request[0] = time.monotonic()
+        print(line, end="", flush=True)
+
+
+# A pipe turns llama-server's own C stdout from line buffered into block
+# buffered, and a stamp that arrives a block late is a live session that looks
+# idle. `stdbuf` is how you tell a C program otherwise from the outside, and it
+# is coreutils, so it is there. When it is not, the switch is left unarmed
+# rather than armed on stamps that cannot be trusted: unarmed can only fail
+# towards spending the ceiling that was agreed, and armed on bad timing would
+# end a session somebody is using. A layer that disappears has to say so.
+line_buffered = ["stdbuf", "-oL", "-eL"] if shutil.which("stdbuf") else []
+if line_buffered:
+    server = subprocess.Popen(
+        line_buffered + server_command, env=server_env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    threading.Thread(
+        target=watch_server_log, args=(server.stdout,), daemon=True).start()
+else:
+    print("NOTE: stdbuf is missing, so this session cannot watch its own request "
+          f"log. It will not end itself when the client goes quiet; only the "
+          f"{SESSION_SECONDS} s ceiling applies.", flush=True)
+    server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"
 mounted_cloudflared = optional_input("cloudflared-linux-amd64")
@@ -240,6 +288,25 @@ def ceiling_reached():
     return time.monotonic() >= SESSION_ENDS_AT
 
 
+def idle_reached():
+    """Whether the other end went quiet for longer than was agreed.
+
+    Armed only once a request has actually been seen. Until then nothing has
+    proved this kernel can recognise a request at all, and a dead-man's switch
+    allowed to fire without that proof would end a session that was paid for,
+    because a log line changed shape in a future llama.cpp build. The wall
+    ceiling covers that window, so the unarmed state is never unbounded.
+
+    Arming is not left to the client either: the readiness probe above polls
+    this same server while the weights load, so by the time the session is
+    published the switch has been armed by traffic this script generated
+    itself. What the client's heartbeat then does is keep it from firing.
+    """
+    with last_request_lock:
+        seen = last_request[0]
+    return seen is not None and time.monotonic() - seen >= IDLE_SECONDS
+
+
 def end_session(reason):
     """Stop billing now, and say why, instead of waiting to be deleted."""
     print(f"[shutdown] {reason}; ending the session", flush=True)
@@ -269,7 +336,13 @@ while not serving():
 report_vram("with the model loaded and answering")
 print("TUNNEL_URL=" + url, flush=True)
 while server.poll() is None and tunnel.poll() is None:
+    # Whichever comes first. They answer different questions: the ceiling caps
+    # what this can ever cost, and the silence says the cost stopped buying
+    # anything the moment the other end went away.
     if ceiling_reached():
         end_session(f"the agreed ceiling of {SESSION_SECONDS} s is up")
+    if idle_reached():
+        end_session(f"nothing has been asked of this server in {IDLE_SECONDS} s, "
+                    "so the window that launched it is gone")
     time.sleep(30)
 raise RuntimeError("the model server or tunnel exited")

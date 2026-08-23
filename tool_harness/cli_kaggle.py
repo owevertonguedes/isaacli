@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,22 @@ SESSION_TIMEOUT_SECONDS = 4 * 60 * 60
 # short: the longest load measured on this account, 22.53 GiB off an attached
 # dataset, took over half an hour before the server answered.
 SESSION_CEILING_HOURS = (1, 2, 3, 4)
+# The client's heartbeat, and the silence the kernel reads as the client being
+# gone. The period is not a preference: the kernel notices anything at the
+# granularity of its own watch, which is the 30 s sleep in its serving loop, so
+# beating faster buys nothing it can see and beating slower would let a live
+# session look dead between two of its own checks.
+#
+# The tolerance is ten of those beats. A single missed beat is a network blip:
+# measured on this account on 2026-08-21, the same request reported 9.12 tok/s
+# at the server and delivered 8.79 tok/s through the tunnel, a gap of about 4%,
+# so the round trip is far under a second and one failure in thirty is noise.
+# Ten consecutive failures over five minutes is not noise. Five minutes is also
+# the whole exposure of being wrong, against a smallest agreed ceiling of an
+# hour, so a false positive costs 1.4% of the cheapest launch and a false
+# negative used to cost four hours.
+HEARTBEAT_SECONDS = 30
+SESSION_IDLE_SECONDS = 10 * HEARTBEAT_SECONDS
 ACCELERATORS = {
     "NvidiaTeslaP100": {
         "label": "P100 16 GB", "vram_mb": 16384,
@@ -974,6 +991,7 @@ KERNEL_VALUE_PATTERNS = {
     "__SPLIT_MODE__": re.compile(r"[a-z]+"),
     "__CONTEXT__": re.compile(r"[0-9]+"),
     "__SESSION_SECONDS__": re.compile(r"[0-9]+"),
+    "__IDLE_SECONDS__": re.compile(r"[0-9]+"),
 }
 
 # 16384 is what every launch used to get, and it is a floor rather than a
@@ -1167,6 +1185,7 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
     template = (TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
     values = {
         "__SESSION_SECONDS__": str(int(session_seconds)),
+        "__IDLE_SECONDS__": str(int(SESSION_IDLE_SECONDS)),
         "__MODEL_REPO__": model["repo"],
         "__MODEL_FILE__": model["file"],
         "__MODEL_ALIAS__": model["alias"],
@@ -2094,6 +2113,87 @@ def release_profile_session(profile_name, config_file=None, pid=None):
     return slug, holders
 
 
+_heartbeats = {}
+
+
+def _kaggle_profile_name(config_file=None):
+    """The profile a fresh launch just made the default, asked rather than kept.
+
+    `run_kaggle` names the profile it saved on the screen, not to its caller,
+    and the caller in cli.py rereads the configuration for exactly this reason.
+    Reading it here keeps that one fact in one place instead of two.
+    """
+    name, _item = config.profile(config.load(config_file))
+    return name
+
+
+def start_session_heartbeat(profile_name, config_file=None,
+                            urlopen_fn=urllib.request.urlopen,
+                            interval=HEARTBEAT_SECONDS):
+    """Keep telling the kernel this window is still here, until it is not.
+
+    The wall ceiling caps what a launch can ever cost. It does not shorten the
+    case that actually happened on 2026-08-23, where the window conducting a
+    run was cut off while the kernel was serving and the kernel billed for four
+    hours for nobody: the ceiling was the only thing that ever stopped it, and
+    a ceiling is by definition the worst case rather than the right one.
+
+    A dead-man's switch is the standard answer, and the standard shape of it is
+    this: the side that must not outlive the other keeps sending a sign of life,
+    and stopping is the signal. Everything the user asked to be covered is the
+    same event from the kernel's side, which is what makes this one mechanism
+    instead of four: the terminal closed, the terminal killed, the machine's
+    network gone, Ctrl+C. In every one of them this process stops beating.
+
+    It is a daemon thread on purpose, and that is not an implementation detail:
+    a daemon thread cannot outlive the interpreter, so there is no way for this
+    program to exit while still claiming to be alive. It also beats on a timer
+    rather than on inference traffic, which is what keeps a user who is reading
+    or thinking for ten minutes from being read as gone.
+    """
+    profile = (config.load(config_file).get("profiles") or {}).get(profile_name)
+    if not profile or not profile.get("base_url"):
+        debug.note("cli_kaggle.start_session_heartbeat",
+                   f"{profile_name} names no endpoint to beat against")
+        return None
+    running = _heartbeats.get(profile_name)
+    if running is not None and running.is_alive():
+        return running
+    stop = threading.Event()
+    secret_path = _secret_path(config_file)
+
+    def beat():
+        # `wait` returns True the moment the session ends, so closing the
+        # program never waits out a sleep before the process can go.
+        while not stop.wait(interval):
+            try:
+                answered = _endpoint_answers(profile, secret_path, urlopen_fn)
+            except Exception as error:
+                # A heartbeat that can raise is a heartbeat that can take the
+                # session down with it. Nothing here is worth that, and the
+                # kernel already treats silence as the answer.
+                debug.note("cli_kaggle.start_session_heartbeat beat", error)
+                continue
+            if not answered:
+                debug.note("cli_kaggle.start_session_heartbeat beat",
+                           f"{profile_name} did not answer this beat")
+
+    thread = threading.Thread(
+        target=beat, name=f"isaacli-heartbeat-{profile_name}", daemon=True)
+    thread.stop_beating = stop
+    _heartbeats[profile_name] = thread
+    thread.start()
+    return thread
+
+
+def stop_session_heartbeat(profile_name):
+    """Stop beating for a session that is over, so the kernel can go quietly."""
+    thread = _heartbeats.pop(profile_name, None)
+    if thread is not None:
+        thread.stop_beating.set()
+    return thread
+
+
 def ensure_profile_session(profile_name, input_fn=None, config_file=None,
                            urlopen_fn=urllib.request.urlopen, run_kaggle_fn=None,
                            pid=None):
@@ -2121,6 +2221,7 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
             return None
         debug.note("cli_kaggle.ensure_profile_session",
                    f"{record['slug']} is still serving, nothing was pushed")
+        start_session_heartbeat(profile_name, config_file)
         return "live"
     print(t("cli.kaggle.session.gone", slug=record["slug"]))
     _forget_kernel_record(record["slug"], config_file)
@@ -2140,7 +2241,13 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
 
         run_kaggle_fn = setup_ollama.run_kaggle
     code = run_kaggle_fn(config_file=config_file, input_fn=input_fn)
-    return "relaunched" if code == 0 else "failed"
+    if code != 0:
+        return "failed"
+    # A kernel this program just pushed is the one most exposed to the client
+    # dying: nobody has used it yet, so nothing else would ever make a request
+    # against it, and its silence would read as abandonment within minutes.
+    start_session_heartbeat(_kaggle_profile_name(config_file), config_file)
+    return "relaunched"
 
 
 def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
@@ -2159,6 +2266,9 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
     stops nothing while the other still holds the record; the last one out is
     what ends the session, so the brake stays inside the program either way.
     """
+    # Beating for a session this window is leaving would be this program lying
+    # about being there, and the lie would keep somebody else's kernel alive.
+    stop_session_heartbeat(profile_name)
     record = profile_kernel_record(profile_name, config_file)
     if record is None:
         return None

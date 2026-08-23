@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
@@ -2715,7 +2716,7 @@ cli_kaggle._render_kernel(
 measured = (measured_folder / "isaacli-gpu-vram.py").read_text(encoding="utf-8")
 before_call = measured.find('report_vram("before the server starts")')
 loaded_call = measured.find('report_vram("with the model loaded and answering")')
-server_start = measured.find("subprocess.Popen(server_command")
+server_start = measured.find("server = subprocess.Popen(")
 url_publish = measured.find('print("TUNNEL_URL=')
 check(-1 < before_call < server_start < loaded_call < url_publish,
       "the kernel reads the cards before the server starts and again once it answers")
@@ -2962,6 +2963,8 @@ def run_ceiling(session_seconds, serving_answer):
         "SESSION_SECONDS": session_seconds,
         "SESSION_ENDS_AT": clock.monotonic() + session_seconds,
         "server": _Child(), "tunnel": _Child(),
+        "IDLE_SECONDS": 300,
+        "last_request": [None], "last_request_lock": threading.Lock(),
         "serving": lambda: serving_answer,
         "report_vram": lambda _moment: None,
         "url": "https://ceiling.trycloudflare.com",
@@ -3005,6 +3008,8 @@ stubborn_clock = _Clockwork()
 stubborn_scope = {
     "time": stubborn_clock, "subprocess": subprocess, "SESSION_SECONDS": 120,
     "SESSION_ENDS_AT": stubborn_clock.monotonic() + 120,
+    "IDLE_SECONDS": 300,
+    "last_request": [None], "last_request_lock": threading.Lock(),
     "server": stubborn, "tunnel": _Child(), "serving": lambda: True,
     "report_vram": lambda _moment: None, "url": "https://x.trycloudflare.com",
 }
@@ -3065,6 +3070,259 @@ finally:
     cli_kaggle.discover_tunnel_url = original_discover
 check(discovery_timeouts == [cli_kaggle.SESSION_CEILING_HOURS[0] * 3600],
       "the window waits exactly as long as the kernel it agreed to, not longer")
+
+# ----------------------------------------------------------------------
+# The dead-man's switch: the kernel ends itself when the client goes quiet.
+#
+# The wall ceiling caps what a launch can cost. It does not shorten the case
+# that happened: the window conducting the run was cut off while the kernel was
+# serving, and the ceiling was the only thing that ever stopped it, four hours
+# later. The kernel now watches llama-server's own request log, and the client
+# beats on a timer for as long as its session is open. Everything the switch
+# has to cover, from a closed terminal to a lost network to Ctrl+C, is the same
+# event on this side: the beats stop.
+#
+# Driven against a clock the check advances, so a five-minute silence is
+# exercised in milliseconds with no kernel and no quota.
+# ----------------------------------------------------------------------
+def run_idle(idle_seconds, beats, patience=200):
+    """Run the kernel's shutdown logic with a client that beats, or stops."""
+    clock = _Clockwork()
+    stamped = [None]
+    server = _Child(patience=patience)
+    original_poll = server.poll
+
+    def poll_and_maybe_beat():
+        # A beat is a request llama-server logs, which is what stamps the
+        # clock. `beats` decides whether the client is still there.
+        if beats(clock.monotonic()):
+            stamped[0] = clock.monotonic()
+        return original_poll()
+
+    server.poll = poll_and_maybe_beat
+    scope = {
+        "time": clock, "subprocess": subprocess,
+        "SESSION_SECONDS": 10 ** 9,
+        "SESSION_ENDS_AT": clock.monotonic() + 10 ** 9,
+        "IDLE_SECONDS": idle_seconds,
+        "last_request": stamped, "last_request_lock": threading.Lock(),
+        "server": server, "tunnel": _Child(patience=patience),
+        "serving": lambda: True, "report_vram": lambda _moment: None,
+        "url": "https://idle.trycloudflare.com",
+    }
+    source = ceiling_source[ceiling_source.index("def ceiling_reached"):]
+    ended, screen = None, io.StringIO()
+    try:
+        with redirect_stdout(screen):
+            exec(compile(source, "gpu-server-idle", "exec"), scope)
+    except SystemExit as exit_code:
+        ended = exit_code.code
+    except RuntimeError as error:
+        ended = error
+    return ended, screen.getvalue(), scope
+
+
+# A client that keeps beating, with no inference traffic at all between beats:
+# a user reading or thinking is not a user who left, and the timer is what
+# tells those apart.
+beating_end, beating_screen, _beating = run_idle(300, lambda _now: True)
+check(isinstance(beating_end, RuntimeError) and "[shutdown]" not in beating_screen,
+      "a session whose client keeps beating is never ended for being idle")
+
+# The same session, with the beats stopping partway: the terminal was closed,
+# killed, cut off, or interrupted, which all look like this from here.
+stop_after = [None]
+
+
+def beats_then_stops(now):
+    if stop_after[0] is None:
+        stop_after[0] = now + 120
+    return now <= stop_after[0]
+
+
+silent_end, silent_screen, _silent = run_idle(300, beats_then_stops)
+check(silent_end == 0 and "nothing has been asked" in silent_screen
+      and "[shutdown]" in silent_screen,
+      "a client that stops beating ends the kernel, and the log says why")
+
+# The switch must not fire before it has proved it can see a request at all. A
+# future llama.cpp whose log line reads differently would otherwise end a
+# session that was paid for, and the wall ceiling already bounds that window.
+unarmed_end, unarmed_screen, _unarmed = run_idle(300, lambda _now: False)
+check(isinstance(unarmed_end, RuntimeError) and "[shutdown]" not in unarmed_screen,
+      "a switch that has never seen a request cannot fire on the silence it never heard")
+
+# The kernel only learns about requests from llama-server's own log, so that
+# log has to reach it: piped, and passed through rather than swallowed.
+check("stderr=subprocess.STDOUT" in ceiling_source
+      and "watch_server_log" in ceiling_source
+      and 'print(line, end="", flush=True)' in ceiling_source,
+      "llama-server's log is read for requests and still printed in full")
+check(f"IDLE_SECONDS = {cli_kaggle.SESSION_IDLE_SECONDS}" in ceiling_source,
+      "the silence the kernel accepts is the one the client's beat is timed against")
+
+# Piping turns llama-server's own C stdout from line buffered into block
+# buffered, and a stamp that arrives a block late is a live session reading as
+# idle. The kernel launches it under stdbuf for that reason, and when stdbuf is
+# missing it says so and leaves the switch unarmed rather than arming it on
+# timings it cannot trust. Run for real, with a stdbuf that is not there.
+launch_source = ceiling_source[
+    ceiling_source.index("line_buffered = ["):ceiling_source.index("cloudflared = ")]
+launched = {}
+
+
+def _fake_popen(command, **kwargs):
+    launched["command"] = list(command)
+    launched["kwargs"] = kwargs
+    return SimpleNamespace(stdout=io.StringIO(""))
+
+
+for stdbuf_exists, label in ((True, "present"), (False, "missing")):
+    launch_scope = {
+        "shutil": SimpleNamespace(
+            which=lambda _name, found=stdbuf_exists: "/usr/bin/stdbuf" if found
+            else None),
+        "subprocess": SimpleNamespace(Popen=_fake_popen, STDOUT=subprocess.STDOUT,
+                                      PIPE=subprocess.PIPE),
+        "threading": threading, "watch_server_log": lambda _stream: None,
+        "server_command": ["/fake/llama-server", "-m", "weights.gguf"],
+        "server_env": {}, "SESSION_SECONDS": 3600,
+    }
+    launch_screen = io.StringIO()
+    with redirect_stdout(launch_screen):
+        exec(compile(launch_source, "gpu-server-launch", "exec"), launch_scope)
+    launched[label] = (list(launched["command"]), launch_screen.getvalue())
+
+check(launched["present"][0][:3] == ["stdbuf", "-oL", "-eL"]
+      and not launched["present"][1].startswith("NOTE:"),
+      "the server is launched line buffered, so a request is stamped when it happens")
+check(launched["missing"][0][0] != "stdbuf"
+      and "NOTE:" in launched["missing"][1]
+      and "only the 3600 s ceiling applies" in launched["missing"][1],
+      "without stdbuf the switch is left unarmed and the kernel says so, not silently")
+
+# The client half. It has to beat on a timer while the session is open, stop
+# when the session ends, and be unable to outlive the interpreter, which is the
+# whole dead-man property: a killed terminal cannot keep beating.
+heartbeat_file = root / "heartbeat" / "config.json"
+config.save({
+    "language": "en", "default_profile": "kaggle-beat",
+    "profiles": {"kaggle-beat": {
+        "provider": "openai_compatible",
+        "base_url": "https://beat.trycloudflare.com/v1",
+        "model": "qwen38-27b", "credential": "beat-key"}},
+}, heartbeat_file)
+config.save_secret("beat-key", "a-real-key", heartbeat_file.with_name("secrets.json"))
+beats_sent = []
+
+
+def beat_urlopen(request, timeout=None):
+    beats_sent.append(request.full_url)
+    return HealthyAnswer()
+
+
+beat_thread = cli_kaggle.start_session_heartbeat(
+    "kaggle-beat", heartbeat_file, urlopen_fn=beat_urlopen, interval=0.01)
+deadline = time.monotonic() + 5
+while len(beats_sent) < 3 and time.monotonic() < deadline:
+    time.sleep(0.01)
+beating_count = len(beats_sent)
+check(beat_thread is not None and beat_thread.daemon and beating_count >= 3,
+      "an open session beats on a timer, from a thread that cannot outlive the program")
+check(all(url.endswith("/props") for url in beats_sent),
+      "the beat is the same authenticated probe the reuse path already uses")
+
+cli_kaggle.stop_session_heartbeat("kaggle-beat")
+time.sleep(0.1)
+settled = len(beats_sent)
+time.sleep(0.2)
+check(len(beats_sent) == settled,
+      "a session that ended stops beating, so its kernel can go quietly")
+
+# A beat that raises would take the session down with it, and the kernel
+# already treats silence as the answer.
+def exploding_urlopen(_request, timeout=None):
+    beats_sent.append("boom")
+    raise ValueError("the endpoint answered something unparseable")
+
+
+exploding_thread = cli_kaggle.start_session_heartbeat(
+    "kaggle-beat", heartbeat_file, urlopen_fn=exploding_urlopen, interval=0.01)
+before_explosions = len(beats_sent)
+time.sleep(0.2)
+survived = exploding_thread.is_alive() and len(beats_sent) > before_explosions + 1
+cli_kaggle.stop_session_heartbeat("kaggle-beat")
+check(survived,
+      "a beat that raises is noted and retried, never allowed to end the session")
+
+# Both ways a session becomes usable have to start beating, and a kernel this
+# program just pushed is the more exposed of the two: nobody has asked it
+# anything yet, so nothing else would make a request against it and its silence
+# would read as abandonment within minutes of a launch that just cost quota.
+started_for = []
+ended_for = []
+original_start = cli_kaggle.start_session_heartbeat
+original_stop = cli_kaggle.stop_session_heartbeat
+wiring_file = root / "wiring" / "config.json"
+
+
+def reset_wiring():
+    """The record and its profile, fresh, because each call consumes them."""
+    config.save({
+        "language": "en", "default_profile": "kaggle-fresh",
+        "profiles": {"kaggle-fresh": {
+            "provider": "openai_compatible",
+            "base_url": "https://fresh.trycloudflare.com/v1",
+            "model": "qwen38-27b", "credential": "fresh-key"}},
+        "kaggle": {"kernels": [{
+            "slug": "owner/isaacli-gpu-fresh",
+            "url": "https://fresh.trycloudflare.com",
+            "profile": "kaggle-fresh", "model": "qwen38-27b",
+            "account": "owner"}]},
+    }, wiring_file)
+    config.save_secret("fresh-key", "a-real-key",
+                       wiring_file.with_name("secrets.json"))
+
+
+try:
+    cli_kaggle.start_session_heartbeat = lambda name, *a, **k: started_for.append(name)
+    cli_kaggle.stop_session_heartbeat = lambda name: ended_for.append(name)
+    with redirect_stdout(io.StringIO()):
+        reset_wiring()
+        reused_state = cli_kaggle.ensure_profile_session(
+            "kaggle-fresh", config_file=wiring_file,
+            urlopen_fn=answering_endpoint, pid=os.getpid())
+        reset_wiring()
+
+        def launch_that_saves(**kwargs):
+            # What the real launch does on the way out, and the only part of it
+            # this wiring depends on: the profile it saved becomes the default,
+            # which is where the beat has to look for the endpoint to beat at.
+            cli_kaggle.save_kaggle_profile(
+                "https://relaunched.trycloudflare.com",
+                "owner/isaacli-gpu-relaunched",
+                {"alias": "qwen38-27b", "repo": "r/e", "file": "f.gguf"},
+                "relaunched-key", wiring_file, account="owner")
+            return 0
+
+        relaunched_state = cli_kaggle.ensure_profile_session(
+            "kaggle-fresh", input_fn=lambda _prompt: "y", config_file=wiring_file,
+            urlopen_fn=dead_endpoint, run_kaggle_fn=launch_that_saves,
+            pid=os.getpid())
+        reset_wiring()
+        failed_state = cli_kaggle.ensure_profile_session(
+            "kaggle-fresh", input_fn=lambda _prompt: "y", config_file=wiring_file,
+            urlopen_fn=dead_endpoint, run_kaggle_fn=lambda **kwargs: 1,
+            pid=os.getpid())
+finally:
+    cli_kaggle.start_session_heartbeat = original_start
+    cli_kaggle.stop_session_heartbeat = original_stop
+check(reused_state == "live" and relaunched_state == "relaunched"
+      and len(started_for) == 2 and started_for[0] == "kaggle-fresh"
+      and started_for[1] is not None,
+      "reusing a kernel and pushing a fresh one both start the beat")
+check(failed_state == "failed" and len(started_for) == 2,
+      "a launch that failed starts no beat, because there is nothing to beat at")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")
