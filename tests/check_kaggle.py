@@ -2682,6 +2682,40 @@ check(vram_url == "https://measured-one.trycloudflare.com"
       and "15360" not in vram_stdout.getvalue(),
       "both readings reach --debug, and neither reaches the screen")
 
+# The ceiling offered is pinned to the two launches that measured it, because
+# nothing else in this suite would notice the borrowed cards going back to
+# being described by their nominal size. Both models are the real ones, with
+# the byte counts and the geometry they were launched with.
+check(cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["vram_mb"] == 30720,
+      "the T4 pair is described by what nvidia-smi read inside a session, "
+      "2 x 15360 MiB, not by the 16 GB on the box")
+
+died_at_65536 = {
+    "alias": "moe-a3b-q6", "machine_shape": "NvidiaTeslaT4",
+    "model_bytes": 25092535456, "n_layers": 48, "n_kv_heads": 4,
+    "head_dim": 128,
+}
+served_at_24576 = {
+    "alias": "dense-27b-q6-k-l", "machine_shape": "NvidiaTeslaT4",
+    "model_bytes": 24193919904, "n_layers": 64, "n_kv_heads": 4,
+    "head_dim": 256,
+}
+moe_ceiling = cli_kaggle._context_ceiling(died_at_65536)
+dense_ceiling = cli_kaggle._context_ceiling(served_at_24576)
+check(moe_ceiling < 65536,
+      "the exact request that died allocating its cache on 2026-08-21 is "
+      f"refused before it costs anything: {moe_ceiling} offered, not 65536")
+check(dense_ceiling >= cli_kaggle.MODEL_CONTEXT,
+      "the dense that served on 2026-08-22 still reaches the floor every "
+      f"launch used to get: {dense_ceiling}")
+
+# A model whose weights already exceed the cards asks for a ceiling that has
+# no room for any cache at all, and it must answer the floor rather than a
+# negative budget or a crash.
+crowded = dict(served_at_24576, model_bytes=40 * 1024 ** 3)
+check(cli_kaggle._context_ceiling(crowded) == cli_kaggle.MODEL_CONTEXT,
+      "a model with no room left for cache answers the floor, not arithmetic")
+
 # A URL that was published and never arrived is the same cost as one that was
 # never published: the kernel bills either way. Measured on 2026-08-22, the
 # follower is Python writing into a pipe, so it filled a block before flushing
