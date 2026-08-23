@@ -159,6 +159,50 @@ These items improve privacy but are not all emergency fixes for a single-user,
 full-disk-encrypted workstation. The file-mode/state-location work is the
 highest-value prerequisite before adding cryptographic complexity.
 
+## What CI exercises for the command sandbox, and what it does not
+
+`.github/workflows/checks.yml` runs `./scripts/check.sh`, the same script the
+`pre-push` hook runs on a contributor's own machine, so there is one
+definition of "the checks pass" rather than two that drift.
+
+`tests/check_execution.py` drives the containment described above for real:
+`bwrap` mapping uids into a fresh user namespace, the seccomp filter that
+denies `mount`, `bpf`, `keyctl`, `ptrace`, `perf_event_open`, `init_module`,
+`move_pages` and `clone_newuser` from inside the sandbox, the cgroup
+`TasksMax` ceiling that kills a fork bomb, and that a command with no network
+approval genuinely cannot reach one. This used to fail on GitHub's runner
+with `bwrap: setting up uid map: Permission denied` and was skipped by name
+(`--no-privileged`). Measured 2026-08-23 (task 053): the cause was
+`kernel.apparmor_restrict_unprivileged_userns=1` on the runner's Ubuntu
+image, not the runner lacking user namespaces. The workflow now flips that
+sysctl on the job's own disposable VM before the suite runs, and
+`check_execution.py` runs to completion there, unmodified, alongside every
+other check. Nothing in the sandbox itself gets a new capability: the sysctl
+only lets *that job's* VM allow the same unprivileged user namespace calls a
+contributor's own machine already allows.
+
+`tests/check_sandbox.py` also runs in CI and proves the mount policy
+(`~/.ssh`, the real `DevTools` tree, and similar host paths never getting
+bound in) independently of `bwrap`, so that coverage exists even on a host
+where `bwrap` cannot run at all.
+
+`./scripts/check.sh --no-privileged` still exists and still skips only
+`check_execution.py`, by name, in the log. It is for a sandbox nested inside
+another sandbox or systemd jail —
+an agent's own containment running these checks against itself, for
+example — where unprivileged user namespaces are denied by the outer jail
+and no sysctl on the inner one can change that. CI does not pass this flag.
+If a CI run's log ever shows it skipped, that means the runner regressed and
+containment is being proven only on a contributor's own machine again, same
+as before this fix; that is what `pre-push` covers.
+
+What CI cannot exercise, on any of these runners: the `installation.py` /
+`setup_ollama.py` install-and-uninstall lifecycle against a real system
+(`tests/integration/test-install-lifecycle.sh` needs `podman`/`docker` and a
+disposable container with `systemd`, and is not part of `check.sh`), and
+anything that requires a real Ollama or model server
+(`tests/check_commit_workflow.py`).
+
 ## Contributor invariants
 
 - Never place API-key values in config, session events, feedback, terminal
