@@ -41,8 +41,17 @@ ACCELERATORS = {
         "overhead_mb": hardware.DEFAULT_OVERHEAD_MB, "cuda_arch": "60",
         "gpu_count": 1,
     },
+    # 30720, not the 32768 two 16 GB cards suggest. Read inside a session on
+    # 2026-08-22 with nvidia-smi: each T4 reports 15360 MiB total, so the pair
+    # is 2048 MiB short of the nominal figure this used to carry. That matters
+    # more than it looks. The 1536 MiB reserve subtracted below was meant to
+    # keep room for the server's own buffers, and against a number 2048 MiB too
+    # high it reserved nothing at all: it left the arithmetic 512 MiB past what
+    # the cards physically hold. A launch on 2026-08-21 died exactly there,
+    # allocating the last 3200 MiB of a cache the pair was said to have room
+    # for.
     "NvidiaTeslaT4": {
-        "label": "T4 x2, 2 x 16 GB", "vram_mb": 32768,
+        "label": "T4 x2, 2 x 16 GB", "vram_mb": 30720,
         "overhead_mb": hardware.DEFAULT_OVERHEAD_MB * 2, "cuda_arch": "75",
         "gpu_count": 2,
     },
@@ -900,15 +909,37 @@ KERNEL_VALUE_PATTERNS = {
 # So when the cards still have room after the weights, the ceiling rises to the
 # largest rung that fits, decided by the same fit function that chose the model.
 MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
-# `hardware.fits` reserves 1536 MiB, which is the right question for choosing a
-# model that will sit at the floor with room to spare. It is the wrong question
-# for a context that grows until it stops fitting, because the answer then
-# spends every last byte of that slack on cache and leaves llama.cpp's compute
-# buffers with nothing. Measured on 2026-08-21: the MoE at Q6_K was handed 65536
-# tokens, which `fits` accepted at 29.37 GiB of 30.50 GiB, and the kernel died
-# with `cudaMalloc failed` allocating the cache. So only part of what is free
-# after the weights may become cache, and the rest stays free on purpose.
-CONTEXT_CACHE_SHARE = 0.5
+# The cache used to be allowed only half of what was free after the weights,
+# and that half was never a measurement. It was compensating, without saying
+# so, for a VRAM figure that was 2048 MiB larger than the cards: with the real
+# figure in `ACCELERATORS`, the 1536 MiB reserve is a reserve again and the
+# halving has nothing left to compensate for. The two launches that bound this
+# were both measured on borrowed cards, and they are the reason the reserve is
+# not smaller and not larger:
+#
+#   2026-08-21, refused now, died then. The MoE at Q6_K was handed 65536
+#   tokens: 23930 MiB of weights and 6400 MiB of cache against 30720 MiB of
+#   card, which leaves 390 MiB for everything llama.cpp needs on top. It died
+#   with `cudaMalloc failed` on device 0. With the real figure and this
+#   reserve the same request is refused before it costs anything.
+#
+#   2026-08-22, allowed now, served then. The dense at UD-Q6_K_L was handed
+#   24576 tokens, which this arithmetic scores at 751 MiB free per card. It
+#   loaded and answered, and nvidia-smi inside the session read 11657 MiB on
+#   one card and 12985 MiB on the other, 2375 MiB still free on the fuller one.
+#
+# So a launch predicted to leave 195 MiB per card dies and one predicted to
+# leave 751 MiB per card serves, and 768 MiB per card sits between them, which
+# is what `hardware.DEFAULT_OVERHEAD_MB` already said.
+#
+# One thing this arithmetic gets wrong is written down rather than corrected,
+# because correcting it would be guessing. For that dense launch it predicted
+# 29217 MiB of weights plus cache and the pair really held 24642 MiB, an
+# overshoot of 4575 MiB. The direction is safe, it refuses more than it must,
+# and the cost is real: 24576 tokens is refused by 33 MiB on a model measured
+# serving at exactly that size. Whatever explains the overshoot is in
+# llama.cpp's own buffer sizes, which Kaggle's log keeps a few dozen records of
+# and drops.
 
 
 def _context_ceiling(model):
@@ -923,19 +954,31 @@ def _context_ceiling(model):
     required = ("n_layers", "n_kv_heads", "head_dim", "model_bytes")
     if not accelerator or any(model.get(key) is None for key in required):
         return MODEL_CONTEXT
-    usable = max(0, accelerator["vram_mb"] - accelerator["overhead_mb"])
-    budget = (usable * 1024 * 1024 - model["model_bytes"]) * CONTEXT_CACHE_SHARE
+    # Per card, because that is where running out of memory happens. A pair
+    # with room to spare is no comfort to the card doing the allocating: the
+    # 2026-08-21 death was `cudaMalloc failed` on device 0 while the aggregate
+    # still looked fine. Weights and cache are split across the cards by
+    # `--split-mode`, and the split is not exactly even, which the reserve
+    # absorbs: the one launch measured card by card ended 1328 MiB heavier on
+    # one card than the other.
+    count = max(1, accelerator.get("gpu_count", 1))
+    usable_per_card = max(
+        0, accelerator["vram_mb"] - accelerator["overhead_mb"]) / count
+    weights_per_card = model["model_bytes"] / count
+    budget_per_card = usable_per_card * 1024 * 1024 - weights_per_card
     best = MODEL_CONTEXT
     for context in MODEL_CONTEXT_LADDER:
-        kv_bytes = hardware.kv_cache_bytes(
-            model["n_layers"], model["n_kv_heads"], model["head_dim"], context)
-        if kv_bytes <= budget:
+        kv_per_card = hardware.kv_cache_bytes(
+            model["n_layers"], model["n_kv_heads"], model["head_dim"],
+            context) / count
+        if kv_per_card <= budget_per_card:
             best = max(best, context)
         else:
             break
     debug.note("cli_kaggle._context_ceiling",
-               f"{model.get('alias')} allows up to {best} tokens, cache budget "
-               f"{budget / 1024 ** 3:.2f} GiB")
+               f"{model.get('alias')} allows up to {best} tokens, "
+               f"{budget_per_card / 1024 ** 3:.2f} GiB free for cache on each "
+               f"of {count} card(s)")
     return best
 
 
@@ -1217,6 +1260,11 @@ def _prepare_assets(executable, username, model, available, input_fn,
 # Lines the rendered kernel prints to name the step it is starting, so a wait
 # that lasts half an hour shows what it is waiting for.
 STAGE_PREFIX = "[setup]"
+# Lines the rendered kernel prints with what the cards really hold and what is
+# really on them. It is the one measurement of borrowed memory that exists, and
+# it is diagnosis rather than work, so it goes to --debug and never to a screen
+# somebody is watching for their URL.
+VRAM_PREFIX = "[vram]"
 
 
 def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
@@ -1256,10 +1304,23 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
     deadline = time.monotonic() + timeout
     announced = set()
     state = ""
+    # Reading the follower through a pipe is what makes it buffer. The Kaggle
+    # CLI is Python, and Python writing to a pipe rather than a terminal fills
+    # a block before it flushes any of it, so the last few hundred bytes of the
+    # log sit in the child and never arrive. Measured on 2026-08-22: the kernel
+    # published its URL, this saw every line up to the one before it, and then
+    # waited with the URL stuck in that buffer while the GPU billed. The kernel
+    # goes quiet exactly when it starts serving, so nothing was ever going to
+    # push that block out. Unbuffering the child is the whole fix, and it has
+    # to be added to the account environment rather than replacing it, because
+    # that environment is what isolates which Kaggle account this speaks for.
+    stream_env = dict(os.environ if env is None else env)
+    stream_env["PYTHONUNBUFFERED"] = "1"
     while time.monotonic() < deadline:
         process = popen_fn(
             [str(executable), "kernels", "logs", "-f", slug],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env=stream_env,
         )
         try:
             while time.monotonic() < deadline:
@@ -1284,6 +1345,16 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                     announced.add(stage)
                     print(t("cli.kaggle.url.stage",
                             stage=stage[len(STAGE_PREFIX):].strip()))
+                elif stage.startswith(VRAM_PREFIX) and stage not in announced:
+                    announced.add(stage)
+                    measurement = stage[len(VRAM_PREFIX):].strip()
+                    # One site per moment measured, deliberately. `debug.note`
+                    # reports once per site, so naming them all after this
+                    # function would print the reading taken before the load
+                    # and drop the one taken after it, which is the only one
+                    # that says what the runtime costs.
+                    moment = measurement.split(":", 1)[0].strip()
+                    debug.note(f"cli_kaggle.kernel_vram[{moment}]", measurement)
         finally:
             if process.poll() is None:
                 process.terminate()

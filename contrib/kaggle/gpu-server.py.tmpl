@@ -52,6 +52,50 @@ def stage(message):
     print(f"[setup] {message}", flush=True)
 
 
+# What the cards really hold, and what is really on them, said out loud.
+#
+# The context a launch may ask for is decided here on the client from a nominal
+# VRAM figure and a reserve for the runtime's own buffers, and neither of those
+# had ever been checked against a card. They cannot be checked from the client:
+# the only place the truth exists is inside the session, and the only record
+# that leaves it is this log. llama.cpp does print its buffer sizes, but Kaggle
+# keeps a few dozen log records out of the whole run and drops them, so the
+# measurement has to be a stdout line of our own to survive. Printed twice on
+# purpose: before the server starts, which is the cost of the CUDA context
+# alone and is the only reading that survives a load that dies out of memory,
+# and again once the server answers, which is weights plus cache plus runtime.
+def report_vram(moment):
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.total,memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"[vram] {moment}: nvidia-smi did not answer: {error}", flush=True)
+        return
+    if result.returncode != 0:
+        print(f"[vram] {moment}: nvidia-smi failed: "
+              f"{(result.stderr or result.stdout).strip()}", flush=True)
+        return
+    # Spelled out rather than written as a ratio: "gpu0=15360/0" reads as used
+    # over total to everyone who did not write it, and it is the other way
+    # round. A reading nobody can misread is the whole point of taking it.
+    readings = []
+    for line in result.stdout.strip().splitlines():
+        if not line.strip():
+            continue
+        fields = [part.strip() for part in line.split(",")]
+        if len(fields) != 3:
+            # A reading is worth a launch only if taking it cannot cost one.
+            # This runs before the server starts, so an exception here would
+            # end a kernel that has already been pushed and paid for.
+            readings.append(f"unreadable({line.strip()})")
+            continue
+        index, total, used = fields
+        readings.append(f"gpu{index} used {used} MiB of {total} MiB")
+    print(f"[vram] {moment}: {' '.join(readings)}", flush=True)
+
+
 archive = optional_input(f"llama-cuda-sm{CUDA_ARCH}-b10502.tar.gz")
 mounted_server = optional_input("llama-server")
 if archive:
@@ -128,6 +172,11 @@ if GPU_COUNT > 1:
     # when the weights plus cache do not fit on a single card.
     server_command.extend(["--split-mode", SPLIT_MODE])
 stage("starting llama-server, which reads the whole weight before it answers")
+# The two figures the client used to decide this context, so the log carries
+# everything the subtraction needs without having to look anything up.
+print(f"[vram] plan: weight={model_path.stat().st_size} bytes context={CONTEXT} "
+      f"gpu_count={GPU_COUNT}", flush=True)
+report_vram("before the server starts")
 server = subprocess.Popen(server_command, env=server_env)
 
 cloudflared = f"{SCRATCH}/cloudflared"
@@ -180,6 +229,7 @@ while not serving():
     if time.monotonic() > deadline:
         raise RuntimeError("the model server did not answer within an hour")
     time.sleep(10)
+report_vram("with the model loaded and answering")
 print("TUNNEL_URL=" + url, flush=True)
 while server.poll() is None and tunnel.poll() is None:
     time.sleep(30)

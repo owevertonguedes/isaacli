@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2565,6 +2565,185 @@ try:
 finally:
     cli_kaggle.terminal_ui.select = original_context_select
 check(backed_out is None, "the last row of the context screen is a way back out")
+
+# The context a launch may ask for is decided from a nominal VRAM figure and a
+# reserve for the runtime, and the only place either can be checked is inside a
+# session that costs quota. So every launch has to bring the reading back, and
+# it has to bring back both moments: an empty card before the server starts,
+# which is the only reading that survives a load that dies out of memory, and a
+# loaded one after it answers, which is the only reading that says what the
+# runtime costs beyond weights and cache.
+measured_folder = Path(tempfile.mkdtemp())
+cli_kaggle._render_kernel(
+    measured_folder, "user/isaacli-gpu-vram",
+    {"repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+     "file": "Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+     "alias": "qwen3-coder-30b-a3b", "machine_shape": "NvidiaTeslaT4",
+     "cuda_arch": "75", "gpu_count": 2},
+    "kkQ9-_ab", dataset_sources=[])
+measured = (measured_folder / "isaacli-gpu-vram.py").read_text(encoding="utf-8")
+before_call = measured.find('report_vram("before the server starts")')
+loaded_call = measured.find('report_vram("with the model loaded and answering")')
+server_start = measured.find("subprocess.Popen(server_command")
+url_publish = measured.find('print("TUNNEL_URL=')
+check(-1 < before_call < server_start < loaded_call < url_publish,
+      "the kernel reads the cards before the server starts and again once it answers")
+
+# Parsing the rendered kernel proves it is Python, not that the reading works.
+# The function is therefore lifted out of the rendered file and run against a
+# card that answers, one that answers nonsense, and one that is not there at
+# all. It runs before the server starts, so an exception inside it would end a
+# kernel that has already been pushed and paid for out of a weekly allowance.
+report_source = measured[measured.index("def report_vram"):]
+report_source = report_source[:report_source.index("\narchive = ")]
+report_scope = {"subprocess": subprocess}
+exec(compile(report_source, "gpu-server-report", "exec"), report_scope)
+
+
+def _card_answer(returncode, stdout, stderr=""):
+    def answer(command, capture_output=False, text=False, timeout=None, **kwargs):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    return answer
+
+
+report_scope["subprocess"] = SimpleNamespace(
+    run=_card_answer(0, "0, 15360, 11657\n1, 15360, 12985\n"),
+    SubprocessError=subprocess.SubprocessError)
+good_reading = io.StringIO()
+with redirect_stdout(good_reading):
+    report_scope["report_vram"]("loaded")
+check(good_reading.getvalue().strip()
+      == "[vram] loaded: gpu0 used 11657 MiB of 15360 MiB "
+         "gpu1 used 12985 MiB of 15360 MiB",
+      "the reading names which number is used and which is the whole card")
+
+survived = []
+for name, fake in (
+        ("nonsense", _card_answer(0, "this is not a csv row\n")),
+        ("a failure", _card_answer(9, "", "no devices were found")),
+):
+    report_scope["subprocess"] = SimpleNamespace(
+        run=fake, SubprocessError=subprocess.SubprocessError)
+    noise = io.StringIO()
+    try:
+        with redirect_stdout(noise):
+            report_scope["report_vram"]("loaded")
+        survived.append(bool(noise.getvalue().strip()))
+    except Exception:  # noqa: BLE001 - any escape at all is the defect
+        survived.append(False)
+
+
+def _card_missing(command, capture_output=False, text=False, timeout=None, **kwargs):
+    raise OSError("nvidia-smi is not installed")
+
+
+report_scope["subprocess"] = SimpleNamespace(
+    run=_card_missing, SubprocessError=subprocess.SubprocessError)
+absent = io.StringIO()
+try:
+    with redirect_stdout(absent):
+        report_scope["report_vram"]("loaded")
+    survived.append("nvidia-smi did not answer" in absent.getvalue())
+except Exception:  # noqa: BLE001
+    survived.append(False)
+check(all(survived) and len(survived) == 3,
+      "a card that answers nonsense, fails or is absent says so instead of "
+      "ending a kernel that was already paid for")
+
+vram_lines = [
+    "[setup] starting llama-server, which reads the whole weight\n",
+    "[vram] plan: weight=24192837632 bytes context=24576 gpu_count=2\n",
+    "[vram] before the server starts: gpu0=1/15360 MiB gpu1=1/15360 MiB\n",
+    "[vram] with the model loaded and answering: "
+    "gpu0=14700/15360 MiB gpu1=14650/15360 MiB\n",
+    "TUNNEL_URL=https://measured-one.trycloudflare.com\n",
+]
+vram_stdout, vram_stderr = io.StringIO(), io.StringIO()
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    cli_kaggle.debug.enable(True)
+    with redirect_stdout(vram_stdout), redirect_stderr(vram_stderr):
+        vram_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-vram", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog(list(vram_lines)),
+            run_fn=queued_status)
+finally:
+    cli_kaggle.debug.enable(False)
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+reported = vram_stderr.getvalue()
+check(vram_url == "https://measured-one.trycloudflare.com"
+      and "before the server starts" in reported
+      and "with the model loaded and answering" in reported
+      and "14700" in reported
+      and "15360" not in vram_stdout.getvalue(),
+      "both readings reach --debug, and neither reaches the screen")
+
+# The ceiling offered is pinned to the two launches that measured it, because
+# nothing else in this suite would notice the borrowed cards going back to
+# being described by their nominal size. Both models are the real ones, with
+# the byte counts and the geometry they were launched with.
+check(cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["vram_mb"] == 30720,
+      "the T4 pair is described by what nvidia-smi read inside a session, "
+      "2 x 15360 MiB, not by the 16 GB on the box")
+
+died_at_65536 = {
+    "alias": "moe-a3b-q6", "machine_shape": "NvidiaTeslaT4",
+    "model_bytes": 25092535456, "n_layers": 48, "n_kv_heads": 4,
+    "head_dim": 128,
+}
+served_at_24576 = {
+    "alias": "dense-27b-q6-k-l", "machine_shape": "NvidiaTeslaT4",
+    "model_bytes": 24193919904, "n_layers": 64, "n_kv_heads": 4,
+    "head_dim": 256,
+}
+moe_ceiling = cli_kaggle._context_ceiling(died_at_65536)
+dense_ceiling = cli_kaggle._context_ceiling(served_at_24576)
+check(moe_ceiling < 65536,
+      "the exact request that died allocating its cache on 2026-08-21 is "
+      f"refused before it costs anything: {moe_ceiling} offered, not 65536")
+check(dense_ceiling >= cli_kaggle.MODEL_CONTEXT,
+      "the dense that served on 2026-08-22 still reaches the floor every "
+      f"launch used to get: {dense_ceiling}")
+
+# A model whose weights already exceed the cards asks for a ceiling that has
+# no room for any cache at all, and it must answer the floor rather than a
+# negative budget or a crash.
+crowded = dict(served_at_24576, model_bytes=40 * 1024 ** 3)
+check(cli_kaggle._context_ceiling(crowded) == cli_kaggle.MODEL_CONTEXT,
+      "a model with no room left for cache answers the floor, not arithmetic")
+
+# A URL that was published and never arrived is the same cost as one that was
+# never published: the kernel bills either way. Measured on 2026-08-22, the
+# follower is Python writing into a pipe, so it filled a block before flushing
+# any of it and kept the last lines, the URL among them, inside the child.
+follow_env = {}
+
+
+def _follow_popen(command, **kwargs):
+    follow_env.update(kwargs.get("env") or {})
+    return _FakeLog(["TUNNEL_URL=https://unbuffered-one.trycloudflare.com\n"])
+
+
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-buffered", timeout=60,
+            popen_fn=_follow_popen, run_fn=queued_status,
+            env={"HOME": "/fake/account-home", "KAGGLE_KEY": "secret"})
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+check(follow_env.get("PYTHONUNBUFFERED") == "1"
+      and follow_env.get("HOME") == "/fake/account-home"
+      and follow_env.get("KAGGLE_KEY") == "secret",
+      "the log follower is unbuffered, and still speaks for the same account")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")
