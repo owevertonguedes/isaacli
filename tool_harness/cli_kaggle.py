@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import re
 import select
 import secrets
@@ -64,10 +65,40 @@ MODEL_DATASET_SLUGS = {
     "qwen38-27b": "isaacli-qwen38-27b-ud-q4-k-m",
 }
 PREPARATION_TIMEOUT_SECONDS = 4 * 60 * 60
+# The first line of the help the Kaggle CLI prints, on stdout, when every
+# authentication mechanism it knows has come up empty. It is matched rather
+# than parsed because it is the whole difference between "this account is
+# signed out" and "the call failed": both arrive here as a non-zero exit and a
+# blob of text, and telling a person to check their credentials when the call
+# actually failed for another reason is the error message blaming the wrong
+# cause.
+AUTH_HELP_MARKER = "Authentication required to call the Kaggle API"
 
 
 def _home(home_dir=None):
     return Path(home_dir) if home_dir is not None else Path.home()
+
+
+def _real_home():
+    """The home of the account running isaacli, whatever HOME currently says.
+
+    `_isolated_environment` moves HOME on purpose, and it used to derive the
+    `PYTHONUSERBASE` pin from `os.environ["HOME"]`, which is the real home only
+    while isaacli itself runs in it. Measured on 2026-08-23 by running the
+    `--stop` flow with HOME already pointing at an account folder: the pin
+    landed inside that folder, and the Kaggle CLI installed with `pip --user`
+    answered `ModuleNotFoundError: No module named 'kaggle'` instead of running.
+    The password database does not follow HOME, so it still answers correctly
+    from inside an environment that has already been redirected once.
+    """
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        # No passwd entry for this uid happens inside minimal containers. HOME
+        # is then the only answer there is, and saying so beats guessing.
+        debug.note("cli_kaggle._real_home",
+                   f"no passwd entry for uid {os.getuid()}, falling back to HOME")
+        return Path(os.environ.get("HOME") or Path.home())
 
 
 def kaggle_install_record(path=None):
@@ -136,8 +167,7 @@ def _isolated_environment(account_dir):
     environment = dict(os.environ)
     for name in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN"):
         environment.pop(name, None)
-    environment.setdefault(
-        "PYTHONUSERBASE", str(Path(os.environ.get("HOME", Path.home())) / ".local"))
+    environment.setdefault("PYTHONUSERBASE", str(_real_home() / ".local"))
     environment["HOME"] = str(account_dir)
     environment["KAGGLE_CONFIG_DIR"] = str(account_dir / ".kaggle")
     return environment
@@ -563,13 +593,30 @@ def _account_options(executable, names, run_fn, config_file):
                 _quota(executable, run_fn,
                        _account_environment(username, config_file)))
         except RuntimeError as error:
-            quota = t("cli.kaggle.accounts.quota_unavailable", error=error)
+            # This goes on a row of a selection screen. The Kaggle CLI answers
+            # a signed-out account with a thousand characters of instructions,
+            # and folding that into a row turns the picker into a wall nobody
+            # can read: the row only has to say why this account cannot be
+            # measured. The text itself still reaches --debug.
+            debug.note(f"cli_kaggle._account_options {username}", error)
+            quota = t("cli.kaggle.accounts.quota_signed_out") if _signed_out(error) \
+                else t("cli.kaggle.accounts.quota_unavailable",
+                       error=" ".join(str(error).split())[:120])
         labels.append(t("cli.kaggle.accounts.option", username=username, quota=quota))
     return labels
 
 
-def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=None):
-    """List account quotas and return the manually selected account and env."""
+def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=None,
+                    verify=True):
+    """List account quotas and return the manually selected account and env.
+
+    `verify=False` is for the paths that only ever delete. Verification is what
+    keeps a launch from spending one account's hours under another account's
+    name, and it costs a quota call that a signed-out account cannot answer, so
+    demanding it on the brake would mean the brake fails exactly when it is
+    needed. Registering a new account still verifies: that is a launch's
+    precondition being set up, not a deletion.
+    """
     data = config.load(config_file)
     accounts = ((data.get("kaggle") or {}).get("accounts") or {})
     if not accounts:
@@ -598,16 +645,18 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
         _forget_account_interactive(names, input_fn, config_file, executable, run_fn)
         # Signing out changes the list this screen just printed, so it is drawn
         # again rather than acting on the stale numbering the user saw.
-        return _select_account(executable, input_fn, run_fn, config_file)
+        return _select_account(executable, input_fn, run_fn, config_file, verify)
     if not 0 <= index < len(names):
         raise RuntimeError(t("cli.kaggle.accounts.invalid"))
-    return _use_account(executable, names[index], run_fn, config_file)
+    return _use_account(executable, names[index], run_fn, config_file, verify)
 
 
-def _use_account(executable, username, run_fn=subprocess.run, config_file=None):
+def _use_account(executable, username, run_fn=subprocess.run, config_file=None,
+                 verify=True):
     """Check the account really answers as itself, then record it as selected."""
     environment = _account_environment(username, config_file)
-    _verify_account(executable, username, environment, run_fn)
+    if verify:
+        _verify_account(executable, username, environment, run_fn)
     data = config.load(config_file)
     data.setdefault("kaggle", {})["selected_account"] = username
     config.save(data, config_file)
@@ -1542,6 +1591,39 @@ def stop_kernel(executable, slug, run_fn=subprocess.run, env=None):
     return slug
 
 
+def _signed_out(error):
+    """Whether the Kaggle CLI answered that nothing authenticated it at all."""
+    return AUTH_HELP_MARKER in str(error)
+
+
+def _report_brake_lost(error, config_file=None):
+    """Say the brake is down, why, and where the quota can still be stopped.
+
+    This is the message that cost 4.00 h of GPU against 2 h authorised on
+    2026-08-23: `isaacli kaggle --stop` answered with the Kaggle CLI's own
+    sign-in help, which reads as "your credential is missing" about a
+    credential that is sitting right there in the account folder. It is not
+    missing. Read from kagglesdk 2.2.4: an account registered through the
+    browser holds only `credentials.json`, whose access token lives twelve
+    hours and is renewed over the network from a refresh token, and when that
+    renewal is refused the CLI deletes the file and prints this help. The real
+    home also holds `~/.kaggle/access_token`, which is tried first and never
+    expires, which is exactly why the same command answered there.
+
+    Whatever the cause, the person is now holding a kernel that bills by wall
+    clock with no working brake inside the program, so the last thing this
+    prints is every Kaggle page it knows how to reach by hand.
+    """
+    if _signed_out(error):
+        print(t("cli.kaggle.stop.signed_out"))
+    else:
+        print(t("cli.kaggle.failed", error=error))
+    for record in (config.load(config_file).get("kaggle") or {}).get("kernels") or []:
+        if record.get("slug"):
+            print(t("cli.kaggle.stop_spending",
+                    url=f"https://www.kaggle.com/code/{record['slug']}"))
+
+
 def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
                      home_dir=None, record_path=None, which_fn=shutil.which):
     """Stop a session this account has running, chosen explicitly."""
@@ -1553,12 +1635,21 @@ def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
     if executable is None:
         return 1
     try:
+        # Verification is a guard against spending under the wrong name, and
+        # this path spends nothing: it deletes. Gating the brake on it put the
+        # only way to stop the quota behind the very quota call that had just
+        # failed. What replaces it is stronger for this one purpose anyway,
+        # because `kernels list --mine` is answered by the server and every
+        # slug it returns is prefixed with the owner Kaggle attributes it to.
         account, environment = _select_account(
-            executable, input_fn, run_fn, config_file)
-        username = _authenticated_username(executable, run_fn, environment)
+            executable, input_fn, run_fn, config_file, verify=False)
         live = live_kernels(executable, run_fn, environment)
+        # Nothing was verified above, so the name used to decide which local
+        # records belong to this run comes from the server rather than from
+        # `config view`, which only reads the local configuration back.
+        username = _server_owner(executable, run_fn, environment) or account
     except RuntimeError as error:
-        print(t("cli.kaggle.failed", error=error))
+        _report_brake_lost(error, config_file)
         return 1
     for record in _prune_dead_kernels(live, config_file, account, username):
         print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
@@ -2033,7 +2124,15 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
         # Saying nothing here would leave quota draining behind a screen that
         # already said goodbye.
         drop_session_claim(profile_name, config_file)
-        print(t("cli.kaggle.session.stop_failed", slug=record["slug"], error=error))
+        # The Kaggle sign-in help is a thousand characters of instructions for
+        # a credential that is present, and pasting it under "could not end the
+        # session" hides the one thing that matters here: the kernel is still
+        # billing and the program can no longer stop it.
+        print(t("cli.kaggle.session.stop_failed", slug=record["slug"],
+                error=t("cli.kaggle.stop.signed_out") if _signed_out(error)
+                else error))
+        print(t("cli.kaggle.stop_spending",
+                url=f"https://www.kaggle.com/code/{record['slug']}"))
         return None
     _forget_kernel_record(record["slug"], config_file)
     print(t("cli.kaggle.session.stopped", slug=record["slug"]))

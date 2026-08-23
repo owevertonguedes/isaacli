@@ -1099,6 +1099,123 @@ check(not (stop_state.get("kaggle") or {}).get("kernels")
       and "kaggle-live" not in stop_state["profiles"],
       "the endpoint a stopped kernel published is forgotten with the kernel")
 
+# ----------------------------------------------------------------------
+# The brake has to work in the environment the program actually operates in.
+#
+# On 2026-08-23 a run spent 4.00 h of GPU against 2 h authorised, and what let
+# it was `isaacli kaggle --stop` answering with the Kaggle CLI's own sign-in
+# help while the same command in the real home answered normally. The two
+# checks below are the two halves of that: the brake must not be gated on a
+# call that a signed-out account cannot answer, and when nothing can answer at
+# all it must say so in words and hand over the page that still can.
+# ----------------------------------------------------------------------
+AUTH_HELP = (
+    "Authentication required to call the Kaggle API.\n\n"
+    "First, you will need a Kaggle account.\n    kaggle auth login\n")
+unverified_file = root / "unverified-stop" / "config.json"
+config.save({
+    "language": "en", "profiles": {},
+    "kaggle": {"kernels": [{
+        "slug": "stopper/burning", "url": "https://burning.trycloudflare.com",
+        "profile": "kaggle-burning", "model": "qwen38-27b",
+        "account": "stopper"}]},
+}, unverified_file)
+cli_kaggle.register_account("stopper", {"key": "stop-key"}, unverified_file)
+unverified_commands = []
+
+
+def unverified_run(command, check=False, capture_output=False, text=False,
+                   env=None, **kwargs):
+    """Everything answers except quota, which is what verification asks for."""
+    parts = list(map(str, command))
+    unverified_commands.append(parts)
+    joined = " ".join(parts)
+    if " quota" in joined:
+        return SimpleNamespace(returncode=1, stdout=AUTH_HELP, stderr="")
+    if "kernels list" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="ref,title\nstopper/burning,Burning\n", stderr="")
+    if "datasets list" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="ref,title\nstopper/thing,Thing\n", stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.RUNNING", stderr="")
+    if "config view" in joined:
+        return SimpleNamespace(returncode=0, stdout="username: stopper\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+unverified_answers = iter(["1", "1", "y"])
+with redirect_stdout(io.StringIO()):
+    unverified_stop = cli_kaggle.run_stop_kernels(
+        input_fn=lambda _prompt: next(unverified_answers), run_fn=unverified_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=unverified_file,
+        home_dir=home)
+unverified_deletes = [parts for parts in unverified_commands if "delete" in parts]
+check(unverified_stop == 0 and len(unverified_deletes) == 1
+      and unverified_deletes[0][1:] == [
+          "kernels", "delete", "stopper/burning", "--yes"],
+      "an account whose quota call is refused can still stop its kernel")
+
+# And the harder half: nothing answers at all, which is the state a browser
+# account lands in when the twelve-hour token cannot be renewed. The screen
+# must not be the CLI's help text, and it must name the page that still works.
+signed_out_file = root / "signed-out-stop" / "config.json"
+config.save({
+    "language": "en", "profiles": {},
+    "kaggle": {"kernels": [{
+        "slug": "stopper/orphan", "url": "https://orphan.trycloudflare.com",
+        "profile": "kaggle-orphan", "model": "qwen38-27b",
+        "account": "stopper"}]},
+}, signed_out_file)
+cli_kaggle.register_account("stopper", {"key": "stop-key"}, signed_out_file)
+
+
+def signed_out_run(command, check=False, capture_output=False, text=False,
+                   env=None, **kwargs):
+    return SimpleNamespace(returncode=1, stdout=AUTH_HELP, stderr="")
+
+
+signed_out_answers = iter(["1", "1", "y"])
+with redirect_stdout(io.StringIO()) as signed_out_output:
+    signed_out_stop = cli_kaggle.run_stop_kernels(
+        input_fn=lambda _prompt: next(signed_out_answers), run_fn=signed_out_run,
+        which_fn=lambda _name: "/fake/kaggle", config_file=signed_out_file,
+        home_dir=home)
+signed_out_screen = signed_out_output.getvalue()
+check(signed_out_stop == 1
+      and "twelve hours" in signed_out_screen
+      and "Authentication required to call the Kaggle API" not in signed_out_screen,
+      "a refused sign-in is named as itself, not pasted as the CLI's help wall")
+check("https://www.kaggle.com/code/stopper/orphan" in signed_out_screen,
+      "a brake that cannot act hands over the page that still stops the quota")
+
+# The isolation environment must survive being built from inside a HOME that
+# has already been redirected once. Measured on 2026-08-23 by running the stop
+# flow with HOME pointing at an account folder: the PYTHONUSERBASE pin was
+# derived from that HOME, landed inside the account folder, and the Kaggle CLI
+# installed with `pip --user` answered `ModuleNotFoundError: No module named
+# 'kaggle'` instead of running. The password database does not follow HOME.
+moved_home = str(cli_kaggle._account_dir("stopper", stop_file))
+original_home = os.environ.get("HOME")
+original_userbase = os.environ.pop("PYTHONUSERBASE", None)
+try:
+    os.environ["HOME"] = moved_home
+    moved_env = cli_kaggle._isolated_environment(moved_home)
+finally:
+    if original_home is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = original_home
+    if original_userbase is not None:
+        os.environ["PYTHONUSERBASE"] = original_userbase
+check(moved_env["HOME"] == moved_home
+      and not moved_env["PYTHONUSERBASE"].startswith(moved_home)
+      and moved_env["PYTHONUSERBASE"]
+      == str(cli_kaggle._real_home() / ".local"),
+      "the CLI can still import itself when isaacli's own HOME has moved")
+
 # The command has to reach preparation through the same wrapper the launch uses,
 # because that wrapper is what lends it the live model screen. Routing it
 # straight at cli_kaggle would give this command a different, smaller list.
