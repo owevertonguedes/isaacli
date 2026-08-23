@@ -31,13 +31,32 @@ jobs:
         # checks are skipped honestly instead of passing on nothing.
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      - name: Allow unprivileged user namespaces for this job's VM
+        # Measured 2026-08-23 (task 053): bwrap failed here with "setting up
+        # uid map: Permission denied", and this runner's image ships
+        # kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 23.10+),
+        # which blocks unconfined unprivileged user namespaces. It is not
+        # that the runner lacks user namespace support: with the sysctl
+        # below flipped, `bwrap --unshare-user ...` succeeds, and a full run
+        # of check_execution.py passes end to end, including the seccomp
+        # filter, the cgroup TasksMax ceiling, and the network isolation.
+        # This is a setting on this job's own throwaway VM, gone when the
+        # job ends, and it is not a privileged container: no --privileged,
+        # no elevated Docker capabilities, nothing granted to code running
+        # inside bwrap's sandbox that it did not already have.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Give gh CLI a config directory to bind read-only
+        # execution.py only offers gh the network and its own isolated
+        # config through --ro-bind when ~/.config/gh already exists (it
+        # never creates or writes to it). On a fresh runner nothing has run
+        # `gh auth login`, so the directory is absent and that assertion in
+        # check_execution.py fails, not because containment is broken but
+        # because the fixture the check expects (a gh config directory,
+        # even an empty one) is missing. An empty directory is enough.
+        run: mkdir -p ~/.config/gh
+
       - name: Run the check suite
-        # --no-privileged skips check_execution.py, and only that one. Measured
-        # on this runner 2026-08-22: bwrap cannot map uids or create its own
-        # loopback interface here, and there is no systemd TasksMax ceiling to
-        # hit, so the containment it verifies cannot be exercised. The skip is
-        # printed in the log by name. check_sandbox.py does run here and is not
-        # skipped, because throwing away a check that works would be worse than
-        # the gap it was meant to cover. Containment is verified on a real host
-        # before a push, by the same script through the pre-push hook.
-        run: ./scripts/check.sh --no-privileged
+        # Every tests/check_*.py runs here now, check_execution.py included.
+        # See docs/SECURITY.md for what that does and does not prove.
+        run: ./scripts/check.sh

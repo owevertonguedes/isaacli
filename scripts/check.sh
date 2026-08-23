@@ -24,13 +24,17 @@ TIMEOUT_S=${ISAACLI_CHECK_TIMEOUT_S:-600}
 # of the suite that has to pass before every push. Name it here rather than
 # teaching the loop about exceptions somewhere else.
 NEEDS_A_REAL_MODEL="check_commit_workflow.py"
-# check_execution.py drives the real containment: bwrap mapping uids, its own
-# loopback interface, and a systemd TasksMax ceiling. A nested sandbox or a
-# hosted CI runner denies all three, measured on GitHub Actions 2026-08-22:
-# "setting up uid map: Permission denied". check_sandbox.py does run there, so
-# skipping both would throw away a check that works. --no-privileged skips
-# exactly this one and names it in the output, instead of reporting a pass
-# nobody earned.
+# check_execution.py drives the real containment: bwrap mapping uids, the
+# seccomp filter, and a systemd TasksMax ceiling. A sandbox nested inside
+# another bwrap/systemd jail (an agent's own containment, for example) denies
+# unprivileged user namespaces, and there is no fix for that short of running
+# outside the nesting. GitHub Actions used to hit the same denial,
+# "setting up uid map: Permission denied", but that was traced (task 053,
+# 2026-08-23) to kernel.apparmor_restrict_unprivileged_userns=1 on the runner
+# image, not to the runner lacking user namespaces: .github/workflows/checks.yml
+# now flips that sysctl on the job's own throwaway VM and runs this check like
+# any other. --no-privileged stays for the nested-sandbox case and names what
+# it skips in the output, instead of reporting a pass nobody earned.
 NEEDS_PRIVILEGED_HOST="check_execution.py"
 
 skip_privileged=0
