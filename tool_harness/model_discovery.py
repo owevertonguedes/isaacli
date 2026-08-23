@@ -518,8 +518,78 @@ def format_fit(report, translate=None, state_key="model.discovery.fit",
 
 
 def benchmark_line(model):
-    return text("model.discovery.score",
-                score=model.get("benchmark") or no_public_score())
+    """The evidence behind a model, printed once the choice has been made.
+
+    Both halves are printed when both exist, and each keeps its own owner. The
+    line used to carry only the public score, which meant a model measured here
+    and scored nowhere read as "no public score" and nothing else, hiding the
+    only evidence anybody can re-run.
+    """
+    lines = []
+    measured = model.get("measured_here")
+    if measured:
+        lines.append(text(
+            "model.discovery.measured_line",
+            humaneval=measured["humaneval"],
+            tps=f"{measured['tokens_per_second']:.1f}",
+            gpu=measured["gpu"],
+            date=measured["date"],
+            tools=text("model.score.measured_tools_yes"
+                       if measured.get("native_tool_call")
+                       else "model.score.measured_tools_no"),
+            report=measured["report"]))
+    lines.append(text("model.discovery.score",
+                      score=model.get("benchmark") or no_public_score()))
+    return "\n".join(lines)
+
+
+def measured_cell(model, translate=None):
+    """What this exact file did on this machine, or nothing at all.
+
+    This is the only number in the whole program that was produced here, and
+    the only one entitled to name a machine. It comes from a report written by
+    `scripts/bench_local.py` and carries the card, the date and the file, for
+    the reason the report itself carries them: a throughput without a GPU next
+    to it is a claim about the reader's hardware.
+
+    It attaches to a catalogue row and never to a resolved model, because the
+    row names one file and the measurement is of that one file. A resolved
+    sibling quantization of the same repository is a different artifact and
+    inherits nothing.
+    """
+    translate = translate or text
+    measured = model.get("measured_here")
+    if not measured:
+        return None
+    return translate(
+        "model.score.measured",
+        humaneval=measured["humaneval"],
+        tps=f"{measured['tokens_per_second']:.1f}",
+        gpu=measured["gpu"],
+        date=measured["date"],
+        tools=translate("model.score.measured_tools_yes"
+                        if measured.get("native_tool_call")
+                        else "model.score.measured_tools_no"),
+    )
+
+
+def carried_measurement(catalog, resolved_file):
+    """The catalogue's local measurement, but only for the file it measured.
+
+    A catalogue row names a repository and a precision, and live resolution
+    turns that into one file. Nothing guarantees the file it picks today is the
+    file the benchmark ran on: a repository can gain a second file matching the
+    same precision, and then the row would carry a measurement of a different
+    artifact, which is the derivative-score mistake wearing a local disguise.
+    So the file name recorded by the run has to match, or the measurement is
+    dropped and the row goes back to having no number.
+    """
+    measured = (catalog or {}).get("measured_here")
+    if not measured:
+        return None
+    if resolved_file and measured.get("file") != resolved_file:
+        return None
+    return measured
 
 
 def benchmark_cell(model, translate=None):
@@ -532,12 +602,20 @@ def benchmark_cell(model, translate=None):
     the list. A number sitting on the row of a file nobody scored is the same
     error as inheriting a score for a derivative build, so the row carries the
     owner with it or it carries no number.
+
+    A measurement taken here comes first when there is one. It is about this
+    file rather than about the weights it was quantized from, and it is the
+    only evidence on the row that anybody can re-run.
     """
     translate = translate or text
     score = model.get("benchmark")
+    measured = measured_cell(model, translate)
     if not score:
-        return no_public_score(translate)
-    return translate("model.score.upstream", score=score)
+        return measured or no_public_score(translate)
+    upstream = translate("model.score.upstream", score=score)
+    if not measured:
+        return upstream
+    return translate("model.score.both", measured=measured, upstream=upstream)
 
 
 def matched_ruler(model, task):

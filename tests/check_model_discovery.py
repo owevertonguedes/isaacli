@@ -704,6 +704,124 @@ check(not unsourced,
       "no row carries a number without a source to check it against"
       + (f" (found {', '.join(unsourced)})" if unsourced else ""))
 
+# A SWE-bench number is not a property of the weights. Measured against the
+# public submissions on 2026-08-23: Devstral Small 2507 scores 53.6 on the
+# OpenHands scaffold its own model card reports, and 190 of 500 = 38.0 on the
+# SWE-agent submission in swe-bench/experiments. Same weights, 15.6 points
+# apart. Qwen3-Coder-30B-A3B-Instruct appears twice in the same repository
+# under the same agent, at 261/500 and 302/500. So the harness owns as much of
+# the number as the model does, and a row that prints the number without
+# naming the harness is hiding the larger half of where it came from.
+#
+# The rule is written around the two words the sources themselves use, checked
+# against all five: Mistral says "scaffold", Cohere says "harness", Qwen says
+# both, OpenAI says "scaffold".
+agentic_without_harness = [
+    item["name"] for section in catalogue.values() for item in section
+    if "swe-bench" in (item.get("benchmark") or "").casefold()
+    and not any(word in item["benchmark"].casefold()
+                for word in ("scaffold", "harness"))
+]
+check(not agentic_without_harness,
+      "an agentic score names the harness that produced it"
+      + (f" (found {', '.join(agentic_without_harness)})"
+         if agentic_without_harness else ""))
+
+# A measurement taken here is the only number in the program entitled to name a
+# machine, and the only one anybody can re-run. It also has the most room to
+# rot: the report can be deleted, the file re-quantized, the digest changed.
+# Every field the row prints is checked back against the report on disk.
+REPORT_FIELDS = ("humaneval", "tokens_per_second", "gpu", "date",
+                 "native_tool_call")
+measured_rows = [item for section in catalogue.values() for item in section
+                 if item.get("measured_here")]
+check(measured_rows, "at least one row carries a measurement taken here")
+broken = []
+for item in measured_rows:
+    measured = item["measured_here"]
+    report = HERE.parent / measured["report"]
+    payload = report.with_suffix(".json")
+    if not report.is_file() or not payload.is_file():
+        broken.append(f"{item['name']}: {measured['report']} is missing")
+        continue
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    actual = {
+        "humaneval": f"{data['summary']['humaneval_passed']}"
+                     f"/{data['summary']['humaneval_graded']}",
+        "tokens_per_second": data["summary"]["median_tokens_per_second"],
+        "gpu": data["meta"]["machine"]["gpus"][0]["name"],
+        "date": data["meta"]["machine"]["date"],
+        "native_tool_call": data["summary"]["tool_call_effect_correct"],
+    }
+    for field in REPORT_FIELDS:
+        if measured.get(field) != actual[field]:
+            broken.append(f"{item['name']}: {field} says {measured.get(field)!r}, "
+                          f"the report says {actual[field]!r}")
+    if measured.get("artifact_sha256") != data["meta"]["artifact_sha256"]:
+        broken.append(f"{item['name']}: the row names a different file digest "
+                      "than the report it points at")
+    if measured.get("file") != data["meta"]["artifact"]:
+        broken.append(f"{item['name']}: the row names a different file "
+                      "than the report it points at")
+check(not broken,
+      "every locally measured row repeats its report exactly"
+      + (f" ({'; '.join(broken)})" if broken else ""))
+
+# And the measurement belongs to the file, not to the repository. Live
+# resolution picks a file by precision, and if it ever picks a different one
+# the number has to go, or a local measurement becomes an inherited score.
+sample = measured_rows[0]["measured_here"]
+check(model_discovery.carried_measurement(
+          measured_rows[0], sample["file"]) is sample,
+      "a measurement follows the exact file it was taken on")
+check(model_discovery.carried_measurement(
+          measured_rows[0], "some-other-quantization.gguf") is None,
+      "a measurement is dropped when resolution lands on another file")
+check(model_discovery.carried_measurement({"name": "x"}, "any.gguf") is None,
+      "a row with no measurement is not given one")
+
+# These read the row in both languages on purpose. The session's language is
+# whatever the machine is configured for, so a check that reads the row through
+# the default translator silently stops testing the other catalogue, and the
+# rule here is about what the row says, not about which language says it.
+for language in ("en", "pt-BR"):
+    speak = setup_ollama.Translator(language).t
+    measured_cell = model_discovery.benchmark_cell(measured_rows[0], speak)
+    check(sample["gpu"] in measured_cell and sample["date"] in measured_cell,
+          f"[{language}] a measured row names the card and the date on the row "
+          f"({measured_cell})")
+    check(f"{sample['tokens_per_second']:.1f}" in measured_cell
+          and sample["humaneval"] in measured_cell,
+          f"[{language}] the throughput and the pass count measured here reach "
+          f"the row ({measured_cell})")
+
+    # Both numbers on one row must each keep their owner: the local one says
+    # which machine, the public one says it is about the original weights.
+    both = model_discovery.benchmark_cell(
+        {"benchmark": "SWE-bench Verified 73.4 (SWE-agent harness)",
+         "measured_here": sample}, speak)
+    check("73.4" in both and sample["gpu"] in both
+          and both != "SWE-bench Verified 73.4 (SWE-agent harness)",
+          f"[{language}] a row with both numbers keeps an owner on each ({both})")
+
+    # "Verified" is reserved for a number produced here. Nothing may put it
+    # next to a score that came out of somebody else's run.
+    public_only = model_discovery.benchmark_cell(
+        {"benchmark": "SWE-bench Pro 61.7"}, speak)
+    check("verified" not in public_only.casefold()
+          and "verificado" not in public_only.casefold(),
+          f"[{language}] a public score is never called verified ({public_only})")
+
+# The line printed after the choice used to carry only the public score, so a
+# model measured here and scored nowhere read as "no public score" and nothing
+# else, which hid the only evidence on the row anybody can re-run.
+detail = model_discovery.benchmark_line(measured_rows[0])
+check(sample["report"] in detail and sample["gpu"] in detail
+      and sample["date"] in detail,
+      f"the detail line points at the report, the card and the date ({detail})")
+check(model_discovery.no_public_score() in detail,
+      "a measured model with no public score still says it has no public score")
+
 # The Kaggle path used to hand `_choose_quantization` a translator built on the
 # spot, which is always English, so this one screen came out in English inside a
 # Portuguese session while every screen around it was translated. Comparing the

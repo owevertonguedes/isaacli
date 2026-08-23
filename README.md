@@ -80,6 +80,7 @@ Local sessions and feedback may contain prompts, answers, paths, commands and to
 - [Architecture](docs/ARCHITECTURE.md): module map, data flow and implementation invariants
 - [Installation](docs/INSTALLATION.md): install, Flatpak, removal, purge and recovery
 - [Security and privacy](docs/SECURITY.md): stored data, remote APIs and current limits
+- [Measurements](docs/benchmarks/README.md): what each recommended model did on the machine it was measured on, and on what date
 - [Contributing](CONTRIBUTING.md): development setup, tests and ground rules
 
 ## Contributing

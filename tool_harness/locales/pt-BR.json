@@ -555,5 +555,10 @@
   "cli.config.temperature.unset": "Deixar com o padrão do agente",
   "cli.config.temperature.set": "Temperatura definida em {value}.",
   "cli.config.temperature.cleared": "Temperatura não está mais definida; vale o padrão do agente.",
-  "cli.config.origin.inherited": "nunca definida aqui, então vale a janela com que o servidor subiu"
+  "cli.config.origin.inherited": "nunca definida aqui, então vale a janela com que o servidor subiu",
+  "model.score.measured": "medido aqui em {date}: {humaneval} no HumanEval, {tps} tok/s numa {gpu}{tools}",
+  "model.score.measured_tools_yes": ", chama ferramenta nativamente",
+  "model.score.measured_tools_no": ", não chama ferramenta neste harness",
+  "model.score.both": "{measured}; {upstream}",
+  "model.discovery.measured_line": "Medido nesta máquina em {date}: {humaneval} no HumanEval, {tps} tok/s numa {gpu}{tools}. Relatório completo: {report}"
 }

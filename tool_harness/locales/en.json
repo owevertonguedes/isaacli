@@ -555,5 +555,10 @@
   "cli.config.temperature.unset": "Leave it to the agent's default",
   "cli.config.temperature.set": "Temperature set to {value}.",
   "cli.config.temperature.cleared": "Temperature is no longer set; the agent's default holds.",
-  "cli.config.origin.inherited": "never set here, so the window the server was started with holds"
+  "cli.config.origin.inherited": "never set here, so the window the server was started with holds",
+  "model.score.measured": "measured here {date}: {humaneval} on HumanEval, {tps} tok/s on {gpu}{tools}",
+  "model.score.measured_tools_yes": ", calls tools natively",
+  "model.score.measured_tools_no": ", does not call tools in this harness",
+  "model.score.both": "{measured}; {upstream}",
+  "model.discovery.measured_line": "Measured on this machine on {date}: {humaneval} on HumanEval, {tps} tok/s on {gpu}{tools}. Full report: {report}"
 }

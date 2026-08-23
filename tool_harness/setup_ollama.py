@@ -375,6 +375,12 @@ def _resolved_local_catalog(task, profile, tr):
                 "benchmark_source": catalog["benchmark_source"],
                 "scores": catalog["scores"],
             })
+        measured = model_discovery.carried_measurement(
+            catalog, resolved.get("file"))
+        if measured:
+            resolved["measured_here"] = measured
+        else:
+            resolved.pop("measured_here", None)
         complete = all(
             key in resolved
             for key in ("model_bytes", "n_layers", "n_kv_heads", "head_dim")

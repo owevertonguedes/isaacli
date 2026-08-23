@@ -80,6 +80,7 @@ Sessões e avaliações locais podem conter prompts, respostas, caminhos, comand
 - [Arquitetura](docs/ARCHITECTURE.md): mapa dos módulos, fluxo de dados e invariantes de implementação
 - [Instalação](docs/INSTALLATION.md): instalação, Flatpak, remoção, purge e recuperação
 - [Segurança e privacidade](docs/SECURITY.md): dados armazenados, APIs remotas e limites atuais
+- [Medições](docs/benchmarks/README.md): o que cada modelo recomendado fez na máquina em que foi medido, e em que data
 - [Contribuindo](CONTRIBUTING.md): ambiente de desenvolvimento, testes e regras de convivência
 
 ## Contribuindo

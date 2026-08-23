@@ -1,0 +1,283 @@
+{
+  "meta": {
+    "model": "granite-4.1-3b-Q4_K_M",
+    "artifact": "granite-4.1-3b-Q4_K_M.gguf",
+    "artifact_bytes": 2099501664,
+    "artifact_sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+    "backend": "llama.cpp Vulkan build 10502 (0adcc3bb5)",
+    "context": "16384",
+    "machine": {
+      "date": "2026-08-23",
+      "gpus": [
+        {
+          "name": "NVIDIA GeForce GTX 1650",
+          "vram_mb": 4096,
+          "bandwidth_gbs": 128.0
+        }
+      ],
+      "vram_mb_total": 4096,
+      "ram_mb": 15813,
+      "cpu_cores": 12
+    },
+    "humaneval_sha256": "b796127e635a67f93fb35c04f4cb03cf06f38c8072ee7cee8833d7bee06979ef",
+    "humaneval_total": 164
+  },
+  "summary": {
+    "humaneval_graded": 20,
+    "humaneval_errors": 0,
+    "humaneval_passed": 17,
+    "humaneval_pass_rate": 85.0,
+    "median_tokens_per_second": 33.02,
+    "tokens_per_second_samples": 20,
+    "tool_call_effect_correct": true,
+    "tool_calls_made": [
+      "write_file"
+    ]
+  },
+  "humaneval": [
+    {
+      "task_id": "HumanEval/0",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 29.964465889013866,
+      "predicted_tokens": 161,
+      "prompt_tokens": 162,
+      "wall_seconds": 6.129,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/8",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.907799916281164,
+      "predicted_tokens": 143,
+      "prompt_tokens": 107,
+      "wall_seconds": 4.597,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/16",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 34.1296462393908,
+      "predicted_tokens": 76,
+      "prompt_tokens": 72,
+      "wall_seconds": 2.568,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/24",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 34.0077391897899,
+      "predicted_tokens": 85,
+      "prompt_tokens": 52,
+      "wall_seconds": 2.707,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/32",
+      "passed": false,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.025493621273526,
+      "predicted_tokens": 482,
+      "prompt_tokens": 261,
+      "wall_seconds": 15.411,
+      "judge_tail": [
+        "    raise ValueError(\"Maximum iterations reached without convergence\")",
+        "ValueError: Maximum iterations reached without convergence",
+        "(exit code: 1)"
+      ]
+    },
+    {
+      "task_id": "HumanEval/41",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.43673553915118,
+      "predicted_tokens": 156,
+      "prompt_tokens": 153,
+      "wall_seconds": 5.271,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/49",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.38531520765465,
+      "predicted_tokens": 167,
+      "prompt_tokens": 105,
+      "wall_seconds": 5.389,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/57",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.2977755882373,
+      "predicted_tokens": 167,
+      "prompt_tokens": 87,
+      "wall_seconds": 5.386,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/65",
+      "passed": false,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.23091469104063,
+      "predicted_tokens": 116,
+      "prompt_tokens": 84,
+      "wall_seconds": 3.856,
+      "judge_tail": [
+        "           ^^^^^^^^^^^^^^^^^^^^^^^^",
+        "AssertionError",
+        "(exit code: 1)"
+      ]
+    },
+    {
+      "task_id": "HumanEval/73",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.01847626529957,
+      "predicted_tokens": 69,
+      "prompt_tokens": 157,
+      "wall_seconds": 2.683,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/82",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.19222260853618,
+      "predicted_tokens": 140,
+      "prompt_tokens": 81,
+      "wall_seconds": 4.58,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/90",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.009603436771286,
+      "predicted_tokens": 85,
+      "prompt_tokens": 124,
+      "wall_seconds": 2.962,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/98",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 33.17653606646976,
+      "predicted_tokens": 117,
+      "prompt_tokens": 72,
+      "wall_seconds": 3.852,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/106",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.962093752195145,
+      "predicted_tokens": 207,
+      "prompt_tokens": 124,
+      "wall_seconds": 6.661,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/114",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.93657554709386,
+      "predicted_tokens": 134,
+      "prompt_tokens": 88,
+      "wall_seconds": 4.449,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/122",
+      "passed": false,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.74706169546423,
+      "predicted_tokens": 166,
+      "prompt_tokens": 128,
+      "wall_seconds": 5.455,
+      "judge_tail": [
+        "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+        "AssertionError",
+        "(exit code: 1)"
+      ]
+    },
+    {
+      "task_id": "HumanEval/131",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.82168521338661,
+      "predicted_tokens": 134,
+      "prompt_tokens": 71,
+      "wall_seconds": 4.428,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/139",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.899787248042465,
+      "predicted_tokens": 157,
+      "prompt_tokens": 95,
+      "wall_seconds": 5.138,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/147",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.46507299230578,
+      "predicted_tokens": 256,
+      "prompt_tokens": 165,
+      "wall_seconds": 8.485,
+      "judge_tail": []
+    },
+    {
+      "task_id": "HumanEval/155",
+      "passed": true,
+      "timed_out": false,
+      "error": null,
+      "server_tokens_per_second": 32.76524876759148,
+      "predicted_tokens": 129,
+      "prompt_tokens": 65,
+      "wall_seconds": 4.298,
+      "judge_tail": []
+    }
+  ],
+  "toolcall": {
+    "called_tools": [
+      "write_file"
+    ],
+    "vias": [
+      "native"
+    ],
+    "effect_correct": true,
+    "steps": 1,
+    "final_reply": "The file **result.txt** has been created with the two lines \u201calpha\u201d and \u201cbeta\u201d, ending with a newline.",
+    "error": null
+  }
+}

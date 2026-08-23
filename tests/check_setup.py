@@ -242,9 +242,22 @@ try:
           "going back in the model menu returns to the engine without repeating the language")
     check(setup_ollama.RECOMMENDED[0].endswith(":UD-IQ1_M"),
           "Qwen3.6-35B-A3B UD-IQ1_M is the first recommendation")
+    # The reference is a repository and a precision rather than an Ollama tag,
+    # and that is load-bearing rather than cosmetic. `phi4-mini:latest` names
+    # whatever that tag points at today, so no measurement can ever be pinned
+    # to it: a report is about one file with one digest. The two rows that now
+    # carry a measurement taken on this machine had to become file-exact to
+    # carry it.
     check(len(setup_ollama.RECOMMENDED) == 5
-          and "phi4-mini:latest" in setup_ollama.RECOMMENDED,
-          "the official Phi-4 Mini is among the five recommendations")
+          and "hf.co/unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M"
+          in setup_ollama.RECOMMENDED,
+          "the official Phi-4 Mini is among the five recommendations, by file")
+    floating = [item["reference"] for item in setup_ollama.LOCAL_CATALOG
+                if item.get("measured_here")
+                and not item["reference"].startswith("hf.co/")]
+    check(not floating,
+          "no measured row is recommended under a tag that can move under it"
+          + (f" (found {', '.join(floating)})" if floating else ""))
     check("qwen3:4b-instruct-2507-q4_K_M" not in setup_ollama.RECOMMENDED,
           "the old test Qwen does not appear in the curation")
     check(

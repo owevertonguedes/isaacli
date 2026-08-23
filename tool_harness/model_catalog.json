@@ -3,7 +3,7 @@
     {
       "name": "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
       "reference": "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ1_M",
-      "benchmark": "SWE-bench Verified 73.4, SWE-bench Pro 49.5, LiveCodeBench v6 80.4, GPQA 86.0",
+      "benchmark": "SWE-bench Verified 73.4, SWE-bench Pro 49.5 (Qwen's own agent scaffold, bash plus file-edit tools, 200K context), LiveCodeBench v6 80.4, GPQA 86.0",
       "benchmark_source": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
       "scores": {
         "swebench_verified": 73.4,
@@ -15,7 +15,7 @@
     {
       "name": "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
       "reference": "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
-      "benchmark": "SWE-bench Verified 67.6, SWE-bench Pro 40.2, LiveCodeBench v6 70.3",
+      "benchmark": "SWE-bench Verified 67.6, SWE-bench Pro 40.2 (SWE-agent harness v1.1.0), LiveCodeBench v6 70.3",
       "benchmark_source": "https://huggingface.co/CohereLabs/North-Mini-Code-1.0",
       "scores": {
         "swebench_verified": 67.6,
@@ -24,23 +24,49 @@
       }
     },
     {
-      "name": "granite4.1:3b",
-      "reference": "granite4.1:3b",
+      "name": "hf.co/ibm-granite/granite-4.1-3b-GGUF:Q4_K_M",
+      "reference": "hf.co/ibm-granite/granite-4.1-3b-GGUF:Q4_K_M",
       "benchmark": "",
       "benchmark_source": null,
-      "scores": {}
+      "scores": {},
+      "measured_here": {
+        "report": "docs/benchmarks/2026-08-23-granite-4-1-3b-q4-k-m.md",
+        "file": "granite-4.1-3b-Q4_K_M.gguf",
+        "artifact_sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+        "date": "2026-08-23",
+        "gpu": "NVIDIA GeForce GTX 1650",
+        "vram_mb": 4096,
+        "backend": "llama.cpp Vulkan build 10502 (0adcc3bb5)",
+        "context": "16384",
+        "humaneval": "17/20",
+        "tokens_per_second": 33.02,
+        "native_tool_call": true
+      }
     },
     {
-      "name": "phi4-mini:latest",
-      "reference": "phi4-mini:latest",
+      "name": "hf.co/unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M",
+      "reference": "hf.co/unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M",
       "benchmark": "",
       "benchmark_source": null,
-      "scores": {}
+      "scores": {},
+      "measured_here": {
+        "report": "docs/benchmarks/2026-08-23-phi-4-mini-instruct-q4-k-m.md",
+        "file": "Phi-4-mini-instruct-Q4_K_M.gguf",
+        "artifact_sha256": "88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a",
+        "date": "2026-08-23",
+        "gpu": "NVIDIA GeForce GTX 1650",
+        "vram_mb": 4096,
+        "backend": "llama.cpp Vulkan build 10502 (0adcc3bb5)",
+        "context": "8192 (16384 refused: the KV cache would not fit in 4 GiB)",
+        "humaneval": "15/20",
+        "tokens_per_second": 29.37,
+        "native_tool_call": false
+      }
     },
     {
       "name": "gpt-oss:20b",
       "reference": "gpt-oss:20b",
-      "benchmark": "SWE-bench Verified 53.2, Aider Polyglot 26.6, GPQA Diamond 66.0, at medium reasoning effort",
+      "benchmark": "SWE-bench Verified 53.2 (OpenAI's internal tool scaffold, 477 of the 500 tasks, medium reasoning effort), Aider Polyglot 26.6, GPQA Diamond 66.0",
       "benchmark_source": "https://arxiv.org/abs/2508.10925",
       "scores": {
         "swebench_verified": 53.2,
@@ -60,7 +86,7 @@
       "n_layers": 64,
       "n_kv_heads": 4,
       "head_dim": 256,
-      "benchmark": "LiveCodeBench v6 90.3, GPQA Diamond 89.2, SWE-bench Pro 61.7",
+      "benchmark": "SWE-bench Pro 61.7 (Claude Code harness, 256K context), LiveCodeBench v6 90.3, GPQA Diamond 89.2",
       "benchmark_source": "https://huggingface.co/Qwen/Qwen3.8-27B",
       "scores": {
         "livecodebench_v6": 90.3,
@@ -113,7 +139,7 @@
       "n_layers": 40,
       "n_kv_heads": 8,
       "head_dim": 128,
-      "benchmark": "SWE-bench Verified 53.6%",
+      "benchmark": "SWE-bench Verified 53.6 (OpenHands scaffold)",
       "benchmark_source": "https://huggingface.co/mistralai/Devstral-Small-2507",
       "scores": {
         "swebench_verified": 53.6
