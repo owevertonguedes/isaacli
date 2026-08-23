@@ -1,9 +1,19 @@
-"""Dependency-free terminal UI: arrow keys on a TTY, numbers as a fallback."""
+"""Terminal UI with no third-party dependency: arrow keys on a TTY, numbers as
+a fallback.
+
+The wording every menu needs when a caller supplies none comes from the
+catalog, like all other text the user reads. It is resolved inside the call and
+never in a default argument: a default is evaluated once, when this module is
+imported, which is before the session has chosen a language, so a `t(...)` in
+the signature would freeze English into every screen.
+"""
 from contextlib import contextmanager
 import os
 import re
 import shutil
 import sys
+
+from cli_i18n import t
 
 
 _ALT_DEPTH = 0
@@ -90,6 +100,20 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 NAVIGATION_KEYS = ("j", "k")
 
 
+def _wording(prompt, invalid, more_above, more_below):
+    """The catalog's wording for whatever the caller left out.
+
+    `count` is handed back as the literal `{count}` because both scroll hints
+    are formatted again later, with the real number, by whoever draws them.
+    """
+    return (
+        t("select.prompt") if prompt is None else prompt,
+        t("select.invalid") if invalid is None else invalid,
+        t("ui.more_above", count="{count}") if more_above is None else more_above,
+        t("ui.more_below", count="{count}") if more_below is None else more_below,
+    )
+
+
 def fit(text, width):
     """One option on one line, cut on purpose rather than by the terminal.
 
@@ -128,10 +152,12 @@ def option_lines(options, width, cursor, disabled, indent=3):
     return lines
 
 
-def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
+def select(title, options, input_fn=input, prompt=None, invalid=None,
            initial=0, disabled=None, more_above=None, more_below=None):
     if not options:
         raise ValueError("select requires at least one option")
+    prompt, invalid, more_above, more_below = _wording(
+        prompt, invalid, more_above, more_below)
     disabled = set(disabled or ())
     selectable = [i for i in range(len(options)) if i not in disabled]
     if not selectable:
@@ -153,7 +179,7 @@ def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
                 number = -1
             if 0 <= number < len(number_to_index):
                 return number_to_index[number]
-            print(invalid or f"Choose a number from 1 to {len(number_to_index)}.")
+            print(invalid)
 
     import termios
     import tty
@@ -183,15 +209,14 @@ def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
         sys.stdout.write("\033[H\033[2J")
         sys.stdout.write(title.replace("\n", "\r\n") + "\r\n")
         if start:
-            label = (more_above or "↑ {count} more above").format(count=start)
+            label = more_above.format(count=start)
             sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")
         for line in option_lines(
                 options[start:end], width, index - start,
                 {position - start for position in disabled}):
             sys.stdout.write(line + "\r\n")
         if end < len(options):
-            label = (more_below or "↓ {count} more below").format(
-                count=len(options) - end)
+            label = more_below.format(count=len(options) - end)
             sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")
         sys.stdout.flush()
 
@@ -227,7 +252,7 @@ def select(title, options, input_fn=input, prompt="Select: ", invalid=None,
 
 
 def select_inline(options, shortcuts=None, input_fn=input, initial=0,
-                  prompt="Choose: ", chosen_label="{option}"):
+                  prompt=None, chosen_label="{option}"):
     """Arrow-key menu that does not clear the conversation already on screen.
 
     The defaults name no screen on purpose. They used to be the command
@@ -239,6 +264,7 @@ def select_inline(options, shortcuts=None, input_fn=input, initial=0,
     """
     if not options:
         raise ValueError("inline select requires at least one option")
+    prompt = t("select.prompt") if prompt is None else prompt
     shortcuts = shortcuts or {}
     # Shortcuts are read before navigation below, so binding one of these would
     # turn the key that moves the cursor into the key that answers. The context

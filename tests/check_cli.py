@@ -1549,6 +1549,281 @@ check(captured_temperature[:1] == [0.7],
 check(captured_temperature[1:2] == ["__absent__"],
       "a profile without temperature leaves the agent default untouched")
 
+# `/help` lists the commands in a single catalogue string, which is a copy of
+# COMMANDS kept by hand, so a new command is invisible in it until somebody
+# remembers. /config was, until this check existed. Both languages, because the
+# copy is kept twice.
+help_bodies = {
+    name: Translator(name).t("cli.help.body")
+    for name in ("en", "pt-BR")
+}
+undocumented = {
+    name: [command for command in app.SLASH_COMMANDS
+           if not re.search(rf"^  {re.escape(command)}(\s|$)", body, re.M)]
+    for name, body in help_bodies.items()
+}
+check(not any(undocumented.values()),
+      f"/help lists every slash command in every language ({undocumented})")
+
+# The other direction, which is what a mangled row looks like: a line that
+# opens like a command row but names nothing that exists. `  /configsession...`
+# lived through a check that only asked whether /config appeared somewhere.
+strays = {
+    name: [line for line in body.splitlines()
+           if line.startswith("  /")
+           and line.split()[0] not in app.SLASH_COMMANDS]
+    for name, body in help_bodies.items()
+}
+malformed = {
+    name: [line for line in body.splitlines()
+           # Not "no space in the line": the indent is always a space, which is
+           # how the first version of this let a bare row through.
+           if line.startswith("  /") and len(line.split()) < 2]
+    for name, body in help_bodies.items()
+}
+check(not any(strays.values()) and not any(malformed.values()),
+      f"every command row in /help names a real command ({strays}, {malformed})")
+
+# ----------------------------------------------------------------------
+# /config: the settings that used to be reachable only by editing the file.
+#
+# The screen is driven here the way a person drives it, by answering the menu,
+# and what is asserted afterwards is the behaviour that changed, not the words
+# the screen used to describe it. The one place words are asserted is the
+# sentence that has to appear when context management is switched off, because
+# saying it is the requirement.
+# ----------------------------------------------------------------------
+import cli_config
+
+config_home = Path(tempfile.mkdtemp()) / "config.json"
+config.save({
+    "version": 1,
+    "language": None,
+    "default_profile": "local",
+    "profiles": {
+        # Exactly the state the real profile was found in: a window written
+        # into the file during a test session, with nothing recording that a
+        # screen put it there, because none did.
+        "local": {"model": "qwen2.5-coder:3b", "num_ctx": 8192},
+    },
+    "permissions": {"global": [], "workspaces": {}},
+}, config_home)
+
+drive = app.IsaacCLI("qwen2.5-coder:3b", ".", 4, config_file=config_home,
+                     num_ctx=8192)
+drive.history = []
+
+answers = []
+drawn = []
+original_select = cli_config.terminal_ui.select
+
+
+def scripted_select(title, options, **_kwargs):
+    drawn.append((title, list(options)))
+    if not answers:
+        raise AssertionError(f"the screen asked one question too many: {title}")
+    return answers.pop(0)
+
+
+def run_config(script):
+    """Answer the menu with `script` and hand back what was drawn."""
+    global answers
+    answers = list(script)
+    drawn.clear()
+    cli_config.terminal_ui.select = scripted_select
+    try:
+        with redirect_stdout(io.StringIO()) as out:
+            drive.config_screen()
+    finally:
+        cli_config.terminal_ui.select = original_select
+    return drawn, out.getvalue()
+
+
+# The command has to reach the screen. Everything below drives config_screen
+# directly, which would keep passing with the dispatch never wired up.
+dispatched = []
+drive.config_screen = lambda: dispatched.append(True)
+try:
+    handled = drive.internal_command("/config")
+finally:
+    del drive.config_screen
+check(handled and dispatched == [True],
+      f"/config reaches the preferences screen ({handled}, {dispatched})")
+
+# A number nobody chose must not be presented as a choice. This is the whole
+# reason the origin column exists.
+rows, _ = run_config([3])
+check(any("8192" in option or "8K" in option for option in rows[0][1])
+      and any(Translator("en").t("cli.config.origin.hand") in option
+              for option in rows[0][1]),
+      f"a window written into config.json by hand is labelled as such: {rows[0][1]}")
+
+# Set it from the screen: 16384 is index 2 of WINDOW_CHOICES. The row that comes
+# back has to stop calling it a hand edit, because now it is not one.
+rows, _ = run_config([1, 2, 3])
+saved = config.load(config_home)["profiles"]["local"]
+check(saved.get("num_ctx") == 16_384 and drive.num_ctx == 16_384,
+      f"the window chosen on the screen is what the profile and the session hold: {saved}")
+rows, _ = run_config([3])
+check(any(Translator("en").t("cli.config.origin.chosen") in option
+          for option in rows[0][1])
+      and not any(Translator("en").t("cli.config.origin.hand") in option
+                  for option in rows[0][1]),
+      f"a window chosen on the screen is labelled as chosen: {rows[0][1]}")
+
+# Declaring no window is the case the task is really about: the local server is
+# started by a script outside this repository, and with nothing saved here the
+# honest row is that whatever that script passed is what holds. Clearing also
+# has to forget that a screen was ever involved, otherwise the next hand edit
+# would inherit the word "chosen".
+rows, _ = run_config([1, len(cli_config.WINDOW_CHOICES), 3])
+saved = config.load(config_home)["profiles"]["local"]
+rows, _ = run_config([3])
+check(saved.get("num_ctx") is None and drive.num_ctx is None
+      and "num_ctx" not in (saved.get("chosen_in_isaacli") or []),
+      f"clearing the window clears the record that a screen set it: {saved}")
+check(any(Translator("en").t("cli.config.origin.inherited") in option
+          for option in rows[0][1]),
+      f"with no window saved the row says the server's own window holds: {rows[0][1]}")
+
+# Temperature, the third setting that had no screen at all.
+rows, _ = run_config([2, 1, 3])
+saved = config.load(config_home)["profiles"]["local"]
+check(saved.get("temperature") == 0.2 and drive.temperature == 0.2,
+      f"the temperature chosen on the screen reaches the profile: {saved}")
+
+# ---- context management, proven by effect ----------------------------------
+# Turning it off through the screen has to change what the agent does, not just
+# what the file says. The same oversized conversation is run through
+# fit_to_context both ways, and what is asserted is whether anything was
+# compacted.
+def oversized():
+    return [
+        {"role": "system", "content": "contract"},
+        {"role": "user", "content": "fix the bug"},
+        {"role": "tool", "tool_call_id": "read_file",
+         "content": "x" * 40_000},
+        {"role": "tool", "tool_call_id": "read_file",
+         "content": "y" * 40_000},
+    ]
+
+
+run_config([0, 1, 3])          # context management -> off
+off_messages = oversized()
+off_summaries = agent.fit_to_context(off_messages, 8192,
+                                     manage=drive.manage_context)
+run_config([0, 0, 3])          # context management -> on
+on_messages = oversized()
+on_summaries = agent.fit_to_context(on_messages, 8192,
+                                    manage=drive.manage_context)
+check(off_summaries == [] and len(off_messages[2]["content"]) == 40_000,
+      "with context management off through the screen nothing is compacted "
+      f"({len(off_summaries)} summaries)")
+check(on_summaries and len(on_messages[2]["content"]) < 40_000,
+      "with it back on through the screen the oversized results are compacted "
+      f"({len(on_summaries)} summaries)")
+check(config.load(config_home).get("context_management") is True,
+      "the choice survives in the configuration file, not only in the session")
+
+# Off is not "turn off the interruption": the screen has to say, at the moment
+# of turning it off, that the request will now fail with its cause on screen.
+# Asserted in Portuguese so a screen that quietly reverts to English fails here.
+app.set_language("pt-BR")
+try:
+    rows, printed = run_config([0, 1, 3])
+    toggle_title = rows[1][0]
+finally:
+    app.set_language("en")
+run_config([0, 0, 3])
+portuguese = Translator("pt-BR")
+check(portuguese.t("cli.config.context.explain") in toggle_title,
+      "the screen that offers to switch context management off explains, in "
+      "the session's language, that off means failing out loud")
+check(portuguese.t("cli.config.context.now_off") in printed,
+      "switching it off says so again on the way back to the conversation")
+
+# Ctrl+C is an answer to a menu, not an escape from the session. The previous
+# version of a screen written inside an except block let it travel past the
+# caller's own handler.
+def interrupting_select(*_args, **_kwargs):
+    raise KeyboardInterrupt
+
+
+cli_config.terminal_ui.select = interrupting_select
+try:
+    with redirect_stdout(io.StringIO()):
+        drive.config_screen()
+    escaped = False
+except KeyboardInterrupt:
+    escaped = True
+finally:
+    cli_config.terminal_ui.select = original_select
+check(not escaped, "Ctrl+C on the preferences list closes the screen and no more")
+
+# The same key inside one setting goes back to the list instead of leaving, so
+# the list is drawn a second time and the run ends on the Close row.
+back_out = []
+
+
+def interrupt_once(title, options, **_kwargs):
+    back_out.append(title)
+    if len(back_out) == 1:
+        return 0
+    if len(back_out) == 2:
+        raise KeyboardInterrupt
+    return len(options) - 1
+
+
+cli_config.terminal_ui.select = interrupt_once
+try:
+    with redirect_stdout(io.StringIO()):
+        drive.config_screen()
+finally:
+    cli_config.terminal_ui.select = original_select
+check(len(back_out) == 3,
+      f"backing out of one setting returns to the list ({len(back_out)} screens)")
+
+# The window the server is really running is asked for, not assumed. A profile
+# number is what isaacli sends; only the server knows what it was started with.
+props_body = io.BytesIO(
+    json.dumps({"default_generation_settings": {"n_ctx": 4096}}).encode())
+props_body.__enter__ = lambda: props_body
+props_body.__exit__ = lambda *_a: False
+asked = []
+
+
+def fake_urlopen(url, timeout=None):
+    asked.append(url)
+    return props_body
+
+
+original_urlopen = cli_config.urllib.request.urlopen
+try:
+    cli_config.urllib.request.urlopen = fake_urlopen
+    reported = cli_config.server_window(
+        {"provider": "openai_compatible", "base_url": "http://127.0.0.1:8080/v1"})
+finally:
+    cli_config.urllib.request.urlopen = original_urlopen
+check(reported == 4096 and asked == ["http://127.0.0.1:8080/props"],
+      f"the local server is asked what window it is running ({reported}, {asked})")
+
+
+def refusing_urlopen(_url, timeout=None):
+    raise OSError("connection refused")
+
+
+try:
+    cli_config.urllib.request.urlopen = refusing_urlopen
+    silent = cli_config.server_window(
+        {"provider": "openai_compatible", "base_url": "http://127.0.0.1:8080/v1"})
+finally:
+    cli_config.urllib.request.urlopen = original_urlopen
+check(silent is None,
+      "a server that cannot be asked yields no number, so the screen says it "
+      "does not know instead of presenting the saved one as the truth")
+check(cli_config.server_window({"provider": "ollama"}) is None,
+      "nothing is probed when the profile names no local endpoint")
+
 # ----------------------------------------------------------------------
 # The two catalogues have to stay one catalogue in two languages.
 #
@@ -1621,6 +1896,93 @@ orphan_keys = sorted(
 )
 check(not orphan_keys,
       f"every catalogue key is asked for by some screen ({orphan_keys or 'all used'})")
+
+# ----------------------------------------------------------------------
+# A sentence that never entered a catalogue at all has no pair to be missing,
+# so the comparison above is blind to it. `i18n_scan` closes that by reading
+# the sources: literal text handed to a call that writes on the screen.
+#
+# The whole value of it is what it does NOT flag. This project writes English
+# on purpose in two other places, and a scan that accused those would be turned
+# off within the week: text the model reads (system prompt, tool description,
+# tool result, sandbox refusal) is a contract and is never translated, and a
+# `--debug` note is neither. So both directions are proven here, on one planted
+# module that carries both kinds at once.
+# ----------------------------------------------------------------------
+import i18n_scan
+
+planted = '''
+import sys
+import debug
+import terminal_ui
+
+SCHEMA = [{"function": {"name": "read_file",
+                        "description": "Read a file from the workspace."}}]
+
+
+def refuse():
+    return "Refused: the sandbox does not reach outside the workspace."
+
+
+def build(msgs):
+    msgs.append({"role": "system",
+                 "content": "You are a coding agent. Call one tool per step."})
+    debug.note("planted", "the probe answered nothing at all")
+    print("this went to the debug channel", file=sys.stderr)
+    return terminal_ui.select(t("planted.title"), [t("planted.only")])
+
+
+def screen():
+    print("Nothing here can be undone later.")
+    terminal_ui.select("Pick a server to talk to", [t("planted.only")])
+'''
+planted_offenders = i18n_scan.interface_literals("planted.py", planted)
+planted_lines = planted.splitlines()
+expected = [
+    (planted_lines.index('    print("Nothing here can be undone later.")') + 1,
+     "print()", "Nothing here can be undone later."),
+    (planted_lines.index(
+        '    terminal_ui.select("Pick a server to talk to", [t("planted.only")])') + 1,
+     "terminal_ui.select()", "Pick a server to talk to"),
+]
+check(len(planted_offenders) == len(expected)
+      and all(f"planted.py:{line} {sink}" in offender and repr(text) in offender
+              for (line, sink, text), offender in zip(expected, planted_offenders)),
+      "an interface literal is refused with its file, its line and its sink "
+      f"({planted_offenders})")
+# Same module, same scan, same run: the model's English and the debug note come
+# through untouched. This is the assertion that keeps the check alive.
+model_text = ("Read a file from the workspace.", "Refused: the sandbox",
+              "You are a coding agent", "the probe answered nothing",
+              "this went to the debug channel")
+check(not any(text in offender for text in model_text
+              for offender in planted_offenders),
+      "text the model reads and a --debug note are not mistaken for interface "
+      f"text ({planted_offenders})")
+
+# The whole package as it stands, which is what makes this a check and not a
+# demonstration.
+live_offenders = []
+for path in sorted((HERE.parent / "tool_harness").glob("*.py")):
+    live_offenders += i18n_scan.interface_literals(
+        path.name, path.read_text(encoding="utf-8"))
+check(not live_offenders,
+      f"no module writes interface text outside the catalogues: {live_offenders}")
+
+# Every excuse in the table has to still describe something real. An entry that
+# outlives the line it excused is how a table like this turns into the place a
+# rule goes to be forgotten: it silently pre-approves whatever text is written
+# next with those exact words.
+declared_stale = sorted(
+    f"{name}:{text!r}" for name, texts in i18n_scan.DECLARED.items()
+    for text in texts
+    if text not in {
+        found for _line, _sink, found in i18n_scan.screen_literals(
+            name, (HERE.parent / "tool_harness" / name).read_text(encoding="utf-8"))
+    }
+)
+check(not declared_stale,
+      f"every declared exception still names a line that exists: {declared_stale}")
 
 # `--help` is the first thing anybody sees of this program, and every row of the
 # commands section ran past 80 columns, the longest at 132. A terminal that

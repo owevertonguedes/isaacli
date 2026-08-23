@@ -48,6 +48,7 @@ COMMANDS = (
     ("/kaggle", "cli.cmd.kaggle"),
     ("/permissions", "cli.cmd.permissions"),
     ("/mode", "cli.cmd.mode"),
+    ("/config", "cli.cmd.config"),
     ("/language", "cli.cmd.language"),
     ("/clear", "cli.cmd.clear"),
     ("/new", "cli.cmd.new"),
@@ -305,6 +306,9 @@ class CommandsMixin:
             print(t("cli.permissions.workspace",
                     rules=", ".join(local_rules) if local_rules else none))
             print(t("cli.permissions.clear_hint"))
+            return True
+        if cmd == "/config":
+            self.config_screen()
             return True
         if cmd == "/language":
             from i18n import SUPPORTED_LANGUAGES
