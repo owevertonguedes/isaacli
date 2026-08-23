@@ -270,8 +270,20 @@ try:
 
     for language in ("en", "pt-BR"):
         speak = setup_ollama.Translator(language)
-        rows = {item["base_model"]: setup_ollama._model_label(item, [], speak)
-                for item in setup_ollama._recommended_catalog(None)}
+        # `_resolved_local_catalog` and not `_recommended_catalog`: the second
+        # is what the screen actually calls, and testing the first is how a
+        # check ends up proving something no user path runs. `_resolve_live` is
+        # stubbed out so this exercises the screen's code offline.
+        live = setup_ollama._resolve_live
+        setup_ollama._resolve_live = lambda *_a, **_k: None
+        try:
+            rows = {
+                item["base_model"]: setup_ollama._model_label(item, [], speak)
+                for item in setup_ollama._resolved_local_catalog(
+                    None, {"gpus": [{"vram_mb": 4096}]}, speak)
+            }
+        finally:
+            setup_ollama._resolve_live = live
         for item in setup_ollama.LOCAL_CATALOG:
             measured = item.get("measured_here")
             if not measured:
