@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -161,7 +162,8 @@ def push_run(command, check=False, capture_output=False, text=False, **kwargs):
 
 timeout_file = root / "timeout.json"
 add_account(timeout_file)
-answers = iter(["1", "1", "1", "n", "y"])
+# account, model, context, prepare assets?, ceiling, push?
+answers = iter(["1", "1", "1", "n", "2", "y"])
 timeout_output = io.StringIO()
 with redirect_stdout(timeout_output):
     cli_kaggle.run_kaggle(
@@ -175,6 +177,13 @@ check(bool(pushes) and all(
     "-t" in c and c[c.index("-t") + 1].isdigit() and int(c[c.index("-t") + 1]) > 0
     for c in pushes),
       "every push carries a session ceiling so an unattended kernel cannot run on")
+# And it carries the number that was chosen on the screen, not the largest one
+# this program can ask for. The chosen answer above is the second rung.
+check(all(int(c[c.index("-t") + 1])
+          == cli_kaggle.SESSION_CEILING_HOURS[1] * 3600 for c in pushes)
+      and cli_kaggle.SESSION_CEILING_HOURS[1] * 3600
+      != cli_kaggle.SESSION_TIMEOUT_SECONDS,
+      "the ceiling Kaggle is given is the one the user picked, not the maximum")
 # Nothing is prepared in this scenario, so both costs apply and both are named.
 # The 34 minute figure belongs to compiling, and quoting it at an account that
 # already owns the compiled runtime would overstate what it is consenting to.
@@ -286,7 +295,7 @@ def rendered_sources_for_account(username):
             rendered.append(json.loads((folder / "kernel-metadata.json").read_text()))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    answers = iter(["1", "1", "1", "y"])
+    answers = iter(["1", "1", "1", "1", "y"])
     with redirect_stdout(io.StringIO()):
         cli_kaggle.run_kaggle(
             input_fn=lambda _prompt: next(answers), run_fn=authenticated_run,
@@ -527,7 +536,7 @@ summary = cli_kaggle._quota_summary(REAL_QUOTA_TABLE)
 check(summary == "GPU 12.18h left of 30.00h",
       "the quota summary carries Kaggle's own figures with one unit each")
 
-dead_answers = iter(["1", "1", "1", "n", "n"])
+dead_answers = iter(["1", "1", "1", "n", "1", "n"])
 dead_output = io.StringIO()
 with redirect_stdout(dead_output):
     dead_code = cli_kaggle.run_kaggle(
@@ -1956,7 +1965,12 @@ try:
 finally:
     cli_kaggle.terminal_ui.select = original_preference_select
     cli_kaggle._select_model = original_select_model
-check(len(repeat_screens) == 1
+# Two screens, and both are about spending rather than about choosing: the
+# ceiling and the push confirmation. Repeating a choice skips the account and
+# the model, which are what cost the user time; it does not skip agreeing to
+# how many hours of a weekly budget this launch may burn unattended.
+check(len(repeat_screens) == 2
+      and any("live" in title.lower() for title in repeat_screens)
       and any("kernels push" in " ".join(c) for c in repeat_commands)
       and "Model, Q4_K_M" in repeat_output.getvalue(),
       "repeating the last choice names it and asks once, not for account and model again")
@@ -2861,6 +2875,196 @@ check(follow_env.get("PYTHONUNBUFFERED") == "1"
       and follow_env.get("HOME") == "/fake/account-home"
       and follow_env.get("KAGGLE_KEY") == "secret",
       "the log follower is unbuffered, and still speaks for the same account")
+
+# ----------------------------------------------------------------------
+# The wall ceiling: the kernel ends itself, and isaacli picks the number.
+#
+# Every brake before this one needed somebody alive to pull it. On 2026-08-23
+# the window conducting a run was cut off at 23:23 and came back at 03:31, and
+# the kernel billed for four hours for nobody, stopped only by the largest
+# ceiling this program could ask for. These checks run the shutdown logic out
+# of the rendered kernel against a ceiling of a fraction of a second, which is
+# the whole mechanism exercised without a kernel and without any quota.
+# ----------------------------------------------------------------------
+ceiling_folder = root / "ceiling"
+ceiling_folder.mkdir(parents=True, exist_ok=True)
+ceiling_model = {
+    "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+    "file": "Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+    "alias": "qwen3-coder-30b-a3b", "machine_shape": "NvidiaTeslaT4",
+    "cuda_arch": "75", "gpu_count": 2}
+cli_kaggle._render_kernel(
+    ceiling_folder, "user/isaacli-gpu-ceiling", ceiling_model, "kkQ9-_ab",
+    dataset_sources=[], session_seconds=5400)
+ceiling_source = (ceiling_folder / "isaacli-gpu-ceiling.py").read_text(
+    encoding="utf-8")
+check("SESSION_SECONDS = 5400" in ceiling_source
+      and "__SESSION_SECONDS__" not in ceiling_source,
+      "the ceiling agreed at the push is what the kernel carries, not the maximum")
+
+
+class _Child:
+    """A server or tunnel that keeps running until it is told to stop.
+
+    It also gives up on its own after a bounded number of polls. Without that,
+    a kernel that has lost its ceiling loops forever and this check hangs
+    instead of reporting, which is the failure mode that turned a reproved
+    check into a wedged process on 2026-08-22. Ending by exhaustion produces
+    the RuntimeError the kernel raises when a child exits, which is exactly
+    what distinguishes it from the SystemExit the ceiling produces.
+    """
+
+    def __init__(self, patience=200):
+        self.stopped = False
+        self.patience = patience
+
+    def poll(self):
+        if self.stopped:
+            return 0
+        self.patience -= 1
+        return 0 if self.patience <= 0 else None
+
+    def terminate(self):
+        self.stopped = True
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        self.stopped = True
+
+
+class _Clockwork:
+    """A clock that only moves when the kernel sleeps, so nothing waits here.
+
+    The kernel's own waits are 10 and 30 seconds long, and a ceiling of two
+    hours would take two hours of real time to reach. Driving the clock from
+    the sleeps exercises the same arithmetic in milliseconds, and it also means
+    a kernel that lost its ceiling reaches its ordinary one-hour deadline
+    instead of hanging this check.
+    """
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def run_ceiling(session_seconds, serving_answer):
+    """Run the kernel's own shutdown logic against a clock we advance."""
+    clock = _Clockwork()
+    scope = {
+        "time": clock, "subprocess": subprocess, "SystemExit": SystemExit,
+        "SESSION_SECONDS": session_seconds,
+        "SESSION_ENDS_AT": clock.monotonic() + session_seconds,
+        "server": _Child(), "tunnel": _Child(),
+        "serving": lambda: serving_answer,
+        "report_vram": lambda _moment: None,
+        "url": "https://ceiling.trycloudflare.com",
+    }
+    source = ceiling_source[ceiling_source.index("def ceiling_reached"):]
+    ended = None
+    screen = io.StringIO()
+    try:
+        with redirect_stdout(screen):
+            exec(compile(source, "gpu-server-ceiling", "exec"), scope)
+    except SystemExit as exit_code:
+        ended = exit_code.code
+    except RuntimeError as error:
+        ended = error
+    return ended, screen.getvalue(), scope
+
+
+served_end, served_screen, served_scope = run_ceiling(120, True)
+check(served_end == 0
+      and served_scope["server"].stopped and served_scope["tunnel"].stopped
+      and "[shutdown]" in served_screen and "ceiling" in served_screen,
+      "a kernel serving past its agreed ceiling ends itself, saying so")
+
+loading_end, loading_screen, loading_scope = run_ceiling(120, False)
+check(loading_end == 0 and "while loading" in loading_screen
+      and loading_scope["server"].stopped,
+      "a load that runs past the ceiling stops billing too, not only a session")
+
+
+class _StubbornChild(_Child):
+    """A child that refuses to terminate, which must not keep the kernel alive."""
+
+    def terminate(self):
+        raise OSError("refused")
+
+
+stubborn_scope_end = None
+stubborn = _StubbornChild()
+stubborn_source = ceiling_source[ceiling_source.index("def ceiling_reached"):]
+stubborn_clock = _Clockwork()
+stubborn_scope = {
+    "time": stubborn_clock, "subprocess": subprocess, "SESSION_SECONDS": 120,
+    "SESSION_ENDS_AT": stubborn_clock.monotonic() + 120,
+    "server": stubborn, "tunnel": _Child(), "serving": lambda: True,
+    "report_vram": lambda _moment: None, "url": "https://x.trycloudflare.com",
+}
+try:
+    with redirect_stdout(io.StringIO()):
+        exec(compile(stubborn_source, "gpu-server-ceiling", "exec"), stubborn_scope)
+except SystemExit as exit_code:
+    stubborn_scope_end = exit_code.code
+check(stubborn_scope_end == 0 and stubborn.stopped,
+      "a child that will not terminate is killed rather than left billing")
+
+# The number the person agreed to has to reach Kaggle as well, because the
+# kernel's own watch dies with the script and `-t` is the only thing left.
+ceiling_pushes = []
+
+
+def ceiling_push_run(command, check=False, capture_output=False, text=False,
+                     env=None, **kwargs):
+    parts = list(map(str, command))
+    joined = " ".join(parts)
+    if "kernels push" in joined:
+        ceiling_pushes.append(parts)
+    return push_run(command, check=check, capture_output=capture_output,
+                    text=text, **kwargs)
+
+
+chosen_seconds = cli_kaggle._choose_session_ceiling(
+    lambda _prompt: "2", remaining_hours=21.01)
+check(chosen_seconds == 2 * 3600,
+      "the launch screen answers the ceiling in seconds, chosen not inherited")
+cancelled_ceiling = cli_kaggle._choose_session_ceiling(
+    lambda _prompt: str(len(cli_kaggle.SESSION_CEILING_HOURS) + 1))
+check(cancelled_ceiling is None,
+      "the last row of the ceiling screen is a way back out")
+check(cli_kaggle._quota_remaining_hours(REAL_QUOTA_TABLE) is not None
+      and cli_kaggle._quota_remaining_hours("nothing useful") is None,
+      "the hours left are read from the quota table, and absence is not an error")
+
+# The window must not outwait the kernel it launched. Discovery defaults to the
+# maximum ceiling, and leaving that default would have it watching four hours
+# for a URL from a kernel that ends itself after one.
+discovery_timeouts = []
+original_discover = cli_kaggle.discover_tunnel_url
+discovery_file = root / "discovery-ceiling" / "config.json"
+add_account(discovery_file)
+# account, model, context, prepare assets?, ceiling (first rung), push
+discovery_answers = iter(["1", "1", "1", "n", "1", "y"])
+try:
+    cli_kaggle.discover_tunnel_url = lambda *args, timeout=None, **kwargs: (
+        discovery_timeouts.append(timeout)
+        or (_ for _ in ()).throw(RuntimeError("stop after discovery")))
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.run_kaggle(
+            input_fn=lambda _prompt: next(discovery_answers),
+            run_fn=push_run, which_fn=lambda _name: "/fake/kaggle",
+            config_file=discovery_file, home_dir=home)
+finally:
+    cli_kaggle.discover_tunnel_url = original_discover
+check(discovery_timeouts == [cli_kaggle.SESSION_CEILING_HOURS[0] * 3600],
+      "the window waits exactly as long as the kernel it agreed to, not longer")
 
 if failures:
     print(f"\n{len(failures)} check(s) failed")

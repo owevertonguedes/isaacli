@@ -19,6 +19,14 @@ MACHINE_SHAPE = "__MACHINE_SHAPE__"
 GPU_COUNT = __GPU_COUNT__
 SPLIT_MODE = "__SPLIT_MODE__"
 CONTEXT = __CONTEXT__
+# The ceiling agreed at the push, in seconds, and the only brake on this
+# session that does not need anybody on the other side to be alive. On
+# 2026-08-23 the window conducting a run was cut off by an API limit while the
+# kernel was serving, and the kernel kept billing for four hours for nobody.
+# The clock starts here, at the top of the script, because loading tens of
+# gigabytes bills exactly like serving does.
+SESSION_SECONDS = __SESSION_SECONDS__
+SESSION_ENDS_AT = time.monotonic() + SESSION_SECONDS
 PORT = 8080
 # The attached inputs are read-only and already expanded by Kaggle.
 SCRATCH = tempfile.gettempdir()
@@ -222,15 +230,46 @@ def serving():
 # first would hand the user a profile whose first request fails.
 print("Waiting for the model server to answer before publishing the URL",
       flush=True)
+def ceiling_reached():
+    """Whether the time agreed at the push has run out.
+
+    Checked in both waits below, not only in the serving loop: a load that
+    hangs bills at the same rate as a session that serves, and the run this
+    ceiling exists for spent most of its hours with nobody reading the answers.
+    """
+    return time.monotonic() >= SESSION_ENDS_AT
+
+
+def end_session(reason):
+    """Stop billing now, and say why, instead of waiting to be deleted."""
+    print(f"[shutdown] {reason}; ending the session", flush=True)
+    for child in (server, tunnel):
+        try:
+            child.terminate()
+            child.wait(timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            # A child that will not go quietly must not keep the script alive:
+            # the point of this path is that the kernel stops billing.
+            try:
+                child.kill()
+            except OSError:
+                pass
+    raise SystemExit(0)
+
+
 deadline = time.monotonic() + 3600
 while not serving():
     if server.poll() is not None:
         raise RuntimeError("the model server exited before it answered")
+    if ceiling_reached():
+        end_session(f"the agreed ceiling of {SESSION_SECONDS} s ran out while loading")
     if time.monotonic() > deadline:
         raise RuntimeError("the model server did not answer within an hour")
     time.sleep(10)
 report_vram("with the model loaded and answering")
 print("TUNNEL_URL=" + url, flush=True)
 while server.poll() is None and tunnel.poll() is None:
+    if ceiling_reached():
+        end_session(f"the agreed ceiling of {SESSION_SECONDS} s is up")
     time.sleep(30)
 raise RuntimeError("the model server or tunnel exited")

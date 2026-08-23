@@ -36,6 +36,12 @@ MODEL_CONTEXT = 16384
 # runs until Kaggle's own global maximum and spends quota that does not come
 # back. Every push carries its own ceiling instead of relying on that maximum.
 SESSION_TIMEOUT_SECONDS = 4 * 60 * 60
+# The rungs the launch screen offers for that ceiling. The first is the default
+# because the useful work of the run that overspent on 2026-08-23 fit in 38
+# minutes, and one hour is the smallest rung that does not cut a slow load
+# short: the longest load measured on this account, 22.53 GiB off an attached
+# dataset, took over half an hour before the server answered.
+SESSION_CEILING_HOURS = (1, 2, 3, 4)
 ACCELERATORS = {
     "NvidiaTeslaP100": {
         "label": "P100 16 GB", "vram_mb": 16384,
@@ -558,6 +564,25 @@ def _quota_summary(text):
     return " ".join((text or "").split())
 
 
+def _quota_remaining_hours(text):
+    """The GPU hours left, as a number, or None when the table cannot say.
+
+    The same row `_quota_summary` reads, parsed instead of formatted, because
+    the ceiling screen has to compare against it rather than print it. A table
+    that does not answer is not an error here: the ceiling is still chosen, the
+    screen just does not get to say how much room is left.
+    """
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].upper() == "GPU":
+            try:
+                return float(parts[2].rstrip("hH"))
+            except ValueError:
+                debug.note("cli_kaggle._quota_remaining_hours", line)
+                return None
+    return None
+
+
 def _choose(title, options, input_fn, initial=0, disabled=None):
     """One selection screen, drawn the way the rest of isaacli draws them."""
     return terminal_ui.select(
@@ -948,6 +973,7 @@ KERNEL_VALUE_PATTERNS = {
     "__GPU_COUNT__": re.compile(r"[0-9]+"),
     "__SPLIT_MODE__": re.compile(r"[a-z]+"),
     "__CONTEXT__": re.compile(r"[0-9]+"),
+    "__SESSION_SECONDS__": re.compile(r"[0-9]+"),
 }
 
 # 16384 is what every launch used to get, and it is a floor rather than a
@@ -1044,6 +1070,37 @@ def _kernel_context(model):
     return int(chosen) if chosen else _context_ceiling(model)
 
 
+def _choose_session_ceiling(input_fn, remaining_hours=None):
+    """How long this kernel may live before it ends itself, agreed at the push.
+
+    A kernel spends GPU quota by wall clock until something deletes it, and
+    every brake this program had needed somebody alive to pull it: the window
+    that launched it, or a person typing `isaacli kaggle --stop`. On 2026-08-23
+    the session that was conducting a run was cut off by an API limit at 23:23
+    and came back at 03:31, and the kernel served nobody for four hours. What
+    finally stopped it was the four-hour ceiling the push carries, which is
+    this program taking the largest number it could and calling it a limit.
+
+    So the number is chosen here instead of inherited, and it is carried twice:
+    into the kernel, which watches its own clock and ends the session itself,
+    and into `kernels push -t`, which is Kaggle enforcing the same figure if
+    our own watch dies with the script. Neither of those needs anybody alive.
+    """
+    hours = [hour for hour in SESSION_CEILING_HOURS
+             if hour * 3600 <= SESSION_TIMEOUT_SECONDS]
+    options = [t("cli.kaggle.ceiling.option", hours=hour) for hour in hours]
+    explanation = t("cli.kaggle.ceiling.explain")
+    if remaining_hours is not None:
+        explanation += "\n" + t("cli.kaggle.ceiling.remaining",
+                                remaining=f"{remaining_hours:.2f}")
+    options.append(t("navigation.back"))
+    index = _choose(f"{t('cli.kaggle.ceiling.title')}\n\n{explanation}",
+                    options, input_fn, initial=0)
+    if index >= len(hours):
+        return None
+    return int(hours[index] * 3600)
+
+
 def _choose_kernel_context(model, input_fn):
     """The context screen the local setup already draws, with a harder ceiling.
 
@@ -1105,10 +1162,11 @@ def _kernel_value(marker, value):
 
 
 def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
-                   dataset_sources=None):
+                   dataset_sources=None, session_seconds=SESSION_TIMEOUT_SECONDS):
     template_name = "flow-validation-cpu.py.tmpl" if validation_cpu else "gpu-server.py.tmpl"
     template = (TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
     values = {
+        "__SESSION_SECONDS__": str(int(session_seconds)),
         "__MODEL_REPO__": model["repo"],
         "__MODEL_FILE__": model["file"],
         "__MODEL_ALIAS__": model["alias"],
@@ -2413,6 +2471,17 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         dataset_sources = list(available.values())
         for ref in dataset_sources:
             print(t("cli.kaggle.assets.available", ref=ref))
+    # Asked before the push confirmation, because the ceiling is part of what is
+    # being consented to: how many hours of a weekly budget this may cost at
+    # most, whether or not anybody is left watching it.
+    session_seconds = SESSION_TIMEOUT_SECONDS
+    if not validation_cpu:
+        session_seconds = _choose_session_ceiling(
+            input_fn, _quota_remaining_hours(quota))
+        if session_seconds is None:
+            print(t("cli.kaggle.cancelled"))
+            return 130
+        print(t("cli.kaggle.ceiling.chosen", hours=session_seconds // 3600))
     if input_fn(t("cli.kaggle.push.confirm")).strip().lower() != t("cli.kaggle.confirm_yes"):
         print(t("cli.kaggle.cancelled"))
         return 130
@@ -2424,16 +2493,25 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         with tempfile.TemporaryDirectory(prefix="isaacli-kaggle-") as temporary:
             _render_kernel(
                 Path(temporary), slug, model, api_key, validation_cpu,
-                dataset_sources=dataset_sources)
+                dataset_sources=dataset_sources,
+                session_seconds=session_seconds)
+            # The same figure on both sides. The kernel watches its own clock,
+            # which is the brake that needs nobody alive; `-t` is Kaggle holding
+            # to the same agreement if the script dies before its watch fires.
             result = run_fn([str(executable), "kernels", "push", "-p", temporary,
-                             "-t", str(SESSION_TIMEOUT_SECONDS)], check=False,
+                             "-t", str(session_seconds)], check=False,
                             env=environment)
             if result.returncode != 0:
                 raise RuntimeError(t("cli.kaggle.push.failed"))
         print(t("cli.kaggle.pushed", slug=slug,
                 url=f"https://www.kaggle.com/code/{slug}"))
+        # Waiting is bounded by the life of the kernel, and that life is now the
+        # number chosen above rather than the largest one this program can ask
+        # for. Leaving the default here would have this window watching for four
+        # hours for a URL from a kernel that ends itself after one.
         url = discover_tunnel_url(
-            executable, slug, popen_fn=popen_fn, env=environment)
+            executable, slug, timeout=session_seconds,
+            popen_fn=popen_fn, env=environment)
         profile = save_kaggle_profile(
             url, slug, model, api_key, config_file, account=account)
     except KeyboardInterrupt:
