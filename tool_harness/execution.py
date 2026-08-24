@@ -36,8 +36,8 @@ When `systemd-run` is missing, the command still runs -- there is no host
 fallback to refuse to here, unlike bwrap, because the command is still confined
 by layers 1-3 -- but the output carries a `NOTE:` saying the ceiling was not
 applied. A silent absence is worse than no limit, because we stop looking for
-it. See `_cgroup_prefix` and `tasks/pending/007-seccomp-and-cgroup-limits.md`
-for where the numbers come from.
+it. See `_cgroup_prefix` for the ceilings and the comment above it for where
+the numbers come from.
 
 A SECCOMP FILTER goes in through `--add-seccomp-fd`, denying the syscall
 families no agent command has business calling: nested namespaces and mounts,
@@ -164,8 +164,8 @@ OUTPUT_LIMIT = context_budget.CEILINGS["command_output"]  # absolute ceiling; th
 
 # cgroup ceilings via `systemd-run --user --scope`. MemorySwapMax=0 is not
 # decorative: MemoryMax alone is not a limit while swap exists (measured on
-# this machine, see tasks/pending/007-seccomp-and-cgroup-limits.md -- a memory
-# hog under MemoryMax alone survived 90s because swap absorbed it; adding
+# this machine: a memory hog under MemoryMax alone survived 90s because swap
+# absorbed it; adding
 # MemorySwapMax=0 is what made it OOM-kill). TasksMax stops a fork bomb; a
 # generous ceiling still blocks one because a fork bomb is exponential, not
 # linear. CPUQuota leaves the rest of the machine usable while a command runs.

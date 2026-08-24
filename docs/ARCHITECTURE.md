@@ -293,8 +293,8 @@ may stop fitting entirely in the GPU.
   kernel's cgroup controller, not policy. When `systemd-run` is missing the
   command still runs, unlimited, with a `NOTE:` appended to the output saying
   so; the docs and the tests must never claim the ceiling exists on a machine
-  where it silently does not (see `tasks/done/007-seccomp-and-cgroup-limits.md`
-  for the measurements behind the exact values);
+  where it silently does not. The exact values come from measurements on this
+  project's own hardware;
 - a seccomp-BPF filter on every command, passed to `bwrap` through
   `--add-seccomp-fd` and assembled in `tool_harness/seccomp_filter.py`. It denies
   nested namespaces and mounts, module and `kexec` control, the kernel keyring,
@@ -324,7 +324,7 @@ may stop fitting entirely in the GPU.
   variable or a repository is ever consulted. Directories from the snapshot pass
   the same `_mountable` refusals as any other, and failing to read it keeps the
   process PATH and appends a one-time `NOTE:` with the reason instead of going
-  quiet (see `tasks/done/052-o-path-da-jaula-e-o-de-quem-abriu-o-isaacli.md`);
+  quiet;
 - no exposure of API keys in config, logs or output;
 - public URLs validated against local and private destinations;
 - child processes tied to the right lifecycle, and idempotent cleanup;
