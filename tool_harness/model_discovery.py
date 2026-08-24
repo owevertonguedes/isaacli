@@ -890,6 +890,79 @@ def local_vram():
     return local["vram_mb"], local["gpu_count"]
 
 
+def rank_against_machine(models, translate=None):
+    """Resolved models ranked against this machine, with the table drawn.
+
+    Returns (models, rows, header, legend), the models in the same order as the
+    rows. What the user is asking on every one of these screens is "what can I
+    run", so the answer is drawn against their card, and a model that does not
+    fit still appears saying so: hiding it would make the list look like the
+    whole of Hugging Face fits in this GPU.
+
+    Shared rather than copied because the screens that ask this question have to
+    answer it the same way. The local engine's download screen had no list at
+    all, so it asked for an exact repository reference and nothing else, which
+    is a question only somebody who already knows the answer can answer.
+    """
+    translate = translate or text
+
+    # The whole summary, not just the two fields the fit needs: the bandwidth
+    # and the card's name are what put a throughput in the tok/s column and the
+    # card at the head of the fit column, and dropping them leaves a table that
+    # still draws, with two columns silently emptied.
+    local = hardware.summarise(hardware.detect().get("gpus"))
+    vram_mb, gpu_count = local["vram_mb"], local["gpu_count"]
+    overhead_mb = hardware.overhead_mb(gpu_count)
+    ranked = []
+    for item in models:
+        complete = all(key in item for key in
+                       ("model_bytes", "n_layers", "n_kv_heads", "head_dim"))
+        if not complete:
+            # Nothing to compute a fit from, so there is no answer to carry into
+            # the throughput either.
+            ranked.append((dict(item, fits=False), EMPTY_CELL, None))
+            continue
+        report = fit_report(item, vram_mb, overhead_mb=overhead_mb)
+        if not gpu_count:
+            # No card, so nothing was computed against one. The column heading
+            # says CPU already, and a yes here would be a claim about this
+            # machine's RAM that nobody made.
+            ranked.append((report, EMPTY_CELL, None))
+            continue
+        ranked.append((report, translate("model.fit.yes_cell" if report["fits"]
+                                         else "model.fit.no_cell"), report["fits"]))
+    ranked.sort(key=lambda entry: not entry[0]["fits"])
+    row_machine = machine(**local)
+    table = model_table(
+        [model_row(dict(report, name=resolved_row_name(report)), row_machine,
+                   translate=translate, fit=label, fits=fits,
+                   # What stands behind a live search result is the question
+                   # these screens exist to answer, so it takes the last column,
+                   # where nothing is installed and "installed" would say
+                   # nothing.
+                   state=origin_label(report, translate))
+         for report, label, fits in ranked],
+        row_machine, translate=translate,
+        state_header=translate("model.table.origin"))
+    return ([report for report, _label, _fits in ranked], table["rows"],
+            table["header"] if ranked else "",
+            table["legend"] if ranked else "")
+
+
+def live_candidates(catalog_path, translate=None, urlopen_fn=urllib.request.urlopen,
+                    search=None, limit=6):
+    """rank_against_machine over what Hugging Face is publishing right now.
+
+    Returns (models, rows, header, legend, errors).
+    """
+    try:
+        models, errors = discover_models(
+            catalog_path, search=search, limit=limit, urlopen_fn=urlopen_fn)
+    except DiscoveryError as error:
+        return [], [], "", "", [str(error)]
+    return (*rank_against_machine(models, translate), errors)
+
+
 def ollama_reference(model):
     match = re.search(
         r"(?i)(?:^|[-_.])(iq\d+_[a-z0-9]+|q\d+_[a-z0-9]+)(?:[-_.]|\.gguf$)",

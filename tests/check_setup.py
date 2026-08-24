@@ -325,8 +325,7 @@ try:
     check(hand_entries[hand_initial] == "llamacpp",
           "and the cursor starts on the engine it belongs to")
     engine_label = hand_options[hand_entries.index("llamacpp")]
-    check(engine_label == pt.t("engine.llamacpp.found",
-                               owner=pt.t("engine.llamacpp.owner.user")),
+    check(engine_label == pt.t("engine.llamacpp.found"),
           f"and the entry reports the server it already runs rather than offering "
           f"to install one ({engine_label!r})")
 

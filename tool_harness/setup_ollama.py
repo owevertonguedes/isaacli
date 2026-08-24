@@ -288,12 +288,12 @@ def _detect_engines(tr, which_fn=None, candidates=()):
         ollama_models = []
     ollama_exe = which_fn("ollama")
 
-    if server is not None:
-        entries.append(("llamacpp", tr.t(
-            "engine.llamacpp.found",
-            owner=tr.t(f"engine.llamacpp.owner.{owner}"))))
-    else:
-        entries.append(("llamacpp", tr.t("engine.llamacpp.install")))
+    # Whose build it is decides nothing here and cost the row half its width, so
+    # it stays in --debug, where the uninstall path is the one that needs it.
+    debug.note("setup_ollama._detect_engines",
+               f"llama-server: {server or 'none'} ({owner or 'nobody'})")
+    entries.append(("llamacpp", tr.t("engine.llamacpp.found" if server is not None
+                                     else "engine.llamacpp.install")))
 
     if ollama_exe:
         entries.append(("ollama", tr.t("engine.ollama.found",
@@ -432,6 +432,42 @@ def _resolve_live(reference):
     # be repeated.
     _LOCAL_RESOLUTION_CACHE[reference] = live
     return live
+
+
+def curated_gguf_models(task=None):
+    """The reviewed catalogue, as GGUF files a download screen can offer.
+
+    What Hugging Face answers to "what is popular in GGUF" is, on any given day,
+    a page of 27B models and their uncensored derivatives: measured live on
+    2026-08-24, one of six candidates survived resolution and it did not fit the
+    card asking. A list like that is not an answer to "what can I run here", and
+    the reviewed catalogue is: it is the only list in this program with evidence
+    behind it and with small models in it.
+
+    Entries that are not GGUF references are left out rather than shown broken.
+    `gpt-oss:20b` is an Ollama name and there is no file to fetch behind it.
+    """
+    catalogued = [item for item in model_discovery.order_for_task(LOCAL_CATALOG, task)
+                  if item["reference"].startswith("hf.co/")]
+    pending = [item["reference"] for item in catalogued
+               if item["reference"] not in _LOCAL_RESOLUTION_CACHE]
+    if pending:
+        with ThreadPoolExecutor(max_workers=len(pending)) as executor:
+            list(executor.map(_resolve_live, pending))
+    models = []
+    for catalog in catalogued:
+        live = _resolve_live(catalog["reference"])
+        if not live or not live.get("repo") or not live.get("file"):
+            continue
+        # The live payload carries whatever evidence the seed happened to attach
+        # to a neighbouring repository. The curated entry is the authority for
+        # this model, and `curated` is what makes the row say so instead of
+        # passing a reviewed model off as something the search just turned up.
+        models.append({**live, "curated": True,
+                       "benchmark": catalog["benchmark"],
+                       "benchmark_source": catalog["benchmark_source"],
+                       "scores": catalog["scores"]})
+    return models
 
 
 def _resolved_local_catalog(task, profile, tr):
@@ -669,12 +705,8 @@ def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
 def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
                          urlopen_fn=urllib.request.urlopen):
     """One secondary screen for live discovery and exact Ollama references."""
-    try:
-        discovered, errors = model_discovery.discover_models(
-            catalog_path, urlopen_fn=urlopen_fn,
-        )
-    except model_discovery.DiscoveryError as error:
-        discovered, errors = [], [str(error)]
+    discovered, rows, header, legend, errors = model_discovery.live_candidates(
+        catalog_path, translate=tr.t, urlopen_fn=urlopen_fn)
     # Printing the causes here and then drawing a screen put them on the page the
     # alternate screen replaces, so on a real terminal nobody ever read them.
     # A candidate that failed explains why the list is shorter and belongs in
@@ -685,62 +717,15 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     explanation = None if discovered else "\n".join(
         model_discovery.text("model.discovery.failed", error=error)
         for error in errors) or None
-    # What the user asked is "what can I run", so the answer is drawn against
-    # their machine, the way the curated screen already is. A model that does
-    # not fit still appears, saying so: hiding it would make the list look like
-    # the whole of Hugging Face fits in this GPU.
-    local = hardware.summarise(hardware.detect().get("gpus"))
-    vram_mb, gpu_count = local["vram_mb"], local["gpu_count"]
-    overhead_mb = hardware.overhead_mb(gpu_count)
-    ranked = []
-    for item in discovered:
-        complete = all(key in item for key in
-                       ("model_bytes", "n_layers", "n_kv_heads", "head_dim"))
-        if not complete:
-            # Nothing to compute a fit from, so there is no answer to carry
-            # into the throughput either.
-            ranked.append(
-                (dict(item, fits=False), model_discovery.EMPTY_CELL, None))
-            continue
-        report = model_discovery.fit_report(item, vram_mb, overhead_mb=overhead_mb)
-        if not gpu_count:
-            # No card, so nothing was computed against one. The column heading
-            # says CPU already, and a yes here would be a claim about this
-            # machine's RAM that nobody made.
-            ranked.append((report, model_discovery.EMPTY_CELL, None))
-            continue
-        ranked.append((report, tr.t("model.fit.yes_cell" if report["fits"]
-                                    else "model.fit.no_cell"), report["fits"]))
-    ranked.sort(key=lambda entry: not entry[0]["fits"])
-    discovered = [report for report, _label, _fits in ranked]
-    row_machine = model_discovery.machine(**local)
-    table = model_discovery.model_table(
-        [model_discovery.model_row(
-            dict(report, name=model_discovery.resolved_row_name(report)),
-            row_machine, translate=tr.t, fit=label,
-            # A model the card does not hold is not decoding at the card's
-            # bandwidth, so there is no estimate to print for it.
-            fits=fits,
-            # What stands behind a live search result is the question this
-            # screen exists to answer, so it takes the last column here, where
-            # nothing is installed and "installed" would say nothing.
-            state=model_discovery.origin_label(report, tr.t))
-         for report, label, fits in ranked],
-        row_machine, translate=tr.t,
-        state_header=tr.t("model.table.origin"))
     entries = [*discovered, "__exact__", "__back__"]
     options = [
-        *table["rows"],
+        *rows,
         model_discovery.text("model.discovery.exact"),
         model_discovery.text("model.discovery.back"),
     ]
     # The header and the legend are written once, above the list, and never as
     # a selectable row.
-    explanation = "\n".join(filter(None, [
-        explanation,
-        table["header"] if ranked else "",
-        table["legend"] if ranked else "",
-    ])) or None
+    explanation = "\n".join(filter(None, [explanation, header, legend])) or None
     index = _select(
         tr, model_discovery.text("model.discovery.section"), options, input_fn,
         explanation,
@@ -749,6 +734,10 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     if chosen == "__back__":
         return None
     if chosen == "__exact__":
+        # A prompt asking for a "model reference" and nothing else is a question
+        # only somebody who already knows the answer can answer, and there are
+        # four accepted spellings of it.
+        print(model_discovery.text("model.discovery.prompt.explain"))
         reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
         if not reference:
             return None

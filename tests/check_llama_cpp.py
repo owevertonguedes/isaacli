@@ -628,6 +628,128 @@ measured_table = model_discovery.model_table(
 check("m" in measured_table["legend"] and "measured here" in measured_table["legend"],
       f"and the legend names which model was measured ({measured_table['legend']})")
 
+# --- the weights a profile is already serving --------------------------------
+#
+# The screen that lists what this computer can run opened with nothing on it,
+# on a machine that was serving a model at that very moment. It scanned only the
+# folder this program downloads into, the Ollama store, and folders the user had
+# registered by hand, so a weight in anybody's own directory was invisible even
+# while it was answering requests.
+
+import config
+
+sys.path.insert(0, str(HERE))
+from gguf_fixture import write_gguf, dense_keys
+
+served_root = root / "served"
+served_root.mkdir()
+weight = write_gguf(served_root / "a-model-Q4_K_M.gguf", dense_keys())
+sibling = write_gguf(served_root / "another-model-Q4_K_M.gguf", dense_keys())
+
+check(setup_llamacpp._served_weight({"weights": str(weight)}) == weight,
+      "the weights field a saved profile carries names the file being served")
+check(setup_llamacpp._served_weight(
+          {"autostart": {"cmd": ["llama-server", "-m", str(weight), "-c", "8192"]}})
+      == weight,
+      "and so does the -m of a launch command this program can read")
+check(setup_llamacpp._served_weight({"weights": str(served_root / "gone.gguf")}) is None,
+      "a recorded weight that is no longer on disk names nothing")
+
+
+class FakeProps:
+    """The /props answer of a llama-server, which is the only thing that knows
+    the file when the launch command is a wrapper script."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.asked = []
+
+    def __call__(self, url, timeout=None):
+        self.asked.append(url)
+        return self
+
+    def __enter__(self):
+        return io.BytesIO(json.dumps(self.payload).encode())
+
+    def __exit__(self, *_exception):
+        return False
+
+
+props = FakeProps({"model_path": str(weight)})
+wrapper = {"base_url": "http://127.0.0.1:8080/v1",
+           "autostart": {"cmd": [str(served_root / "start-llama-server.sh")]}}
+check(setup_llamacpp._served_weight(wrapper, props) == weight
+      and props.asked == ["http://127.0.0.1:8080/props"],
+      f"and a wrapper script is resolved by asking the running server ({props.asked})")
+
+remote = FakeProps({"model_path": str(weight)})
+check(setup_llamacpp._served_weight(
+          {"base_url": "https://api.example.invalid/v1"}, remote) is None
+      and remote.asked == [],
+      "somebody else's endpoint is never asked: its file is on somebody else's disk")
+
+
+def refuses(_url, timeout=None):
+    raise OSError("connection refused")
+
+
+check(setup_llamacpp._served_weight(wrapper, refuses) is None,
+      "a server that is not answering costs the screen nothing and raises nothing")
+
+served_config = root / "served-config.json"
+config.save(dict(config.empty_config(), profiles={"served": wrapper}), served_config)
+folders = setup_llamacpp.served_weight_dirs(served_config, props)
+check(folders == [served_root],
+      f"the folder is what is scanned, not the one file, so the models kept "
+      f"beside it are offered too ({folders})")
+import local_models
+
+listed, _problems = local_models.available(extra_dirs=folders)
+check({item["path"] for item in listed} == {str(weight), str(sibling)},
+      "and both of them reach the list the choice is made on")
+
+# --- the download screen ----------------------------------------------------
+#
+# It used to be a bare prompt asking for a "model reference", which is a
+# question only somebody who already knows the answer can answer. What Hugging
+# Face answers to "what is popular in GGUF" is also not an answer to "what can I
+# run here": measured live on 2026-08-24 it was a page of 27B models, one of
+# which survived resolution and did not fit the card asking. So the reviewed
+# catalogue leads the list.
+import setup_ollama
+
+hub_screens = []
+reviewed = dict(fixture(name="Reviewed-3B"), repo="org/Reviewed-3B-GGUF",
+                file="reviewed-Q4_K_M.gguf", curated=True)
+live_find = dict(fixture(name="Found-27B", model_bytes=15 * 1024 ** 3),
+                 repo="org/Found-27B-GGUF", file="found-Q4_K_M.gguf")
+original_curated = setup_ollama.curated_gguf_models
+original_discover = model_discovery.discover_models
+original_quantization = setup_ollama._choose_quantization
+original_select = setup_llamacpp.terminal_ui.select
+try:
+    setup_ollama.curated_gguf_models = lambda *_a, **_k: [reviewed]
+    model_discovery.discover_models = lambda *_a, **_k: ([live_find, reviewed], [])
+    setup_ollama._choose_quantization = lambda model, *_a, **_k: model
+    setup_llamacpp.terminal_ui.select = lambda title, options, **kwargs: (
+        hub_screens.append((title, options)) or 0)
+    picked = setup_llamacpp._choose_from_hub(tr, lambda _prompt="": "")
+finally:
+    setup_ollama.curated_gguf_models = original_curated
+    model_discovery.discover_models = original_discover
+    setup_ollama._choose_quantization = original_quantization
+    setup_llamacpp.terminal_ui.select = original_select
+
+_hub_title, hub_options = hub_screens[-1]
+check(len(hub_options) == 4 and "Reviewed-3B" in hub_options[0],
+      f"the download screen offers models, with the reviewed one first, "
+      f"instead of an empty prompt ({hub_options})")
+check("Found-27B" in hub_options[1]
+      and (picked or {}).get("repo") == reviewed["repo"]
+      and (picked or {}).get("file") == reviewed["file"],
+      f"a live find is listed after it, once, and choosing a row returns the "
+      f"file that row names ({(picked or {}).get('file')})")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

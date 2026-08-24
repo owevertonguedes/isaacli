@@ -11,6 +11,7 @@ Weights Ollama already downloaded are reused where they lie. Asking somebody to
 download the same gigabytes a second time because a different program wants to
 serve them would be the worst thing this path could do.
 """
+import json
 import re
 import urllib.request
 from pathlib import Path
@@ -28,6 +29,9 @@ import units
 # second isaacli, or the user's own llama-server, may already hold it.
 BASE_PORT = 8080
 PORT_ATTEMPTS = 16
+# Asking a local server which file it has open. Short because the screen is
+# drawn after it: a server that is not answering must cost a blink, not a wait.
+SERVED_PROBE_TIMEOUT = 2
 
 
 
@@ -221,6 +225,65 @@ def _configured_dirs(config_file=None):
     return [Path(item).expanduser() for item in dirs] if isinstance(dirs, list) else []
 
 
+def _served_weight(item, urlopen_fn=urllib.request.urlopen):
+    """The weight file one saved profile is serving, or None.
+
+    Three sources, most certain first, because a machine can be serving a model
+    this minute and still have nothing on screen to choose: the field this
+    program writes; the `-m` of a launch command it can read; and, last, the
+    running server itself, which is the only one that knows when the command is
+    a wrapper script. Asking is not guessing: /props answers with the path of
+    the file it has open.
+    """
+    weights = item.get("weights")
+    if weights and Path(weights).is_file():
+        return Path(weights)
+
+    command = [str(part) for part in
+               ((item.get("autostart") or {}).get("cmd") or [])]
+    for flag in ("-m", "--model"):
+        if flag in command:
+            position = command.index(flag) + 1
+            if position < len(command) and Path(command[position]).is_file():
+                return Path(command[position])
+
+    base_url = item.get("base_url")
+    if not base_url or not config.is_local_endpoint(base_url):
+        # Somebody else's endpoint serves a file on somebody else's disk, and
+        # nothing here could open it.
+        return None
+    url = base_url.rstrip("/").removesuffix("/v1") + "/props"
+    try:
+        with urlopen_fn(url, timeout=SERVED_PROBE_TIMEOUT) as response:
+            path = json.load(response).get("model_path")
+    except Exception as error:  # noqa: BLE001 - a server that is down is not news
+        debug.note("setup_llamacpp._served_weight", f"{url}: {error}")
+        return None
+    return Path(path) if path and Path(path).is_file() else None
+
+
+def served_weight_dirs(config_file=None, urlopen_fn=urllib.request.urlopen):
+    """The folders holding the weights the saved profiles serve.
+
+    The folder, not the file: somebody who keeps one GGUF there keeps the rest
+    there too, and a screen that offered only the model already loaded would be
+    a list of one on a disk full of models. This is derived every time rather
+    than written into the configuration, so a weight that moves stops being
+    offered instead of becoming a stale entry nobody remembers adding.
+    """
+    try:
+        data = config.load(config_file)
+    except ValueError as error:
+        debug.note("setup_llamacpp.served_weight_dirs", str(error))
+        return []
+    folders = []
+    for item in (data.get("profiles") or {}).values():
+        weight = _served_weight(item, urlopen_fn)
+        if weight and weight.parent not in folders:
+            folders.append(weight.parent)
+    return folders
+
+
 def _add_directory(tr, input_fn, config_file=None):
     """Remember one more folder to look for weights in."""
     raw = input_fn(_t(tr, "llamacpp.model.folder.prompt")).strip()
@@ -238,19 +301,75 @@ def _add_directory(tr, input_fn, config_file=None):
     return True
 
 
+def _choose_from_hub(tr, input_fn, urlopen_fn=urllib.request.urlopen):
+    """What Hugging Face is publishing that this card can hold, as a list.
+
+    This screen used to be a bare prompt asking for a "model reference" and
+    nothing else, which is a question only somebody who already knows the answer
+    can answer: the link, the name, the id, and in which of the four accepted
+    spellings. The list the Ollama path has always drawn is drawn here too, from
+    the same function, led by the reviewed catalogue, and typing a reference
+    stays available for whoever has one, now with an example beside the prompt.
+    """
+    from setup_ollama import (
+        MODEL_CATALOG_PATH, _choose_quantization, curated_gguf_models)
+
+    curated = curated_gguf_models()
+    try:
+        found, errors = model_discovery.discover_models(
+            MODEL_CATALOG_PATH, urlopen_fn=urlopen_fn)
+    except model_discovery.DiscoveryError as error:
+        found, errors = [], [str(error)]
+    for error in errors:
+        # A candidate that failed explains a shorter list and nothing more.
+        debug.note("setup_llamacpp._choose_from_hub", error)
+    # The reviewed rows first, then whatever the live search added that is not
+    # already among them. Both keep the origin column that says which is which,
+    # so a reviewed row is never passed off as a live find or the other way.
+    seen = {(item["repo"], item["file"]) for item in curated}
+    merged = curated + [item for item in found
+                        if (item.get("repo"), item.get("file")) not in seen]
+    discovered, rows, header, legend = model_discovery.rank_against_machine(
+        merged, translate=tr.t)
+    entries = [*discovered, "__exact__", "__back__"]
+    options = [*rows,
+               model_discovery.text("model.discovery.exact"),
+               model_discovery.text("model.discovery.back")]
+    explanation = "\n".join(filter(None, [
+        # A discovery that returned nothing at all is the answer to what was
+        # just asked, so its cause goes on the screen, not behind it.
+        None if discovered else "\n".join(
+            model_discovery.text("model.discovery.failed", error=error)
+            for error in errors) or None,
+        header, legend,
+    ])) or None
+    index = _select(tr, _t(tr, "llamacpp.hub.title"), options, input_fn,
+                    explanation)
+    chosen = entries[index]
+    if chosen == "__back__":
+        return None
+    if chosen == "__exact__":
+        print(model_discovery.text("model.discovery.prompt.explain"))
+        reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
+        if not reference:
+            return None
+        try:
+            return model_discovery.resolve_hf_model(
+                reference, catalog_path=MODEL_CATALOG_PATH,
+                urlopen_fn=urlopen_fn)
+        except model_discovery.DiscoveryError as error:
+            print(model_discovery.text("model.discovery.unresolved", error=error))
+            return None
+    # Which model and how much of it are two different questions, and the second
+    # one decides both the download size and whether it fits.
+    return _choose_quantization(chosen, input_fn, tr, urlopen_fn=urlopen_fn)
+
+
 def _download_from_hub(tr, input_fn,
                        urlopen_fn=urllib.request.urlopen):
-    """Resolve an exact Hugging Face reference and fetch its weights here."""
-    from setup_ollama import MODEL_CATALOG_PATH
-
-    reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
-    if not reference:
-        return None
-    try:
-        model = model_discovery.resolve_hf_model(
-            reference, catalog_path=MODEL_CATALOG_PATH, urlopen_fn=urlopen_fn)
-    except model_discovery.DiscoveryError as error:
-        print(model_discovery.text("model.discovery.unresolved", error=error))
+    """Choose a model on Hugging Face and fetch its weights here."""
+    model = _choose_from_hub(tr, input_fn, urlopen_fn)
+    if model is None:
         return None
     print(_t(tr, "llamacpp.model.download.start", name=model["name"],
              size=units.gib(model["model_bytes"])))
@@ -295,7 +414,8 @@ def choose_model(tr, input_fn, config_file=None,
     overhead_mb = hardware.overhead_mb(gpu_count)
     while True:
         models, problems = local_models.available(
-            extra_dirs=_configured_dirs(config_file))
+            extra_dirs=_configured_dirs(config_file)
+            + served_weight_dirs(config_file, urlopen_fn))
         for problem in problems:
             # A weight that could not be read explains why the list is shorter.
             # That is why the list looks the way it does, not something the
