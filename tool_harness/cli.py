@@ -42,6 +42,7 @@ import context_budget
 import debug
 import terminal_ui
 import tools
+import units
 import workspace_instructions
 from cli_i18n import set_language, t
 from cli_permissions import (
@@ -454,7 +455,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
     def _print_rate(self, elapsed):
         rate = max(self._generation_chunks - 1, 1) / elapsed
         print(
-            "\r\033[2K" + _color(t("cli.working.rate", rate=f"{rate:.1f}"), "dim"),
+            "\r\033[2K" + _color(t("cli.working.rate", rate=units.tps(rate)), "dim"),
             end="", flush=True,
         )
 
@@ -723,7 +724,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             approx = "" if eval_duration else "≈ "
             print()
             print(_color(t("cli.generation.rate", approx=approx,
-                           rate=f"{eval_count / measured_time:.1f}",
+                           rate=units.tps(eval_count / measured_time),
                            count=eval_count), "dim"))
         new_commands = self.commands[commands_before:]
         denied_change = bool(new_commands and new_commands[-1].get("denied"))

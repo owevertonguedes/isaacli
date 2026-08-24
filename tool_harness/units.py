@@ -1,4 +1,4 @@
-"""Bytes as a person reads them, decided once.
+"""Numbers as a person reads them, decided once.
 
 A model's size was turned into GiB by hand in ten places across five modules,
 in two different precisions, so the same file read as `4.68 GiB` on the screen
@@ -16,6 +16,11 @@ Only GiB, deliberately. A unit that scales itself would print MB for one row
 and GiB for the next, and a column whose unit changes per row cannot be
 compared down its own length, which is the only reason to put sizes in a
 column.
+
+Throughput follows the same split for the same reason, and the pair of names
+is deliberately parallel: a quantity that appears both in a cell and in a
+sentence gets its two forms here, so that nowhere else has to remember which
+is which.
 """
 
 BYTES_PER_GIB = 1024 ** 3
@@ -46,3 +51,26 @@ def gib_short(value):
     how the ten hand-written copies started.
     """
     return f"{(value or 0) / BYTES_PER_GIB:.1f}"
+
+
+def tps(value):
+    """Tokens per second in a sentence: the evidence line under a choice.
+
+    One decimal, because that line names a measurement, a card and a date, and
+    a measurement reported as a round number invites being read as a round
+    number somebody chose. The catalog holds 33.02 and 29.37, and the tenth is
+    the part of that a person can compare against their own run.
+    """
+    return f"{value:.1f}"
+
+
+def tps_short(value):
+    """Tokens per second in a table cell: whole tokens, no decimal.
+
+    The column is scanned, not compared to the tenth, and a decimal point in a
+    narrow column costs two characters to say nothing anybody acts on. It also
+    keeps a measured cell and an estimated cell the same shape, which the
+    legend under the table needs: the origin is said once, down there, and a
+    cell that carried its own precision would be saying it again per row.
+    """
+    return f"{value:.0f}"

@@ -46,11 +46,30 @@ check(units.gib_short(small) == units.gib_short(large),
 check(units.gib(1_500_000_000) == "1.40" and units.gib_short(1_500_000_000) == "1.4",
       "both forms round, they do not truncate")
 
+# Throughput, the same split for the same reason. The catalog's own measured
+# numbers, so a change here is visible against the file that holds them.
+check(units.tps(33.02) == "33.0" and units.tps_short(33.02) == "33",
+      "a measured throughput keeps its tenth in prose and loses it in a cell")
+check(units.tps_short(29.37) == "29" and units.tps_short(29.6) == "30",
+      "the cell form rounds to whole tokens rather than truncating downward")
+check(units.tps(0) == "0.0" and units.tps_short(0) == "0",
+      "zero is a number here; whether a zero is worth showing is the caller's")
+
 # No module decides this for itself again. Bytes to GiB was hand-written ten
 # times across five modules in two precisions, which is one quantity with two
 # answers and nowhere to change either.
 BY_HAND = re.compile(r"1024 ?\*\* ?3|1024 ?\* ?1024 ?\* ?1024|1073741824")
+# The same for throughput: a rate formatted at the call site is how the two
+# precisions of one number got three call sites apart from each other.
+# Either the rate is the thing being formatted, or it is the placeholder being
+# filled. Matching the whole line instead caught `rate_limit_wait` filling a
+# number of seconds, which is a different quantity that happens to share four
+# letters: a ruler that fails correct code is a defect of the ruler.
+RATE_BY_HAND = re.compile(
+    r"\{[^{}]*(rate|tps|tokens_per_second)[^{}]*:\.\df\}"
+    r'|\b(rate|tps)\s*=\s*f"[^"]*:\.\df\}"')
 handwritten = []
+rates = []
 for source in sorted((HERE.parent / "tool_harness").glob("*.py")):
     if source.name == "units.py":
         continue
@@ -58,9 +77,14 @@ for source in sorted((HERE.parent / "tool_harness").glob("*.py")):
     for number, line in enumerate(body.splitlines(), 1):
         if BY_HAND.search(line):
             handwritten.append(f"{source.name}:{number}")
+        if RATE_BY_HAND.search(line):
+            rates.append(f"{source.name}:{number}")
 check(not handwritten,
       "no module turns bytes into GiB by hand: " + (
           ", ".join(handwritten) or "none does"))
+check(not rates,
+      "no module formats a throughput by hand: " + (
+          ", ".join(rates) or "none does"))
 
 # Which of the two a place gets is the rule, so it is checked and not trusted:
 # the short form belongs to a table cell, and every screen draws its cells

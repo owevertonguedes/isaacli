@@ -537,7 +537,7 @@ def benchmark_line(model):
         lines.append(text(
             "model.discovery.measured_line",
             humaneval=measured["humaneval"],
-            tps=f"{measured['tokens_per_second']:.1f}",
+            tps=units.tps(measured["tokens_per_second"]),
             gpu=measured["gpu"],
             date=measured["date"],
             tools=text("model.score.measured_tools_yes"
@@ -614,7 +614,7 @@ def throughput_cell(model, machine_profile, translate=None, fits=None):
     """
     measured = local_measurement(model)
     if measured:
-        return f"{measured['tokens_per_second']:.0f}"
+        return units.tps_short(measured["tokens_per_second"])
     bandwidth = (machine_profile or {}).get("bandwidth_gbs")
     if fits is False or not bandwidth or not model.get("model_bytes"):
         return EMPTY_CELL
@@ -623,7 +623,7 @@ def throughput_cell(model, machine_profile, translate=None, fits=None):
             model["model_bytes"], model.get("active_ratio", 1.0)),
         bandwidth,
     )
-    return f"{estimate:.0f}" if estimate else EMPTY_CELL
+    return units.tps_short(estimate) if estimate else EMPTY_CELL
 
 
 # What a benchmark is called, as against the key this program files it under.
