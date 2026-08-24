@@ -22,6 +22,7 @@ import model_discovery
 import terminal_ui
 import units
 from cli_i18n import translator
+from cli_presentation import say
 from i18n import SUPPORTED_LANGUAGES, Translator
 
 
@@ -167,25 +168,25 @@ def _choose_language(input_fn):
 
 def _ollama_install_instructions(tr):
     terminal_ui.clear()
-    print(tr.t("ollama.missing.title"))
-    print(tr.t("ollama.missing.explain"))
+    say(tr.t("ollama.missing.title"))
+    say(tr.t("ollama.missing.explain"))
     key = {"linux": "ollama.install.linux", "darwin": "ollama.install.macos",
              "windows": "ollama.install.windows"}.get(platform.system().lower(),
                                                        "ollama.install.other")
-    print(tr.t(key))
-    print(tr.t("ollama.install.retry"))
+    say(tr.t(key))
+    say(tr.t("ollama.install.retry"))
 
 
 def _ensure_server(client, ollama_exe, tr=None):
     tr = tr or translator()
     try:
         return client.version(), None
-    except Exception:
     except (OSError, TimeoutError) as error:
         # Nothing listening is what this probe is asking about, and the answer
         # fits on one line. Anything else is a surprise and keeps its traceback.
         debug.note("setup_ollama._ensure_server probe",
                    f"Ollama is not answering yet: {error}")
+    except Exception:
         debug.swallowed("setup_ollama._ensure_server probe")
     proc = subprocess.Popen([ollama_exe, "serve"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -203,7 +204,7 @@ def _ensure_server(client, ollama_exe, tr=None):
 
 def _download_model(ollama_exe, model, tr=None):
     tr = tr or translator()
-    print(tr.t("model.download.running", model=model))
+    say(tr.t("model.download.running", model=model))
     result = subprocess.run([ollama_exe, "pull", model], check=False)
     if result.returncode != 0:
         raise RuntimeError(tr.t("model.download.failed", code=result.returncode))
@@ -577,8 +578,8 @@ def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
     report = model_discovery.fit_report(
         model, vram_mb, overhead_mb=overhead_mb or hardware.overhead_mb(),
     )
-    print(model_discovery.format_fit(report))
-    print(model_discovery.benchmark_line(model))
+    say(model_discovery.format_fit(report))
+    say(model_discovery.benchmark_line(model))
     if report["fits"]:
         return report
     answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
@@ -705,10 +706,10 @@ def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
             else model_discovery.ollama_reference(chosen))
         item["resolved"] = report
         return item
-    print(model_discovery.text(
-        "model.discovery.unresolved",
-        error=model_discovery.text("model.discovery.ollama_unresolved"),
-    ))
+    say(model_discovery.text(
+      "model.discovery.unresolved",
+      error=model_discovery.text("model.discovery.ollama_unresolved"),
+  ))
     answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
     return (_model_item(reference) if
             answer == model_discovery.text("model.discovery.yes") else None)
@@ -749,7 +750,7 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
         # A prompt asking for a "model reference" and nothing else is a question
         # only somebody who already knows the answer can answer, and there are
         # four accepted spellings of it.
-        print(model_discovery.text("model.discovery.prompt.explain"))
+        say(model_discovery.text("model.discovery.prompt.explain"))
         reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
         if not reference:
             return None
@@ -758,7 +759,7 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
                 reference, input_fn, catalog_path, urlopen_fn, tr,
             )
         except model_discovery.DiscoveryError as error:
-            print(model_discovery.text("model.discovery.unresolved", error=error))
+            say(model_discovery.text("model.discovery.unresolved", error=error))
             return None
     chosen = _choose_quantization(chosen, input_fn, tr, urlopen_fn)
     report = _confirm_model_fit(chosen, input_fn)
@@ -795,7 +796,7 @@ def _choose_context(limit, input_fn, tr):
     if index < len(levels):
         return levels[index][1]
     while True:
-        print(_title(tr.t("context.title"), explanation))
+        say(_title(tr.t("context.title"), explanation))
         value = parse_context(input_fn(
             tr.t("context.manual.prompt", minimum=format_context(floor))))
         if floor <= value and (not limit or value <= limit):
@@ -804,10 +805,10 @@ def _choose_context(limit, input_fn, tr):
         if limit and floor == limit:
             # A range of one is not a range, and naming it twice reads as a
             # typo in the program rather than as the only value that fits.
-            print(tr.t("context.manual.only", limit=ceiling))
+            say(tr.t("context.manual.only", limit=ceiling))
             continue
-        print(tr.t("context.manual.invalid",
-                   minimum=format_context(floor), limit=ceiling))
+        say(tr.t("context.manual.invalid",
+                 minimum=format_context(floor), limit=ceiling))
 
 
 def _choose_thinking(item, input_fn, tr):
@@ -914,14 +915,14 @@ def _ask_autostart(base_url, input_fn, tr):
     Only offered for a local endpoint: there is nothing to start on a machine
     that is not this one. An empty answer keeps the previous behaviour, where
     the user starts the server before opening isaacli."""
-    print(_title(tr.t("api.autostart.title"), tr.t("api.autostart.explain")))
+    say(_title(tr.t("api.autostart.title"), tr.t("api.autostart.explain")))
     raw = input_fn(tr.t("api.autostart.prompt")).strip()
     if not raw:
         return None
     try:
         cmd = shlex.split(raw)
     except ValueError as e:
-        print(tr.t("api.autostart.invalid", error=e))
+        say(tr.t("api.autostart.invalid", error=e))
         return None
     if not cmd:
         return None
@@ -937,7 +938,7 @@ def _setup_api(language, input_fn, config_file, tr, onboarding_task=_UNCHANGED):
         explanation = tr.t("api.explain")
         if field_error:
             explanation += "\n\n" + field_error
-        print(_title(tr.t("api.title"), explanation))
+        say(_title(tr.t("api.title"), explanation))
         field_error = None
         name = input_fn(tr.t("api.name.prompt")).strip()
         base_url = input_fn(tr.t("api.url.prompt")).strip()
@@ -958,7 +959,7 @@ def _setup_api(language, input_fn, config_file, tr, onboarding_task=_UNCHANGED):
         if not key and not local_endpoint:
             field_error = tr.t("api.key.missing")
             continue
-        print(tr.t("api.validating"))
+        say(tr.t("api.validating"))
         try:
             _validate_api(base_url, key, model)
         except RuntimeError as e:
@@ -1134,8 +1135,8 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     report = model_discovery.fit_report(
         model, accelerator["vram_mb"], overhead_mb=accelerator["overhead_mb"],
     )
-    print(model_discovery.format_fit(report))
-    print(model_discovery.benchmark_line(model))
+    say(model_discovery.format_fit(report))
+    say(model_discovery.benchmark_line(model))
     if not report["fits"]:
         answer = input_fn(model_discovery.text("model.discovery.continue")).strip().casefold()
         if answer != model_discovery.text("model.discovery.yes"):
@@ -1207,12 +1208,12 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         try:
             language = _choose_language(input_fn)
         except KeyboardInterrupt:
-            print("\n" + Translator("en").t("setup.cancelled"))
+            say("\n" + Translator("en").t("setup.cancelled"))
             return 130
     from cli_i18n import set_language
     set_language(language)
     tr = Translator(language)
-    print(tr.t("setup.title"), "\n")
+    say(tr.t("setup.title") + "\n")
     onboarding_task = _UNCHANGED
     ruler_line = ""
 
@@ -1260,10 +1261,10 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                     language, input_fn, config_file, onboarding_task,
                 )
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
-        print(tr.t("setup.error", error=e))
+        say(tr.t("setup.error", error=e))
         return 1
     except KeyboardInterrupt:
-        print("\n" + tr.t("setup.cancelled"))
+        say("\n" + tr.t("setup.cancelled"))
         return 130
 
     ollama_exe = shutil.which("ollama")
@@ -1378,7 +1379,7 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
 
             info = client.show(base)
             if "tools" not in set(info.get("capabilities") or []):
-                print(tr.t("model.tools.missing", model=base))
+                say(tr.t("model.tools.missing", model=base))
                 return 1
             if chosen.get("thinking_kind") == "detect":
                 chosen["thinking_kind"] = (
@@ -1409,10 +1410,10 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         config.save(data, config_file)
         return 0
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
-        print(tr.t("setup.error", error=e))
+        say(tr.t("setup.error", error=e))
         return 1
     except KeyboardInterrupt:
-        print("\n" + tr.t("setup.cancelled"))
+        say("\n" + tr.t("setup.cancelled"))
         return 130
     finally:
         if started and started.poll() is None:
@@ -1437,7 +1438,7 @@ def run_setup(input_fn=input, config_file=None):
         except ValueError:
             language = "en"
         key = "setup.cancelled" if code == 130 else "setup.incomplete"
-        print(Translator(language).t(key))
+        say(Translator(language).t(key))
     return code
 
 
@@ -1545,7 +1546,7 @@ def _select_configured_api(input_fn, config_file, language, tr, release_fn=None)
         key = config.load_secret(item.get("credential"), secret_path)
         models = _list_api_models(item["base_url"], key)
     except (RuntimeError, KeyError) as e:
-        print(tr.t("api.model.fetch.failed", error=e))
+        say(tr.t("api.model.fetch.failed", error=e))
         models = None
     if models:
         atual_modelo = item.get("model")
@@ -1609,8 +1610,8 @@ def run_model_selector(input_fn=input, config_file=None, release_fn=None):
                     print()
             return source
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
-        print(Translator("en").t("setup.error", error=e))
+        say(Translator("en").t("setup.error", error=e))
         return 1
     except KeyboardInterrupt:
-        print("\n" + Translator("en").t("setup.cancelled"))
+        say("\n" + Translator("en").t("setup.cancelled"))
         return 130

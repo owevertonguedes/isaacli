@@ -24,6 +24,7 @@ import local_models
 import model_discovery
 import terminal_ui
 import units
+from cli_presentation import say
 
 # The port the local server listens on. First free one from here, because a
 # second isaacli, or the user's own llama-server, may already hold it.
@@ -92,10 +93,10 @@ def _install_plan(tr, urlopen_fn=urllib.request.urlopen):
     try:
         tag, assets = llama_cpp.available_builds(urlopen_fn=urlopen_fn)
     except llama_cpp.InstallError as error:
-        print(_t(tr, "llamacpp.install.unreachable", error=error))
+        say(_t(tr, "llamacpp.install.unreachable", error=error))
         return None
     if not assets:
-        print(_t(tr, "llamacpp.install.no_build"))
+        say(_t(tr, "llamacpp.install.no_build"))
         return None
     order = llama_cpp.backend_order()
     asset, skipped = llama_cpp.choose_asset(assets, order)
@@ -103,8 +104,8 @@ def _install_plan(tr, urlopen_fn=urllib.request.urlopen):
         # Every backend this machine could use is missing from the release, and
         # the CPU build is always in `order`, so this means the release itself
         # is incomplete rather than the machine being unusual.
-        print(_t(tr, "llamacpp.install.no_backend",
-                 backends=", ".join(skipped)))
+        say(_t(tr, "llamacpp.install.no_backend",
+               backends=", ".join(skipped)))
         return None
     for backend in skipped:
         debug.note("setup_llamacpp._install_plan",
@@ -139,15 +140,15 @@ def ensure_server(tr, input_fn, urlopen_fn=urllib.request.urlopen,
     )
     if index:
         return None, None
-    print(_t(tr, "llamacpp.install.working", backend=asset["backend"]))
+    say(_t(tr, "llamacpp.install.working", backend=asset["backend"]))
     try:
         result = llama_cpp.install(asset, urlopen_fn=urlopen_fn)
     except llama_cpp.InstallError as error:
-        print(_t(tr, "llamacpp.install.failed", error=error))
+        say(_t(tr, "llamacpp.install.failed", error=error))
         return None, None
     devices = ", ".join(item["name"] for item in result["devices"]) or "-"
-    print(_t(tr, "llamacpp.install.done", path=result["executable"],
-             devices=devices))
+    say(_t(tr, "llamacpp.install.done", path=result["executable"],
+           devices=devices))
     return result["executable"], "isaacli"
 
 
@@ -291,7 +292,7 @@ def _add_directory(tr, input_fn, config_file=None):
         return False
     folder = Path(raw).expanduser()
     if not folder.is_dir():
-        print(_t(tr, "llamacpp.model.folder.missing", path=folder))
+        say(_t(tr, "llamacpp.model.folder.missing", path=folder))
         return False
     data = config.load(config_file)
     dirs = data.setdefault("model_dirs", [])
@@ -397,7 +398,7 @@ def _choose_from_hub(tr, input_fn, urlopen_fn=urllib.request.urlopen):
     if chosen == "__back__":
         return None
     if chosen == "__exact__":
-        print(model_discovery.text("model.discovery.prompt.explain"))
+        say(model_discovery.text("model.discovery.prompt.explain"))
         reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
         if not reference:
             return None
@@ -406,7 +407,7 @@ def _choose_from_hub(tr, input_fn, urlopen_fn=urllib.request.urlopen):
                 reference, catalog_path=MODEL_CATALOG_PATH,
                 urlopen_fn=urlopen_fn)
         except model_discovery.DiscoveryError as error:
-            print(model_discovery.text("model.discovery.unresolved", error=error))
+            say(model_discovery.text("model.discovery.unresolved", error=error))
             return None
     # Which model and how much of it are two different questions, and the second
     # one decides both the download size and whether it fits.
@@ -419,8 +420,8 @@ def _download_from_hub(tr, input_fn,
     model = _choose_from_hub(tr, input_fn, urlopen_fn)
     if model is None:
         return None
-    print(_t(tr, "llamacpp.model.download.start", name=model["name"],
-             size=units.gib(model["model_bytes"])))
+    say(_t(tr, "llamacpp.model.download.start", name=model["name"],
+           size=units.gib(model["model_bytes"])))
 
     shown = [0]
 
@@ -432,20 +433,20 @@ def _download_from_hub(tr, input_fn,
         # thousands of lines of scrollback.
         if percent > shown[0]:
             shown[0] = percent
-            print(_t(tr, "llamacpp.model.download.progress", percent=percent),
-                  end="\r", flush=True)
+            say(_t(tr, "llamacpp.model.download.progress", percent=percent),
+                end="\r", flush=True)
 
     try:
         path = local_models.download_weight(model, progress=progress)
     except local_models.DownloadError as error:
         print()
-        print(_t(tr, "llamacpp.model.download.failed", error=error))
+        say(_t(tr, "llamacpp.model.download.failed", error=error))
         return None
     print()
     try:
         return local_models.describe(path)
     except Exception as error:  # noqa: BLE001 - reported, never swallowed
-        print(_t(tr, "llamacpp.model.unreadable", path=path, error=error))
+        say(_t(tr, "llamacpp.model.unreadable", path=path, error=error))
         return None
 
 
@@ -514,21 +515,21 @@ def choose_model(tr, input_fn, config_file=None,
             if chosen is None:
                 continue
         if chosen.get("geometry_missing"):
-            print(_t(tr, "llamacpp.model.no_geometry",
-                     parts=", ".join(chosen["geometry_missing"])))
+            say(_t(tr, "llamacpp.model.no_geometry",
+                   parts=", ".join(chosen["geometry_missing"])))
         if not chosen.get("chat_template"):
             # llama-server renders the conversation from the template inside
             # the GGUF. A file without one cannot be talked to, and saying so
             # here costs a screen; not saying it costs a session of nonsense.
-            print(_t(tr, "llamacpp.model.no_template", name=chosen["name"]))
+            say(_t(tr, "llamacpp.model.no_template", name=chosen["name"]))
             continue
         if chosen.get("needs_link"):
             try:
                 link = local_models.link_ollama_model(chosen)
             except (OSError, FileExistsError) as error:
-                print(_t(tr, "llamacpp.model.link_failed", error=error))
+                say(_t(tr, "llamacpp.model.link_failed", error=error))
                 continue
-            print(_t(tr, "llamacpp.model.linked", path=link))
+            say(_t(tr, "llamacpp.model.linked", path=link))
             chosen["path"] = str(link)
         return chosen
 
@@ -591,11 +592,11 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
     # for; hiding from it would mean a missing translation ships unnoticed.
     shown = f"{ceiling:,}".replace(",", " ")
     if reason == "does_not_fit":
-        print(_t(tr, "llamacpp.context.does_not_fit", name=model["name"]))
+        say(_t(tr, "llamacpp.context.does_not_fit", name=model["name"]))
     elif reason == "memory":
-        print(_t(tr, "llamacpp.context.capped.memory", context=shown))
+        say(_t(tr, "llamacpp.context.capped.memory", context=shown))
     elif reason == "trained":
-        print(_t(tr, "llamacpp.context.capped.trained", context=shown))
+        say(_t(tr, "llamacpp.context.capped.trained", context=shown))
     return _choose_context(ceiling or None, input_fn, tr)
 
 
@@ -678,7 +679,7 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
         return "__engine__"
     port = free_port()
     if port is None:
-        print(_t(tr, "llamacpp.port.none", base=BASE_PORT))
+        say(_t(tr, "llamacpp.port.none", base=BASE_PORT))
         return 1
     data = config.load(config_file)
     data["language"] = language

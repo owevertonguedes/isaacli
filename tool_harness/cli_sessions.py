@@ -19,7 +19,7 @@ import agent
 import terminal_ui
 import workspace_instructions
 from cli_i18n import t
-from cli_presentation import _color, _format_markdown_terminal
+from cli_presentation import _color, _format_markdown_terminal, say
 
 HERE = Path(__file__).resolve().parent
 SESSIONS_DIR = HERE / "cli_sessions"
@@ -251,9 +251,9 @@ class SessionsMixin:
                   workspace=str(self.workspace), previous_session=previous_id)
 
         terminal_ui.clear()
-        print(_color(t("cli.new.session", id=new_id), "assistant"))
-        print(_color(t("cli.new.previous", path=previous_path), "dim"))
-        print(_color(t("cli.new.resume", command=_resume_command(previous_id)), "dim"))
+        say(_color(t("cli.new.session", id=new_id), "assistant"))
+        say(_color(t("cli.new.previous", path=previous_path), "dim"))
+        say(_color(t("cli.new.resume", command=_resume_command(previous_id)), "dim"))
         self._show_workspace_instruction_warning()
 
     def list_sessions(self):
@@ -261,7 +261,7 @@ class SessionsMixin:
         files = sorted(SESSIONS_DIR.glob("*.jsonl"),
                        key=lambda p: p.stat().st_mtime, reverse=True)
         if not files:
-            print(t("cli.sessions.none"))
+            say(t("cli.sessions.none"))
             return
         for p in files[:12]:
             stat = p.stat()
@@ -306,10 +306,10 @@ class SessionsMixin:
         """
         if not terminal_ui.interactive():
             if message:
-                print(message)
+                say(message)
             return
         if message:
-            print(_color(message, "dim"))
+            say(message, "dim")
         print()
 
     def show_history(self, _movement=""):

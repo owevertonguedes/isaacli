@@ -25,7 +25,7 @@ import terminal_ui
 import tools
 from cli_i18n import set_language, t
 from cli_ollama import _ollama_ok
-from cli_presentation import _color, _short_context
+from cli_presentation import _color, _short_context, say
 from cli_sessions import FEEDBACK_DIR, _build_history, _now
 
 # The catalogue key for each slash command's description. The text itself lives
@@ -133,7 +133,7 @@ def _install_autocomplete():
 
 class CommandsMixin:
     def help_screen(self):
-        print(t("cli.help.body"))
+        say(t("cli.help.body"))
 
     def internal_command(self, text):
         if not text.startswith("/"):
@@ -209,7 +209,7 @@ class CommandsMixin:
             else:
                 self.set_workspace(arg)
                 self._show_workspace_instruction_warning()
-                print(t("cli.workspace.now", path=self.workspace))
+                say(t("cli.workspace.now", path=self.workspace))
             return True
         if cmd == "/model":
             if not arg:
@@ -270,14 +270,14 @@ class CommandsMixin:
             self.permission_mode = (
                 "authorized_only" if self.permission_mode == "safe" else "safe"
             )
-            print(t("cli.mode.changed", mode=self._permission_mode_label()))
+            say(t("cli.mode.changed", mode=self._permission_mode_label()))
             self._log("meta", event="permission_mode", mode=self.permission_mode)
             return True
         if cmd == "/permissions":
             try:
                 data = config.load(self.config_file)
             except ValueError as e:
-                print(t("cli.config.error", error=e))
+                say(t("cli.config.error", error=e))
                 return True
             permissions = data.get("permissions") or {}
             if arg in ("clear workspace", "clear global"):
@@ -286,17 +286,17 @@ class CommandsMixin:
                 else:
                     (permissions.get("workspaces") or {}).pop(str(self.workspace), None)
                 config.save(data, self.config_file)
-                print(t("cli.permissions.cleared", scope=arg.removeprefix("clear ")))
+                say(t("cli.permissions.cleared", scope=arg.removeprefix("clear ")))
                 return True
             global_rules = permissions.get("global") or []
             local_rules = (permissions.get("workspaces") or {}).get(str(self.workspace), [])
             none = t("cli.permissions.none")
-            print(t("cli.permissions.mode", mode=self._permission_mode_label()))
-            print(t("cli.permissions.global",
-                    rules=", ".join(global_rules) if global_rules else none))
-            print(t("cli.permissions.workspace",
-                    rules=", ".join(local_rules) if local_rules else none))
-            print(t("cli.permissions.clear_hint"))
+            say(t("cli.permissions.mode", mode=self._permission_mode_label()))
+            say(t("cli.permissions.global",
+                  rules=", ".join(global_rules) if global_rules else none))
+            say(t("cli.permissions.workspace",
+                  rules=", ".join(local_rules) if local_rules else none))
+            say(t("cli.permissions.clear_hint"))
             return True
         if cmd == "/config":
             self.config_screen()
@@ -331,13 +331,13 @@ class CommandsMixin:
         if cmd == "/clear":
             self.history = _build_history(self.workspace, self.workspace_instructions)
             self._log("meta", event="clear")
-            print(t("cli.clear.done"))
+            say(t("cli.clear.done"))
             return True
         if cmd == "/new":
             self.new_session()
             return True
 
-        print(t("cli.unknown_command", cmd=cmd))
+        say(t("cli.unknown_command", cmd=cmd))
         return True
 
     def status(self):
@@ -347,25 +347,25 @@ class CommandsMixin:
             engine = self.provider.get("provider_name") or t("cli.engine.openai_compatible")
         duration_s = self.total_usage.get("total_duration", 0) / 1_000_000_000
         default = t("cli.status.model_default")
-        print(t("cli.status.session", id=self.session_id))
-        print(t("cli.status.log", path=self.session_path))
-        print(t("cli.status.pid", pid=os.getpid()))
-        print(t("cli.status.model", model=self.model))
-        print(t("cli.status.reasoning",
-                value=self.thinking if self.thinking is not None else default))
-        print(t("cli.status.context",
-                value=_short_context(self.num_ctx) if self.num_ctx else default))
-        print(t("cli.status.workspace", path=self.workspace))
-        print(t("cli.status.engine", engine=engine))
-        print(t("cli.status.turns", turns=self.turns))
-        print(t("cli.status.commands", commands=len(self.commands), failures=self.failures))
-        print(t("cli.status.permissions", mode=self._permission_mode_label()))
-        print(t("cli.status.feedback", count=self.ratings, path=self.feedback_path))
-        print(t("cli.status.tokens",
-                prompt=self.total_usage.get("prompt_eval_count", 0),
-                response=self.total_usage.get("eval_count", 0),
-                seconds=f"{duration_s:.2f}"))
-        print(t("cli.status.slash", commands=" ".join(SLASH_COMMANDS)))
+        say(t("cli.status.session", id=self.session_id))
+        say(t("cli.status.log", path=self.session_path))
+        say(t("cli.status.pid", pid=os.getpid()))
+        say(t("cli.status.model", model=self.model))
+        say(t("cli.status.reasoning",
+              value=self.thinking if self.thinking is not None else default))
+        say(t("cli.status.context",
+              value=_short_context(self.num_ctx) if self.num_ctx else default))
+        say(t("cli.status.workspace", path=self.workspace))
+        say(t("cli.status.engine", engine=engine))
+        say(t("cli.status.turns", turns=self.turns))
+        say(t("cli.status.commands", commands=len(self.commands), failures=self.failures))
+        say(t("cli.status.permissions", mode=self._permission_mode_label()))
+        say(t("cli.status.feedback", count=self.ratings, path=self.feedback_path))
+        say(t("cli.status.tokens",
+              prompt=self.total_usage.get("prompt_eval_count", 0),
+              response=self.total_usage.get("eval_count", 0),
+              seconds=f"{duration_s:.2f}"))
+        say(t("cli.status.slash", commands=" ".join(SLASH_COMMANDS)))
         self._log("status", turns=self.turns, commands=len(self.commands),
                   failures=self.failures, usage=self.total_usage)
 
@@ -373,13 +373,13 @@ class CommandsMixin:
         import execution
 
         names = [s["function"]["name"] for s in tools.SCHEMA]
-        print(t("cli.tools.list", names=", ".join(names)))
-        print(t("cli.tools.terminal", names=", ".join(sorted(execution.ALLOWED))))
-        print(t("cli.tools.git", names=", ".join(sorted(execution.GIT_ALLOWED))))
+        say(t("cli.tools.list", names=", ".join(names)))
+        say(t("cli.tools.terminal", names=", ".join(sorted(execution.ALLOWED))))
+        say(t("cli.tools.git", names=", ".join(sorted(execution.GIT_ALLOWED))))
 
     def show_command(self, which):
         if not self.commands:
-            print(t("cli.show.none"))
+            say(t("cli.show.none"))
             return
         if which == "last":
             item = self.commands[-1]
@@ -387,31 +387,31 @@ class CommandsMixin:
             try:
                 number = int(which)
             except ValueError:
-                print(t("cli.show.usage"))
+                say(t("cli.show.usage"))
                 return
             item = next((c for c in self.commands if c["id"] == number), None)
             if item is None:
-                print(t("cli.show.missing", number=number))
+                say(t("cli.show.missing", number=number))
                 return
-        print(_color(t("cli.show.full", id=item["id"], cmd=item["cmd"]), "tool"))
+        say(_color(t("cli.show.full", id=item["id"], cmd=item["cmd"]), "tool"))
         print(item["result"])
 
     def feedback_help(self):
-        print(t("cli.feedback.body",
-                feedback=self.feedback_path, session=self.session_path))
+        say(t("cli.feedback.body",
+              feedback=self.feedback_path, session=self.session_path))
 
     def score_command(self, arg):
         if not arg:
-            print(t("cli.score.usage"))
+            say(t("cli.score.usage"))
             return
         parts = arg.split(maxsplit=1)
         try:
             score = int(parts[0])
         except ValueError:
-            print(t("cli.score.not_integer"))
+            say(t("cli.score.not_integer"))
             return
         if score < 0 or score > 10:
-            print(t("cli.score.out_of_range"))
+            say(t("cli.score.out_of_range"))
             return
         comment = parts[1] if len(parts) > 1 else ""
         self.save_feedback("score", score, comment)
@@ -437,7 +437,7 @@ class CommandsMixin:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
         self.ratings += 1
         self._log("feedback", **event)
-        print(t("cli.feedback.saved", score=score, path=self.feedback_path))
+        say(t("cli.feedback.saved", score=score, path=self.feedback_path))
 
     def feedback_reminder(self, had_command):
         if self.turns == 0:
@@ -445,4 +445,4 @@ class CommandsMixin:
         if not had_command and self.turns % 3 != 0:
             return
         print()
-        print(_color(t("cli.feedback.reminder"), "dim"))
+        say(_color(t("cli.feedback.reminder"), "dim"))

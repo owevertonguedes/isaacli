@@ -9,7 +9,7 @@ from pathlib import Path
 
 import config
 from cli_i18n import t
-from cli_presentation import _short_context
+from cli_presentation import _print_session_summary, _short_context, say
 
 
 class ProvidersMixin:
@@ -145,11 +145,11 @@ class ProvidersMixin:
         try:
             data = config.load(self.config_file)
         except ValueError as e:
-            print(t("cli.config.error", error=e))
+            say(t("cli.config.error", error=e))
             return
         name, item = config.profile(data)
         if not item:
-            print(t("cli.model.profile_missing"))
+            say(t("cli.model.profile_missing"))
             return
         self.apply_profile(item, name=name)
         self._log("meta", event="model", profile=name, model=self.model,

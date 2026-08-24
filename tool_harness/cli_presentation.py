@@ -210,21 +210,47 @@ def _styled_words(text):
     return words
 
 
-def say(text, style=None, width=None):
-    """Print a sentence to the user, wrapped by word.
+def wrap_text(text, width=None):
+    """A block of the program's own prose, broken at spaces to fit the screen.
 
-    For the program's own prose. A notice is written as one long line in the
-    catalogue, on purpose, so the terminal decides where it breaks; without
-    this the terminal decides that on the column and cuts words in half.
-    Anything already fitting comes out exactly as before.
+    Line by line, never as one blob: a notice with a second paragraph in it
+    has real newlines that mean something, and wrapping the whole string at
+    once would swallow them and glue the paragraphs together.
+
+    A width of None means no wrapping at all, which is what redirected output
+    gets: there a command or a path has to survive being copied out of a log
+    by grep, and nothing is choosing the column anyway.
     """
     if width is None:
-        # Only a terminal has a width to respect. Redirected output stays on
-        # one line, where a command or a path has to survive being copied out
-        # of a log by grep.
         width = _terminal_columns() if sys.stdout.isatty() else None
-    body = "\n".join(_wrap_ansi(str(text), width))
-    print(_color(body, style) if style else body)
+    wrapped = []
+    for line in str(text).split("\n"):
+        # Wrapping joins the words back with single spaces, so a space somebody
+        # put at the end on purpose is lost. On a question that is exactly what
+        # separates the cursor from the colon it answers.
+        body = line.rstrip()
+        pieces = _wrap_ansi(body, width)
+        pieces[-1] += line[len(body):]
+        wrapped.extend(pieces)
+    return "\n".join(wrapped)
+
+
+def say(text, style=None, width=None, file=None, flush=False, end="\n"):
+    """Print a sentence to the user, wrapped by word.
+
+    For the program's own prose, and the reason it exists instead of `print`:
+    a notice is written as one long line in the catalogue, on purpose, so that
+    the screen decides where it breaks. Left to `print`, what decides is the
+    terminal, which breaks on the column and cuts words in half. Anything
+    already fitting comes out exactly as before.
+
+    `file` and `flush` are here so that no caller has to choose between being
+    wrapped and going to stderr.
+    """
+    body = wrap_text(text, width)
+    print(_color(body, style) if style else body,
+          **({"file": file} if file is not None else {}),
+          flush=flush, end=end)
 
 
 def _format_markdown_terminal(text, colors=None, width=None, first_offset=0):

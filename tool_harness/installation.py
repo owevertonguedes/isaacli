@@ -14,6 +14,7 @@ import debug
 import local_models
 import units
 from cli_i18n import t
+from cli_presentation import say
 from cli_ollama import _runtime_ollama_dir, _same_process
 from cli_sessions import FEEDBACK_DIR, SESSIONS_DIR
 
@@ -37,19 +38,19 @@ def install_launcher(bin_dir=None):
         target_dir.mkdir(parents=True, exist_ok=True)
         if target.is_symlink() or target.exists():
             if target.resolve(strict=False) == source.resolve():
-                print(t("cli.install.already", path=target))
+                say(t("cli.install.already", path=target))
                 return 0
-            print(t("cli.install.conflict", path=target))
+            say(t("cli.install.conflict", path=target))
             return 1
         target.symlink_to(source)
     except OSError as error:
-        print(t("cli.install.failed", path=target, error=error))
+        say(t("cli.install.failed", path=target, error=error))
         return 1
 
-    print(t("cli.install.success", path=target))
+    say(t("cli.install.success", path=target))
     path_entries = os.environ.get("PATH", "").split(os.pathsep)
     if str(target_dir) not in path_entries:
-        print(t("cli.install.path_hint", path=target_dir))
+        say(t("cli.install.path_hint", path=target_dir))
     return 0
 
 
@@ -65,7 +66,7 @@ def uninstall_launcher(
     target = target_dir / "isaacli"
     if target.is_symlink() or target.exists():
         if not target.is_symlink() or target.resolve(strict=False) != source:
-            print(t("cli.uninstall.conflict", path=target))
+            say(t("cli.uninstall.conflict", path=target))
             return 1
 
     purge_dirs = list(data_dirs) if data_dirs is not None else [
@@ -97,7 +98,7 @@ def uninstall_launcher(
             and _same_process(item.get("pid"), item.get("start"))
         ]
         if active:
-            print(t("cli.uninstall.active", count=len(active)))
+            say(t("cli.uninstall.active", count=len(active)))
             return 1
 
     if check_only:
@@ -106,17 +107,17 @@ def uninstall_launcher(
     try:
         if target.is_symlink():
             target.unlink()
-            print(t("cli.uninstall.removed", path=target))
+            say(t("cli.uninstall.removed", path=target))
         else:
-            print(t("cli.uninstall.not_installed", path=target))
+            say(t("cli.uninstall.not_installed", path=target))
         if purge:
             for path in purge_dirs:
                 if path.exists():
                     shutil.rmtree(path)
-                    print(t("cli.uninstall.purged", path=path))
+                    say(t("cli.uninstall.purged", path=path))
             _report_kept_weights()
     except OSError as error:
-        print(t("cli.uninstall.failed", error=error))
+        say(t("cli.uninstall.failed", error=error))
         return 1
     return 0
 
@@ -143,8 +144,8 @@ def _report_kept_weights(models_dir=None):
     except OSError:
         debug.swallowed("installation._report_kept_weights")
         return None
-    print(t("cli.uninstall.weights_kept", path=folder, count=len(weights),
-            size=units.gib(total)))
+    say(t("cli.uninstall.weights_kept", path=folder, count=len(weights),
+          size=units.gib(total)))
     return folder
 
 
@@ -160,7 +161,7 @@ def uninstall_managed_llamacpp(home_dir=None, record_path=None):
 
     code, key, values = llama_cpp.uninstall(
         record_path=record_path, home_dir=home_dir)
-    print(t(key, **values))
+    say(t(key, **values))
     return code
 
 
@@ -290,12 +291,12 @@ def official_ollama_plan(found=None, path_exists=None, user_exists=None,
 def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
     """Remove Ollama only when it matches the official Linux script layout."""
     if not sys.platform.startswith("linux"):
-        print(t("cli.uninstall.ollama.unsupported"))
+        say(t("cli.uninstall.ollama.unsupported"))
         return 1
     custom_paths = custom_ollama_model_paths(home_dir=home_dir)
     if custom_paths:
-        print(t("cli.uninstall.ollama.custom_models",
-                paths=", ".join(str(path) for path in custom_paths)))
+        say(t("cli.uninstall.ollama.custom_models",
+              paths=", ".join(str(path) for path in custom_paths)))
         return 1
     user_data = Path(home_dir) / ".ollama" if home_dir else Path.home() / ".ollama"
     found = shutil.which("ollama")
@@ -309,27 +310,27 @@ def uninstall_official_ollama(run_fn=subprocess.run, home_dir=None):
         ))
         if (found is None and not accounts_remain
                 and not any(path.exists() for path in known_paths)):
-            print(t("cli.uninstall.ollama.not_installed"))
+            say(t("cli.uninstall.ollama.not_installed"))
             return 0
-        print(t("cli.uninstall.ollama.unrecognized", path=found or "?"))
+        say(t("cli.uninstall.ollama.unrecognized", path=found or "?"))
         return 1
     if shutil.which("sudo") is None:
-        print(t("cli.uninstall.ollama.no_sudo"))
+        say(t("cli.uninstall.ollama.no_sudo"))
         return 1
 
     for command in commands:
         result = run_fn(command, check=False)
         allowed = {0, 6} if command[1] in {"userdel", "groupdel"} else {0}
         if result.returncode not in allowed:
-            print(t("cli.uninstall.ollama.failed", command=" ".join(command)))
+            say(t("cli.uninstall.ollama.failed", command=" ".join(command)))
             return 1
     try:
         if user_data.exists():
             shutil.rmtree(user_data)
     except OSError as error:
-        print(t("cli.uninstall.failed", error=error))
+        say(t("cli.uninstall.failed", error=error))
         return 1
-    print(t("cli.uninstall.ollama.removed"))
+    say(t("cli.uninstall.ollama.removed"))
     return 0
 
 

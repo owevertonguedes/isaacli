@@ -14,6 +14,7 @@ import shutil
 import sys
 
 from cli_i18n import t
+from cli_presentation import wrap_text
 
 
 _ALT_DEPTH = 0
@@ -163,7 +164,7 @@ def select(title, options, input_fn=input, prompt=None, invalid=None,
     if not selectable:
         raise ValueError("select requires at least one enabled option")
     if not interactive(input_fn):
-        print(title)
+        print(wrap_text(title))
         number_to_index = []
         for i, option in enumerate(options):
             if i in disabled:
@@ -198,16 +199,21 @@ def select(title, options, input_fn=input, prompt=None, invalid=None,
         size = shutil.get_terminal_size((80, 24))
         width = max(size.columns, 20)
         ansi = re.compile(r"\x1b\[[0-9;]*m")
+        # The explanation under a title is a paragraph written as one line, so
+        # it is broken here by word. Left to the terminal it breaks on the
+        # column, in the middle of words, on the very screen where the user is
+        # reading what a choice costs.
+        shown = wrap_text(title, width)
         title_lines = sum(
             max(1, (len(ansi.sub("", line)) + width - 1) // width)
-            for line in title.splitlines()
+            for line in shown.splitlines()
         )
         capacity = max(5, size.lines - title_lines - 4)
         start = max(0, index - capacity // 2)
         end = min(len(options), start + capacity)
         start = max(0, end - capacity)
         sys.stdout.write("\033[H\033[2J")
-        sys.stdout.write(title.replace("\n", "\r\n") + "\r\n")
+        sys.stdout.write(shown.replace("\n", "\r\n") + "\r\n")
         if start:
             label = more_above.format(count=start)
             sys.stdout.write(f"   \033[2m{label}\033[0m\r\n")

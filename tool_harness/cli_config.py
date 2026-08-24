@@ -19,7 +19,7 @@ import config
 import debug
 import terminal_ui
 from cli_i18n import t
-from cli_presentation import _short_context
+from cli_presentation import _short_context, say
 
 # Windows worth offering. Not a claim about any model: it is the set of round
 # numbers a server is normally started with, and the last row exists so the
@@ -116,7 +116,7 @@ class ConfigMixin:
         try:
             data = config.load(self.config_file)
         except ValueError as e:
-            print(t("cli.config.error", error=e))
+            say(t("cli.config.error", error=e))
             return
         message = t("cli.config.unchanged")
         cursor = 0

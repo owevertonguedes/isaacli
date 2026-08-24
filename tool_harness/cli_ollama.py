@@ -26,7 +26,7 @@ import agent
 import config
 import debug
 from cli_i18n import t
-from cli_presentation import _color
+from cli_presentation import _color, say
 
 
 # Seconds to wait for an autostarted local server to answer. Generous on
@@ -179,10 +179,10 @@ def _probe_health(url, timeout=2):
                        f"{url} answered HTTP {e.code}, still loading the model")
             return None
         return "ok"
-    except Exception:
     except NOT_LISTENING as error:
         debug.note("cli_ollama._probe_health", f"{url} is not answering yet: {error}")
         return None
+    except Exception:
         debug.swallowed("cli_ollama._probe_health")
         return None
 
@@ -204,7 +204,7 @@ class OllamaMixin:
         try:
             version = self.ensure_ollama(warn=True)
             if version and self.provider.get("provider") == "ollama":
-                print(_color(t("cli.engine.preloading", model=self.model), "warn"))
+                say(_color(t("cli.engine.preloading", model=self.model), "warn"))
                 self._preload_ollama_model()
             return version
         except KeyboardInterrupt:
@@ -280,11 +280,11 @@ class OllamaMixin:
             exe = shutil.which("ollama")
             if not exe:
                 if warn:
-                    print(_color(t("cli.ollama.not_found"), "bad"))
+                    say(_color(t("cli.ollama.not_found"), "bad"))
                 return None
 
             if warn:
-                print(_color(t("cli.ollama.starting"), "warn"))
+                say(_color(t("cli.ollama.starting"), "warn"))
             try:
                 self.ollama_proc = subprocess.Popen(
                     [exe, "serve"],
@@ -296,7 +296,7 @@ class OllamaMixin:
             except Exception as e:
                 self._log("error", error=f"ollama_autostart: {e}")
                 if warn:
-                    print(_color(t("cli.ollama.start_failed", error=e), "bad"))
+                    say(_color(t("cli.ollama.start_failed", error=e), "bad"))
                 return None
 
             self._log("meta", event="ollama_autostart", pid=self.ollama_proc.pid)
@@ -374,7 +374,7 @@ class OllamaMixin:
             if not self.autostart_ollama:
                 return None
             if warn:
-                print(_color(t("cli.local_server.starting", name=name), "warn"))
+                say(_color(t("cli.local_server.starting", name=name), "warn"))
             try:
                 self.autostart_proc = subprocess.Popen(
                     autostart["cmd"], stdin=subprocess.DEVNULL,
@@ -384,8 +384,8 @@ class OllamaMixin:
             except Exception as e:
                 self._log("error", error=f"autostart: {e}")
                 if warn:
-                    print(_color(t("cli.local_server.start_failed",
-                                   name=name, error=e), "bad"))
+                    say(_color(t("cli.local_server.start_failed",
+                                 name=name, error=e), "bad"))
                 return None
 
             self._log("meta", event="autostart", key=key,
@@ -413,8 +413,8 @@ class OllamaMixin:
                     reason = f"exited with code {self.autostart_proc.returncode}"
                     self._log("error", error=f"autostart {key} {reason}")
                     if warn:
-                        print(_color(t("cli.local_server.start_failed",
-                                       name=name, error=reason), "bad"))
+                        say(_color(t("cli.local_server.start_failed",
+                                     name=name, error=reason), "bad"))
                     return None
             if self.autostart_proc.poll() is None:
                 self.autostart_proc.terminate()

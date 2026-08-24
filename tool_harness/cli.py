@@ -50,7 +50,7 @@ from cli_permissions import (
 )
 from cli_presentation import (
     APP_VERSION, _color, _colored_prompt, _format_markdown_terminal,
-    _print_welcome, _terminal_safe_text, say,
+    _print_welcome, _terminal_safe_text, say, wrap_text,
 )
 from cli_sessions import (
     FEEDBACK_DIR, SESSIONS_DIR, SessionsMixin, _build_history, _load_session,
@@ -85,9 +85,9 @@ def _announce_rate_limit(seconds, attempt):
     """Show the provider's own wait so a paused turn does not look like a freeze."""
     # \r\033[2K: the progress line is redrawn in place and has no newline of its
     # own, so writing over it is what keeps the notice on a line of its own.
-    print("\r\033[2K" + _color(
+    print("\r\033[2K" + wrap_text(_color(
         t("cli.api.rate_limit_wait", seconds=f"{seconds:.0f}",
-          attempt=attempt, total=agent.RATE_LIMIT_RETRIES), "warn"), flush=True)
+          attempt=attempt, total=agent.RATE_LIMIT_RETRIES), "warn")), flush=True)
 
 
 agent.RATE_LIMIT_NOTICE = _announce_rate_limit
@@ -95,8 +95,8 @@ agent.RATE_LIMIT_NOTICE = _announce_rate_limit
 
 def _announce_rate_limit_preemptive(seconds):
     """Show a provider-directed pause taken before the next request can fail."""
-    print("\r\033[2K" + _color(
-        t("cli.api.rate_limit_preemptive", seconds=f"{seconds:.0f}"), "warn"),
+    print("\r\033[2K" + wrap_text(_color(
+        t("cli.api.rate_limit_preemptive", seconds=f"{seconds:.0f}"), "warn")),
         flush=True,
     )
 
@@ -346,7 +346,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
     def _show_workspace_instruction_warning(self):
         if not self._pending_workspace_instruction_warning:
             return
-        print(_color(self._pending_workspace_instruction_warning, "warn"))
+        say(self._pending_workspace_instruction_warning, "warn")
         self._pending_workspace_instruction_warning = ""
 
     def _context_numbers(self, report):
@@ -357,7 +357,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             say(t("cli.context.parts", measured=report["measured"],
                     estimated=report["estimated"]))
         elif not report["measured"]:
-            print(t("cli.context.all_estimated"))
+            say(t("cli.context.all_estimated"))
 
     def _context_pressure(self, report):
         """Offer to compact while everything is still there to decide about.
@@ -399,6 +399,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                 say(t("cli.context.nothing_to_compact",
                         instructions=workspace_instructions.INSTRUCTIONS_NAME))
                 return
+            if report.get("outcome") == "no_shrink":
+                # Answering "compact" and reading "context management is off"
+                # names the wrong cause and sends the reader to a setting that
+                # is not the problem.
+                say(t("cli.context.no_shrink"))
+                return
             say(t("cli.context.unmanaged"))
             return
         say(t("cli.context.compacted", count=len(summaries)))
@@ -418,6 +424,10 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         if not continuing:
             print()
         self._output_block = False
+        # Not wrapped, unlike the rest of the program's prose: this is the live
+        # status line, and the only thing that erases it is the `\r\033[2K`
+        # above, which clears one line. Broken in two it would leave the top
+        # half sitting in the middle of the answer.
         print(_color(t("cli.working.waiting"), "dim"), end="", flush=True)
         self._working_visible = True
 
@@ -529,10 +539,10 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         if saved or automatic:
             return execution.run_command(cmd, authorized=saved)
 
-        print(_color(t("cli.permission.required"), "warn"))
+        say(_color(t("cli.permission.required"), "warn"))
         say(t("cli.permission.scope_note"))
         if _destructive_command(cmd):
-            print(_color(t("cli.permission.dangerous"), "bad"))
+            say(_color(t("cli.permission.dangerous"), "bad"))
         try:
             index = terminal_ui.select_inline(
                 [
@@ -587,12 +597,12 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                 status = (t("cli.command.failed", code=code) if code is not None
                           else t("cli.command.no_code"))
                 color = "bad"
-            print(_color(t("cli.command.status", id=item["id"], status=status), color),
-                  flush=True)
+            say(_color(t("cli.command.status", id=item["id"], status=status), color),
+                flush=True)
             text, truncated = _preview(result)
             print(text, flush=True)
             if truncated:
-                print(_color(t("cli.command.truncated", id=item["id"]), "dim"), flush=True)
+                say(_color(t("cli.command.truncated", id=item["id"]), "dim"), flush=True)
             # `via` says how the call was obtained (native tool_call, or the
             # schema-constrained correction). It stays out of the screen on
             # purpose and lives in the log, which is where the question "which
@@ -603,7 +613,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             text, truncated = _preview(result)
             print(_color(f"[{name}] ← {text}", "tool"), flush=True)
             if truncated:
-                print(_color(t("cli.command.truncated_log"), "dim"), flush=True)
+                say(_color(t("cli.command.truncated_log"), "dim"), flush=True)
             self._log("tool_result", name=name, result=result, via=via)
         self._output_block = True
         self._assistant_label_pending = True
@@ -612,7 +622,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         self._show_workspace_instruction_warning()
         if not self.ensure_ollama(warn=True):
             if self.provider.get("provider") == "ollama":
-                print(t("cli.error.ollama_unavailable"))
+                say(t("cli.error.ollama_unavailable"))
                 error = "ollama_unavailable"
             elif self.provider.get("autostart"):
                 # Blaming the credential here sends the user to /setup to fix
@@ -622,7 +632,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                         name=self.provider.get("provider_name") or "the local server"))
                 error = "local_server_unavailable"
             else:
-                print(t("cli.error.api_unavailable"))
+                say(t("cli.error.api_unavailable"))
                 error = "api_unavailable"
             self._log("error", error=error)
             return 1
@@ -667,22 +677,22 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             return 1
         except RuntimeError as e:
             self._clear_working()
-            print(t("cli.error.generic", error=e))
+            say(t("cli.error.generic", error=e))
             self._log("error", error=str(e))
             return 1
         except urllib.error.URLError as e:
             self._clear_working()
             if self.provider.get("provider") != "ollama":
-                print(t("cli.error.api_no_response", error=e))
+                say(t("cli.error.api_no_response", error=e))
             elif self.ensure_ollama(warn=True):
-                print("\n" + t("cli.error.ollama_started"))
+                say("\n" + t("cli.error.ollama_started"))
             else:
-                print("\n" + t("cli.error.ollama_no_response", error=e))
+                say("\n" + t("cli.error.ollama_no_response", error=e))
             self._log("error", error=str(e))
             return 1
         except KeyboardInterrupt:
             self._clear_working()
-            print("\n" + t("cli.error.interrupted"))
+            say("\n" + t("cli.error.interrupted"))
             self._log("error", error="interrupted")
             return 130
 
@@ -705,7 +715,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             persisted = self._persist_adjusted_thinking()
             key = ("thinking.rejected.persisted" if persisted
                    else "thinking.rejected.session_only")
-            print(_color(t(key), "warn"))
+            say(_color(t(key), "warn"))
         if empty_answer and (r or {}).get("step_limit"):
             # Running out of steps is not an empty answer and not a freeze: the
             # model was still working when the ceiling arrived, and the way
@@ -713,7 +723,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             say(t("cli.error.step_limit",
                     steps=(r or {}).get("step_limit")), "warn")
         elif empty_answer:
-            print(_color(t("cli.error.empty_answer"), "bad"))
+            say(_color(t("cli.error.empty_answer"), "bad"))
         eval_count = int(usage.get("eval_count") or 0)
         eval_duration = int(usage.get("eval_duration") or 0) / 1_000_000_000
         measured_time = eval_duration or max(
@@ -722,19 +732,19 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         if eval_count:
             approx = "" if eval_duration else "≈ "
             print()
-            print(_color(t("cli.generation.rate", approx=approx,
-                           rate=units.tps(eval_count / measured_time),
-                           count=eval_count), "dim"))
+            say(_color(t("cli.generation.rate", approx=approx,
+                         rate=units.tps(eval_count / measured_time),
+                         count=eval_count), "dim"))
         new_commands = self.commands[commands_before:]
         denied_change = bool(new_commands and new_commands[-1].get("denied"))
         if (asked_for_mutation
                 and not int((r or {}).get("successful_changes") or 0)
                 and not denied_change):
-            print(_color(t("cli.note.no_mutation"), "warn"))
+            say(_color(t("cli.note.no_mutation"), "warn"))
         if (new_commands and not new_commands[-1].get("denied")
                 and new_commands[-1].get("code") not in (None, 0)):
-            print(_color(t("cli.note.command_failed",
-                           code=new_commands[-1]["code"]), "warn"))
+            say(_color(t("cli.note.command_failed",
+                         code=new_commands[-1]["code"]), "warn"))
         self._log("assistant_final", content=final, usage=usage,
                   calls=len(calls), steps=(r or {}).get("steps"))
         self.feedback_reminder(bool(new_commands))
@@ -748,7 +758,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         # wheel into ↑/↓, which stole the prompt's message history.
         code = self._repl_screen()
         print()
-        print(_color(t("cli.resume.hint"), "dim"))
+        say(_color(t("cli.resume.hint"), "dim"))
         print(_resume_command(self.session_id))
         print()
         return code
@@ -771,9 +781,9 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             limit = 20
             items = self.resume_transcript[-limit:]
             omitted = len(self.resume_transcript) - len(items)
-            print(_color(t("cli.history.resumed"), "dim"))
+            say(_color(t("cli.history.resumed"), "dim"))
             if omitted:
-                print(_color(t("cli.history.resumed_omitted", count=omitted), "dim"))
+                say(_color(t("cli.history.resumed_omitted", count=omitted), "dim"))
             for role, content in items:
                 if role in ("user", "assistant"):
                     text = content if len(content) <= 2000 else content[:2000] + "…"
@@ -803,7 +813,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                     decision = decisions.get(content.get("decision"),
                                              content.get("decision")
                                              or t("cli.history.unknown"))
-                    print(_color(t("cli.permission.label", decision=decision), "dim"))
+                    say(_color(t("cli.permission.label", decision=decision), "dim"))
                 elif role == "tool_result":
                     name = content.get("name") or "unknown"
                     result = content.get("result") or ""
@@ -812,11 +822,11 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                         code = content.get("code")
                         status = (t("cli.command.ok") if code == 0
                                   else t("cli.command.exit_code", code=code))
-                        print(_color(t("cli.history.command_status", status=status), "tool"))
+                        say(_color(t("cli.history.command_status", status=status), "tool"))
                         print(text)
                     else:
                         print(_color(f"[{name}] ← {text}", "tool"))
-            print("\n" + _color(t("cli.history.resumed_end"), "dim") + "\n")
+            say("\n" + _color(t("cli.history.resumed_end"), "dim") + "\n")
 
     def _repl_screen(self):
         # From before the Ollama autostart until the final draw, stdin stays with
@@ -917,28 +927,28 @@ def _offer_remote_cleanup(input_fn=input, which_fn=shutil.which, run_fn=None,
     try:
         leftovers = cli_kaggle.remote_leftovers(executable, config_file, run_fn)
     except (OSError, RuntimeError) as error:
-        print(t("cli.uninstall.kaggle.remote_failed", error=error))
+        say(t("cli.uninstall.kaggle.remote_failed", error=error))
         return {}
     if not leftovers:
         return {}
-    print(t("cli.uninstall.kaggle.remote_found"))
+    say(t("cli.uninstall.kaggle.remote_found"))
     for username, items in leftovers.items():
         for ref in items["kernels"] + items["datasets"]:
             print(f"  {username}: {ref}")
-    print(t("cli.uninstall.kaggle.remote_explain"))
+    say(t("cli.uninstall.kaggle.remote_explain"))
     try:
-        answer = input_fn(t("cli.uninstall.kaggle.remote_confirm"))
+        answer = input_fn(wrap_text(t("cli.uninstall.kaggle.remote_confirm")))
     except (EOFError, KeyboardInterrupt):
         answer = ""
     if answer.strip().lower() != t("cli.uninstall.confirm_yes"):
-        print(t("cli.uninstall.kaggle.remote_kept"))
+        say(t("cli.uninstall.kaggle.remote_kept"))
         return {}
     removed, failed = cli_kaggle.delete_remote_leftovers(
         executable, leftovers, config_file, run_fn)
     for ref in removed:
-        print(t("cli.uninstall.kaggle.remote_removed", ref=ref))
+        say(t("cli.uninstall.kaggle.remote_removed", ref=ref))
     for ref, error in failed:
-        print(t("cli.uninstall.kaggle.remote_failed_one", ref=ref, error=error))
+        say(t("cli.uninstall.kaggle.remote_failed_one", ref=ref, error=error))
     return leftovers
 
 
@@ -967,7 +977,7 @@ def main(argv=None):
     try:
         config_data = config.load()
     except ValueError as e:
-        print(t("cli.config.warning", error=e))
+        say(t("cli.config.warning", error=e))
         config_data = config.empty_config()
     set_language(config_data.get("language"))
 
@@ -1045,12 +1055,12 @@ def main(argv=None):
     resumed = None
     if args.resume:
         if args.request:
-            print(t("cli.resume.no_request"))
+            say(t("cli.resume.no_request"))
             return 2
         try:
             resumed = _load_session(args.resume)
         except ValueError as e:
-            print(t("cli.error.generic", error=e))
+            say(t("cli.error.generic", error=e))
             return 2
 
     if install_requested:
@@ -1072,14 +1082,14 @@ def main(argv=None):
                 "cli.uninstall.llamacpp.warning" if llamacpp_purge_requested else
                 "cli.uninstall.purge_warning"
             )
-            print(t(warning_key))
+            say(t(warning_key))
             try:
-                confirmation = input(t("cli.uninstall.confirm"))
+                confirmation = input(wrap_text(t("cli.uninstall.confirm")))
             except (EOFError, KeyboardInterrupt):
-                print("\n" + t("cli.uninstall.cancelled"))
+                say("\n" + t("cli.uninstall.cancelled"))
                 return 130
             if confirmation.strip().lower() != t("cli.uninstall.confirm_yes"):
-                print(t("cli.uninstall.cancelled"))
+                say(t("cli.uninstall.cancelled"))
                 return 130
         if ollama_purge_requested:
             # Validate ownership and live-session state before touching Ollama.
@@ -1161,7 +1171,7 @@ def main(argv=None):
         or (default_profile or {}).get("model")
     )
     if not model:
-        print(t("cli.model.none_configured"))
+        say(t("cli.model.none_configured"))
         return 2
     if (args.model is None and not os.environ.get("ISAACLI_MODEL")
             and resumed is None and default_profile

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cheap tests for Isaac's CLI, without calling Ollama."""
 import io
+import ast
 import builtins
 import inspect
 import json
@@ -998,6 +999,65 @@ with redirect_stdout(piped):
     cli_presentation.say(notice)
 check(piped.getvalue().strip() == notice,
       "output that is not a terminal stays on one line")
+
+# A notice with a line break in it has that break because somebody meant it.
+# Wrapping the whole string as one blob would swallow it and run the two
+# paragraphs together, which is what happened until the wrap was made to work
+# line by line.
+paragraphs = notice + "\n\n" + notice
+kept = cli_presentation.wrap_text(paragraphs, wrap_width)
+# A question keeps the space between its colon and the answer being typed.
+question = EN.t("cli.kaggle.session.relaunch")
+check(question.endswith(" ")
+      and cli_presentation.wrap_text(question, 40).endswith(": ")
+      and len(visible_lines(cli_presentation.wrap_text(question, 40))) > 1,
+      "a prompt long enough to wrap still ends with the space before the cursor")
+
+check(kept.count("\n\n") == 1
+      and all(len(line) <= wrap_width for line in visible_lines(kept))
+      and kept.split() == paragraphs.split(),
+      "a break already in the text survives the wrapping")
+
+# Every screen the program prints prose on goes through say(), or through
+# wrap_text() where a prefix has to come first, so a module that hands a
+# sentence straight to print() is a screen the terminal will cut words in half
+# on. A call to the catalogue is what marks the argument as prose, and it is
+# looked for in the whole call rather than in the line, because half of these
+# calls run onto a second one.
+CATALOGUE_CALLS = ("t", "tr.t", "_t", "text", "translate", "_title")
+
+
+def _reads_the_catalogue(node):
+    for inner in ast.walk(node):
+        if not isinstance(inner, ast.Call):
+            continue
+        called = inner.func
+        name = (called.id if isinstance(called, ast.Name)
+                else f"{ast.unparse(called.value)}.{called.attr}"
+                if isinstance(called, ast.Attribute) else "")
+        if name in CATALOGUE_CALLS or name.endswith(".t") or name.endswith(".text"):
+            return True
+    return False
+
+
+prose_prints = []
+for module in sorted((HERE.parent / "tool_harness").glob("*.py")):
+    tree = ast.parse(module.read_text(encoding="utf-8"), module.name)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "print" and node.args):
+            continue
+        # A line the program leaves open is the live status line or a progress
+        # line redrawn in place, and what erases either is a `\r` that reaches
+        # one line. Broken in two, the top half stays on screen.
+        ending = next((k.value for k in node.keywords if k.arg == "end"), None)
+        if isinstance(ending, ast.Constant) and ending.value in ("", "\r"):
+            continue
+        if _reads_the_catalogue(node) and "wrap_text" not in ast.unparse(node):
+            prose_prints.append(f"{module.name}:{node.lineno}")
+check(not prose_prints,
+      "no module prints a sentence from the catalogue without wrapping it: "
+      + ("; ".join(prose_prints) or "none"))
 
 # Style has to survive the cut: the second half of a bold run stays bold.
 split_bold = app._format_markdown_terminal(

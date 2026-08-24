@@ -25,6 +25,7 @@ import hardware
 import terminal_ui
 import units
 from cli_i18n import t
+from cli_presentation import say, wrap_text
 from installation import _package_owns
 
 
@@ -257,7 +258,7 @@ def _verify_account(executable, username, environment, run_fn=subprocess.run):
             t("cli.kaggle.accounts.unverified", username=username, error=error))
     owner = _server_owner(executable, run_fn, environment)
     if owner is None:
-        print(t("cli.kaggle.accounts.owner_unknown", username=username))
+        say(t("cli.kaggle.accounts.owner_unknown", username=username))
         return None
     if owner != username:
         raise RuntimeError(t("cli.kaggle.accounts.mismatch",
@@ -355,7 +356,7 @@ def login_account(executable, config_file=None, run_fn=subprocess.run,
     command = [str(executable), "auth", "login", "--force"]
     if not launch_browser:
         command.append("--no-launch-browser")
-    print(t("cli.kaggle.accounts.login_starting"))
+    say(t("cli.kaggle.accounts.login_starting"))
     try:
         result = run_fn(command, check=False, env=environment)
         if result.returncode != 0:
@@ -374,7 +375,7 @@ def login_account(executable, config_file=None, run_fn=subprocess.run,
     state.setdefault("accounts", {})[username] = {"browser_login": True}
     state["selected_account"] = username
     config.save(data, config_file)
-    print(t("cli.kaggle.accounts.login_done", username=username))
+    say(t("cli.kaggle.accounts.login_done", username=username))
     return username
 
 
@@ -445,12 +446,12 @@ def forget_account(username, config_file=None, executable=None,
             result = _run_capture(
                 [str(executable), "auth", "revoke"], run_fn, environment)
             if result.returncode != 0:
-                print(t("cli.kaggle.accounts.revoke_failed",
-                        error=(result.stderr or result.stdout).strip()))
+                say(t("cli.kaggle.accounts.revoke_failed",
+                      error=(result.stderr or result.stdout).strip()))
             else:
-                print(t("cli.kaggle.accounts.revoked", username=username))
+                say(t("cli.kaggle.accounts.revoked", username=username))
         except RuntimeError as error:
-            print(t("cli.kaggle.accounts.revoke_failed", error=error))
+            say(t("cli.kaggle.accounts.revoke_failed", error=error))
     secret = accounts[username].get("credential")
     if secret:
         config.delete_secret(secret, _secret_path(config_file))
@@ -459,7 +460,7 @@ def forget_account(username, config_file=None, executable=None,
     if state.get("selected_account") == username:
         state["selected_account"] = next(iter(accounts), None)
     config.save(data, config_file)
-    print(t("cli.kaggle.accounts.forgotten", username=username))
+    say(t("cli.kaggle.accounts.forgotten", username=username))
     return username
 
 
@@ -471,8 +472,8 @@ def _register_account_interactive(input_fn, config_file=None, executable=None,
         [t("cli.kaggle.accounts.add_browser"), t("cli.kaggle.accounts.add_api_key")],
         input_fn)
     if index == 1:
-        print(t("cli.kaggle.accounts.api_key_explain"))
-        source = input_fn(t("cli.kaggle.accounts.api_key_prompt")).strip()
+        say(t("cli.kaggle.accounts.api_key_explain"))
+        source = input_fn(wrap_text(t("cli.kaggle.accounts.api_key_prompt"))).strip()
         return register_api_key_file(source, config_file, executable, run_fn)
     if executable is None:
         raise RuntimeError(t("cli.kaggle.accounts.login_unavailable"))
@@ -484,19 +485,19 @@ def install_kaggle_cli(input_fn=None, run_fn=subprocess.run, which_fn=shutil.whi
     """Install Kaggle into an isolated per-user venv and record ownership."""
     found = which_fn("kaggle")
     if found:
-        print(t("cli.kaggle.install.found", path=found))
+        say(t("cli.kaggle.install.found", path=found))
         return Path(found)
     input_fn = input if input_fn is None else input_fn
     home = _home(home_dir)
     env_dir = home / ".local" / "share" / "isaacli" / "kaggle-cli"
     link = home / ".local" / "bin" / "kaggle"
     record = kaggle_install_record(record_path)
-    print(t("cli.kaggle.install.plan", env=env_dir, link=link))
-    if input_fn(t("cli.kaggle.confirm")).strip().lower() != t("cli.kaggle.confirm_yes"):
-        print(t("cli.kaggle.cancelled"))
+    say(t("cli.kaggle.install.plan", env=env_dir, link=link))
+    if input_fn(wrap_text(t("cli.kaggle.confirm"))).strip().lower() != t("cli.kaggle.confirm_yes"):
+        say(t("cli.kaggle.cancelled"))
         return None
     if link.exists() or link.is_symlink():
-        print(t("cli.kaggle.install.conflict", path=link))
+        say(t("cli.kaggle.install.conflict", path=link))
         return None
     try:
         result = run_fn([sys.executable, "-m", "venv", str(env_dir)], check=False)
@@ -526,9 +527,9 @@ def install_kaggle_cli(input_fn=None, run_fn=subprocess.run, which_fn=shutil.whi
                 shutil.rmtree(env_dir)
         except OSError:
             debug.swallowed("cli_kaggle.install_kaggle_cli cleanup")
-        print(t("cli.kaggle.install.failed", error=error))
+        say(t("cli.kaggle.install.failed", error=error))
         return None
-    print(t("cli.kaggle.install.success", path=link))
+    say(t("cli.kaggle.install.success", path=link))
     return link
 
 
@@ -542,35 +543,35 @@ def uninstall_managed_kaggle(remove_credentials=False, home_dir=None,
     """Remove only the isolated Kaggle installation recorded by isaacli."""
     record = kaggle_install_record(record_path)
     if not record.exists():
-        print(t("cli.uninstall.kaggle.not_managed"))
+        say(t("cli.uninstall.kaggle.not_managed"))
         return 1
     try:
         data = json.loads(record.read_text(encoding="utf-8"))
         executable = Path(data["executable"])
         environment = Path(data["environment"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-        print(t("cli.uninstall.kaggle.invalid_record", error=error))
+        say(t("cli.uninstall.kaggle.invalid_record", error=error))
         return 1
     home = _home(home_dir).resolve()
     expected_environment = home / ".local" / "share" / "isaacli" / "kaggle-cli"
     expected_executable = home / ".local" / "bin" / "kaggle"
     if (environment.absolute() != expected_environment
             or executable.absolute() != expected_executable):
-        print(t("cli.uninstall.kaggle.invalid_record",
-                error=t("cli.uninstall.kaggle.unsafe_paths")))
+        say(t("cli.uninstall.kaggle.invalid_record",
+              error=t("cli.uninstall.kaggle.unsafe_paths")))
         return 1
     if executable.exists() and package_owned_fn(executable):
-        print(t("cli.uninstall.kaggle.package_owned", path=executable))
+        say(t("cli.uninstall.kaggle.package_owned", path=executable))
         return 1
     credentials = [path for path in _known_credentials(home) if path.exists()]
     if credentials and not remove_credentials:
-        print(t("cli.uninstall.kaggle.credentials", paths=", ".join(map(str, credentials))))
+        say(t("cli.uninstall.kaggle.credentials", paths=", ".join(map(str, credentials))))
         return 1
     try:
         if executable.is_symlink():
             executable.unlink()
         elif executable.exists():
-            print(t("cli.uninstall.kaggle.changed", path=executable))
+            say(t("cli.uninstall.kaggle.changed", path=executable))
             return 1
         if environment.exists():
             shutil.rmtree(environment)
@@ -578,9 +579,9 @@ def uninstall_managed_kaggle(remove_credentials=False, home_dir=None,
             credential.unlink()
         record.unlink()
     except OSError as error:
-        print(t("cli.uninstall.failed", error=error))
+        say(t("cli.uninstall.failed", error=error))
         return 1
-    print(t("cli.uninstall.kaggle.removed"))
+    say(t("cli.uninstall.kaggle.removed"))
     return 0
 
 
@@ -693,7 +694,7 @@ def _select_account(executable, input_fn, run_fn=subprocess.run, config_file=Non
     data = config.load(config_file)
     accounts = ((data.get("kaggle") or {}).get("accounts") or {})
     if not accounts:
-        print(t("cli.kaggle.accounts.none"))
+        say(t("cli.kaggle.accounts.none"))
         # Somebody who just signed in has already answered which account to use.
         # Drawing the picker at them again, with "add another account" on it,
         # reads as the sign-in not having worked.
@@ -785,10 +786,10 @@ def live_kernels(executable, run_fn=subprocess.run, env=None):
         match = re.search(r"KernelWorkerStatus\.([A-Z_]+)", output)
         state = match.group(1) if match else None
         if state is None:
-            live.append((ref, output))
             debug.note(f"cli_kaggle.live_kernels {ref}",
                        f"no status name in this answer, counted as live: {output}")
         if state not in TERMINAL_STATES:
+            live.append((ref, output))
     return live
 
 
@@ -944,7 +945,7 @@ def print_model_evidence(model):
     if model.get("source"):
         print(model["source"])
     if model.get("benchmark_source"):
-        print(f"{model['benchmark_source']} ({t('model.discovery.scope')})")
+        say(f"{model['benchmark_source']} ({t('model.discovery.scope')})")
 
 
 def prepared_weight_probe(executable, username, run_fn=subprocess.run, env=None):
@@ -1270,14 +1271,14 @@ def _choose_kernel_context(model, input_fn):
         return levels[index][1]
     while True:
         print(f"{title}\n\n{explanation}")
-        value = setup_ollama.parse_context(input_fn(t(
+        value = setup_ollama.parse_context(input_fn(wrap_text(t(
             "context.manual.prompt",
-            minimum=setup_ollama.format_context(floor))))
+            minimum=setup_ollama.format_context(floor)))))
         if floor <= value <= ceiling:
             return value
-        print(t("cli.kaggle.context.manual.invalid",
-                minimum=setup_ollama.format_context(floor),
-                limit=setup_ollama.format_context(ceiling)))
+        say(t("cli.kaggle.context.manual.invalid",
+              minimum=setup_ollama.format_context(floor),
+              limit=setup_ollama.format_context(ceiling)))
 
 
 def _kernel_value(marker, value):
@@ -1443,7 +1444,7 @@ def _prepare_assets(executable, username, model, available, input_fn,
     if "binary" not in available:
         suffix = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         slug = f"{username}/isaacli-prepare-cpu-{suffix}"
-        print(t("cli.kaggle.prepare.cpu", slug=slug))
+        say(t("cli.kaggle.prepare.cpu", slug=slug))
         with tempfile.TemporaryDirectory(
                 prefix="isaacli-kaggle-prepare-", dir=scratch) as temporary:
             folder = Path(temporary)
@@ -1473,13 +1474,13 @@ def _prepare_assets(executable, username, model, available, input_fn,
             _publish_private_dataset(
                 executable, dataset, expected["binary"],
                 f"isaacli CUDA runtime sm{model['cuda_arch']}", run_fn, env)
-            print(t("cli.kaggle.prepare.created", ref=expected["binary"]))
-            print(t("cli.kaggle.prepare.kernel_remove", slug=slug))
+            say(t("cli.kaggle.prepare.created", ref=expected["binary"]))
+            say(t("cli.kaggle.prepare.kernel_remove", slug=slug))
         available["binary"] = expected["binary"]
     if "model" not in available:
-        print(t("cli.kaggle.prepare.weight",
-                size=units.gib(model["model_bytes"]), name=model["name"]))
-        if input_fn(t("cli.kaggle.prepare.weight_confirm")).strip().lower() == t(
+        say(t("cli.kaggle.prepare.weight",
+              size=units.gib(model["model_bytes"]), name=model["name"]))
+        if input_fn(wrap_text(t("cli.kaggle.prepare.weight_confirm"))).strip().lower() == t(
                 "cli.kaggle.confirm_yes"):
             _require_space(scratch, model["model_bytes"])
             with tempfile.TemporaryDirectory(
@@ -1495,7 +1496,7 @@ def _prepare_assets(executable, username, model, available, input_fn,
                 _publish_private_dataset(
                     executable, folder, expected["model"],
                     f"isaacli model {model['alias']}", run_fn, env)
-                print(t("cli.kaggle.prepare.created", ref=expected["model"]))
+                say(t("cli.kaggle.prepare.created", ref=expected["model"]))
             available["model"] = expected["model"]
     return available
 
@@ -1586,8 +1587,8 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                 # same stage must not be announced twice.
                 if stage.startswith(STAGE_PREFIX) and stage not in announced:
                     announced.add(stage)
-                    print(t("cli.kaggle.url.stage",
-                            stage=stage[len(STAGE_PREFIX):].strip()))
+                    say(t("cli.kaggle.url.stage",
+                          stage=stage[len(STAGE_PREFIX):].strip()))
                 elif stage.startswith(VRAM_PREFIX) and stage not in announced:
                     announced.add(stage)
                     measurement = stage[len(VRAM_PREFIX):].strip()
@@ -1641,7 +1642,7 @@ def _settle_unfinished_kernel(executable, slug, input_fn, run_fn=subprocess.run,
         # Not knowing is not the same as knowing it stopped, so say the kernel
         # may still be spending rather than deciding on its behalf.
         debug.note(f"cli_kaggle._settle_unfinished_kernel {slug}", error)
-        print(t("cli.kaggle.stop_spending", url=page))
+        say(t("cli.kaggle.stop_spending", url=page))
         return
     if state in TERMINAL_STATES:
         debug.note(f"cli_kaggle._settle_unfinished_kernel {slug}",
@@ -1664,17 +1665,17 @@ def _settle_unfinished_kernel(executable, slug, input_fn, run_fn=subprocess.run,
             print()
             index = 0
         if index != 0:
-            print(t("cli.kaggle.stop_spending", url=page))
+            say(t("cli.kaggle.stop_spending", url=page))
             return
     else:
-        print(t("cli.kaggle.unfinished.stopping", slug=slug, state=state))
+        say(t("cli.kaggle.unfinished.stopping", slug=slug, state=state))
     try:
         stop_kernel(executable, slug, run_fn, env)
     except (OSError, RuntimeError) as error:
-        print(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
-        print(t("cli.kaggle.stop_spending", url=page))
+        say(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
+        say(t("cli.kaggle.stop_spending", url=page))
     else:
-        print(t("cli.kaggle.stop.stopped", slug=slug))
+        say(t("cli.kaggle.stop.stopped", slug=slug))
 
 
 def save_kaggle_profile(url, slug, model, api_key, config_file=None,
@@ -1809,13 +1810,13 @@ def _report_brake_lost(error, config_file=None):
     prints is every Kaggle page it knows how to reach by hand.
     """
     if _signed_out(error):
-        print(t("cli.kaggle.stop.signed_out"))
+        say(t("cli.kaggle.stop.signed_out"))
     else:
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
     for record in (config.load(config_file).get("kaggle") or {}).get("kernels") or []:
         if record.get("slug"):
-            print(t("cli.kaggle.stop_spending",
-                    url=f"https://www.kaggle.com/code/{record['slug']}"))
+            say(t("cli.kaggle.stop_spending",
+                  url=f"https://www.kaggle.com/code/{record['slug']}"))
 
 
 def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
@@ -1846,9 +1847,9 @@ def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
         _report_brake_lost(error, config_file)
         return 1
     for record in _prune_dead_kernels(live, config_file, account, username):
-        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
+        say(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
     if not live:
-        print(t("cli.kaggle.stop.none"))
+        say(t("cli.kaggle.stop.none"))
         return 0
     slugs = [ref for ref, _state in live]
     index = _choose(
@@ -1856,25 +1857,25 @@ def run_stop_kernels(input_fn=None, run_fn=subprocess.run, config_file=None,
         [t("cli.kaggle.stop.option", slug=ref, state=state) for ref, state in live]
         + [t("navigation.back")], input_fn)
     if index >= len(slugs):
-        print(t("cli.kaggle.cancelled"))
+        say(t("cli.kaggle.cancelled"))
         return 130
-    print(t("cli.kaggle.stop.explain", slug=slugs[index]))
-    if input_fn(t("cli.kaggle.stop.confirm")).strip().lower() != t(
+    say(t("cli.kaggle.stop.explain", slug=slugs[index]))
+    if input_fn(wrap_text(t("cli.kaggle.stop.confirm"))).strip().lower() != t(
             "cli.kaggle.confirm_yes"):
-        print(t("cli.kaggle.cancelled"))
+        say(t("cli.kaggle.cancelled"))
         return 130
     try:
         stop_kernel(executable, slugs[index], run_fn, environment)
     except RuntimeError as error:
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
         return 1
-    print(t("cli.kaggle.stop.stopped", slug=slugs[index]))
+    say(t("cli.kaggle.stop.stopped", slug=slugs[index]))
     # The endpoint that kernel published cannot come back, so the record and the
     # profile built from it go with it instead of waiting for the next run.
     for record in _prune_dead_kernels(
             [item for item in live if item[0] != slugs[index]],
             config_file, account, username):
-        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
+        say(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
     return 0
 
 
@@ -1973,33 +1974,33 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
         available = _available_asset_refs(
             executable, username, model, run_fn, environment)
     except RuntimeError as error:
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
         return 1
     for ref in available.values():
-        print(t("cli.kaggle.assets.available", ref=ref))
+        say(t("cli.kaggle.assets.available", ref=ref))
     missing = [kind for kind in ("binary", "model") if kind not in available]
     if not missing:
-        print(t("cli.kaggle.prepare.nothing_missing", username=username))
+        say(t("cli.kaggle.prepare.nothing_missing", username=username))
         return 0
     # Announcing both steps when only one is missing promises a CPU kernel that
     # will not run, and the plan is the thing being consented to.
-    print(t("cli.kaggle.prepare.plan", username=username))
+    say(t("cli.kaggle.prepare.plan", username=username))
     if "binary" in missing:
-        print(t("cli.kaggle.prepare.plan_binary", arch=model["cuda_arch"]))
+        say(t("cli.kaggle.prepare.plan_binary", arch=model["cuda_arch"]))
     if "model" in missing:
-        print(t("cli.kaggle.prepare.plan_model",
-                size=units.gib(model["model_bytes"])))
-    if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() != t(
+        say(t("cli.kaggle.prepare.plan_model",
+              size=units.gib(model["model_bytes"])))
+    if input_fn(wrap_text(t("cli.kaggle.prepare.confirm"))).strip().lower() != t(
             "cli.kaggle.confirm_yes"):
-        print(t("cli.kaggle.cancelled"))
+        say(t("cli.kaggle.cancelled"))
         return 130
     try:
         available = _prepare_assets(
             executable, username, model, available, input_fn, run_fn, environment)
     except (OSError, RuntimeError) as error:
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
         return 1
-    print(t("cli.kaggle.prepare.done", count=len(available)))
+    say(t("cli.kaggle.prepare.done", count=len(available)))
     return 0
 
 
@@ -2111,7 +2112,7 @@ def _kernel_lock(config_file=None):
         # layer that disappears in silence is worse than no layer, because
         # nobody goes looking for it afterwards, so it says so on the way past.
         debug.note("cli_kaggle._kernel_lock flock", error)
-        print(t("cli.kaggle.session.no_lock", path=str(path)))
+        say(t("cli.kaggle.session.no_lock", path=str(path)))
     return handle
 
 
@@ -2335,16 +2336,16 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
                    f"{record['slug']} is still serving, nothing was pushed")
         start_session_heartbeat(profile_name, config_file)
         return "live"
-    print(t("cli.kaggle.session.gone", slug=record["slug"]))
+    say(t("cli.kaggle.session.gone", slug=record["slug"]))
     _forget_kernel_record(record["slug"], config_file)
     input_fn = input if input_fn is None else input_fn
     try:
-        answer = input_fn(t("cli.kaggle.session.relaunch")).strip().lower()
+        answer = input_fn(wrap_text(t("cli.kaggle.session.relaunch"))).strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         answer = ""
     if answer != t("cli.kaggle.confirm_yes"):
-        print(t("cli.kaggle.session.declined"))
+        say(t("cli.kaggle.session.declined"))
         return "declined"
     if run_kaggle_fn is None:
         # The same screens the `/kaggle` command uses, so relaunching offers the
@@ -2386,17 +2387,17 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
         return None
     _slug, holders = claim_session_end(profile_name, config_file, pid)
     if holders:
-        print(t("cli.kaggle.session.still_used",
-                slug=record["slug"], count=len(holders)))
+        say(t("cli.kaggle.session.still_used",
+              slug=record["slug"], count=len(holders)))
         return None
     executable = _existing_executable(which_fn, home_dir)
     if executable is None:
         # Nothing is going to be deleted, so the record has to go back to being
         # adoptable instead of staying spoken for by an ending that never ran.
         drop_session_claim(profile_name, config_file)
-        print(t("cli.kaggle.session.no_cli", slug=record["slug"]))
+        say(t("cli.kaggle.session.no_cli", slug=record["slug"]))
         return None
-    print(t("cli.kaggle.session.stopping", slug=record["slug"]))
+    say(t("cli.kaggle.session.stopping", slug=record["slug"]))
     try:
         environment = _record_environment(record, config_file)
         stop_kernel(executable, record["slug"], run_fn, environment)
@@ -2408,14 +2409,14 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
         # a credential that is present, and pasting it under "could not end the
         # session" hides the one thing that matters here: the kernel is still
         # billing and the program can no longer stop it.
-        print(t("cli.kaggle.session.stop_failed", slug=record["slug"],
-                error=t("cli.kaggle.stop.signed_out") if _signed_out(error)
-                else error))
-        print(t("cli.kaggle.stop_spending",
-                url=f"https://www.kaggle.com/code/{record['slug']}"))
+        say(t("cli.kaggle.session.stop_failed", slug=record["slug"],
+              error=t("cli.kaggle.stop.signed_out") if _signed_out(error)
+              else error))
+        say(t("cli.kaggle.stop_spending",
+              url=f"https://www.kaggle.com/code/{record['slug']}"))
         return None
     _forget_kernel_record(record["slug"], config_file)
-    print(t("cli.kaggle.session.stopped", slug=record["slug"]))
+    say(t("cli.kaggle.session.stopped", slug=record["slug"]))
     return record["slug"]
 
 
@@ -2566,8 +2567,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 urlopen_fn=urllib.request.urlopen):
     """Run the user-confirmed Kaggle setup, push, discovery and profile cycle."""
     input_fn = input if input_fn is None else input_fn
-    print(t("cli.kaggle.terms"))
-    print(t("cli.kaggle.account"))
+    say(t("cli.kaggle.terms"))
+    say(t("cli.kaggle.account"))
     executable = install_kaggle_cli(
         input_fn=input_fn, run_fn=run_fn, which_fn=which_fn,
         home_dir=home_dir, record_path=record_path,
@@ -2589,18 +2590,18 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         # remaining GPU hours change a decision here, and the account picker
         # already shows that same figure the same way.
         debug.note("cli_kaggle.run_kaggle quota", quota)
-        print(t("cli.kaggle.quota", quota=_quota_summary(quota)))
+        say(t("cli.kaggle.quota", quota=_quota_summary(quota)))
         username = _authenticated_username(executable, run_fn, environment)
         live = live_kernels(executable, run_fn, environment)
     except RuntimeError as error:
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
         return 1
     for record in _prune_dead_kernels(live, config_file, account, username):
-        print(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
+        say(t("cli.kaggle.pruned", slug=record.get("slug", "?")))
     if live:
         for ref, state in live:
-            print(t("cli.kaggle.live", slug=ref, state=state,
-                    url=f"https://www.kaggle.com/code/{ref}"))
+            say(t("cli.kaggle.live", slug=ref, state=state,
+                  url=f"https://www.kaggle.com/code/{ref}"))
         if not validation_cpu:
             profile, record = _reactivate_live_profile(
                 live, config_file, account=account, urlopen_fn=urlopen_fn,
@@ -2608,16 +2609,16 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             if profile:
                 keep = _offer_switch(record, profile, input_fn, config_file)
                 if keep:
-                    print(t("cli.kaggle.reused", profile=profile,
-                            url=record["url"] + "/v1"))
+                    say(t("cli.kaggle.reused", profile=profile,
+                          url=record["url"] + "/v1"))
                     return 0
                 try:
                     stop_kernel(executable, record["slug"], run_fn, environment)
                 except RuntimeError as error:
-                    print(t("cli.kaggle.failed", error=error))
+                    say(t("cli.kaggle.failed", error=error))
                     return 1
                 _forget_kernel_record(record["slug"], config_file)
-                print(t("cli.kaggle.switch.stopped", slug=record["slug"]))
+                say(t("cli.kaggle.switch.stopped", slug=record["slug"]))
                 live = [item for item in live if item[0] != record["slug"]]
             saved_refs = {
                 item.get("slug") for item in
@@ -2625,15 +2626,15 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 if item.get("account") in (None, account)
             }
             if any(ref in saved_refs for ref, _state in live):
-                print(t("cli.kaggle.unresponsive"))
+                say(t("cli.kaggle.unresponsive"))
                 return 1
         # Ending the one kernel that was serving can leave the account with
         # nothing running, and then this is an ordinary first launch.
         if live:
-            print(t("cli.kaggle.second_refused"))
+            say(t("cli.kaggle.second_refused"))
             return 1
     if validation_cpu:
-        print(t("cli.kaggle.cpu_only"))
+        say(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}
     else:
         if preference:
@@ -2642,9 +2643,9 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             # The context chosen that time travels inside the model, so
             # repeating a choice does not ask about it again either.
             model = preference["model"]
-            print(t("cli.kaggle.preference.using",
-                    model=model.get("name") or model.get("alias"),
-                    machine=model.get("machine_label", "")))
+            say(t("cli.kaggle.preference.using",
+                  model=model.get("name") or model.get("alias"),
+                  machine=model.get("machine_label", "")))
         else:
             try:
                 model = _select_model(
@@ -2656,7 +2657,7 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 return 1
             context = _choose_kernel_context(model, input_fn)
             if context is None:
-                print(t("cli.kaggle.cancelled"))
+                say(t("cli.kaggle.cancelled"))
                 return 130
             model = dict(model, context=context)
     dataset_sources = []
@@ -2665,7 +2666,7 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             available = _available_asset_refs(
                 executable, username, model, run_fn, environment)
         except RuntimeError as error:
-            print(t("cli.kaggle.failed", error=error))
+            say(t("cli.kaggle.failed", error=error))
             return 1
         missing = [kind for kind in ("binary", "model") if kind not in available]
         if missing:
@@ -2673,26 +2674,26 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             # difference is the whole point of having prepared them. Announcing
             # a 34 minute compile to an account that already owns the compiled
             # runtime overstates the price of the launch being consented to.
-            print(t("cli.kaggle.assets.missing", username=username))
+            say(t("cli.kaggle.assets.missing", username=username))
             if "binary" in missing:
-                print(t("cli.kaggle.assets.cost_build"))
+                say(t("cli.kaggle.assets.cost_build"))
             if "model" in missing:
-                print(t("cli.kaggle.assets.cost_download",
-                        size=units.gib(model["model_bytes"])))
-            if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() == t(
+                say(t("cli.kaggle.assets.cost_download",
+                      size=units.gib(model["model_bytes"])))
+            if input_fn(wrap_text(t("cli.kaggle.prepare.confirm"))).strip().lower() == t(
                     "cli.kaggle.confirm_yes"):
                 try:
                     available = _prepare_assets(
                         executable, username, model, available, input_fn,
                         run_fn, environment)
                 except (OSError, RuntimeError) as error:
-                    print(t("cli.kaggle.failed", error=error))
+                    say(t("cli.kaggle.failed", error=error))
                     return 1
             if len(available) < 2:
-                print(t("cli.kaggle.assets.self_contained"))
+                say(t("cli.kaggle.assets.self_contained"))
         dataset_sources = list(available.values())
         for ref in dataset_sources:
-            print(t("cli.kaggle.assets.available", ref=ref))
+            say(t("cli.kaggle.assets.available", ref=ref))
     # Asked before the push confirmation, because the ceiling is part of what is
     # being consented to: how many hours of a weekly budget this may cost at
     # most, whether or not anybody is left watching it.
@@ -2701,11 +2702,11 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         session_seconds = _choose_session_ceiling(
             input_fn, _quota_remaining_hours(quota))
         if session_seconds is None:
-            print(t("cli.kaggle.cancelled"))
+            say(t("cli.kaggle.cancelled"))
             return 130
-        print(t("cli.kaggle.ceiling.chosen", hours=session_seconds // 3600))
-    if input_fn(t("cli.kaggle.push.confirm")).strip().lower() != t("cli.kaggle.confirm_yes"):
-        print(t("cli.kaggle.cancelled"))
+        say(t("cli.kaggle.ceiling.chosen", hours=session_seconds // 3600))
+    if input_fn(wrap_text(t("cli.kaggle.push.confirm"))).strip().lower() != t("cli.kaggle.confirm_yes"):
+        say(t("cli.kaggle.cancelled"))
         return 130
     suffix = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     kind = "flow-cpu" if validation_cpu else "gpu"
@@ -2725,8 +2726,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                             env=environment)
             if result.returncode != 0:
                 raise RuntimeError(t("cli.kaggle.push.failed"))
-        print(t("cli.kaggle.pushed", slug=slug,
-                url=f"https://www.kaggle.com/code/{slug}"))
+        say(t("cli.kaggle.pushed", slug=slug,
+              url=f"https://www.kaggle.com/code/{slug}"))
         # Waiting is bounded by the life of the kernel, and that life is now the
         # number chosen above rather than the largest one this program can ask
         # for. Leaving the default here would have this window watching for four
@@ -2745,19 +2746,19 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         try:
             stop_kernel(executable, slug, run_fn, environment)
         except (OSError, RuntimeError) as error:
-            print(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
-            print(t("cli.kaggle.stop_spending",
-                    url=f"https://www.kaggle.com/code/{slug}"))
+            say(t("cli.kaggle.session.stop_failed", slug=slug, error=error))
+            say(t("cli.kaggle.stop_spending",
+                  url=f"https://www.kaggle.com/code/{slug}"))
         else:
-            print(t("cli.kaggle.stop.stopped", slug=slug))
-        print(t("cli.kaggle.cancelled"))
+            say(t("cli.kaggle.stop.stopped", slug=slug))
+        say(t("cli.kaggle.cancelled"))
         return 130
     except (OSError, RuntimeError) as error:
         # Giving up here does not stop anything on its own: the kernel was
         # already pushed and keeps spending quota that does not come back.
-        print(t("cli.kaggle.failed", error=error))
+        say(t("cli.kaggle.failed", error=error))
         _settle_unfinished_kernel(executable, slug, input_fn, run_fn, environment)
         return 1
-    print(t("cli.kaggle.ready", profile=profile, url=url + "/v1"))
-    print(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))
+    say(t("cli.kaggle.ready", profile=profile, url=url + "/v1"))
+    say(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))
     return 0
