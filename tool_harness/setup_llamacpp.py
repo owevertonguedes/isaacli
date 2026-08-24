@@ -410,7 +410,13 @@ def choose_model(tr, input_fn, config_file=None,
     appears saying so, because hiding it would make the list look like
     everything on this disk runs on this card.
     """
-    vram_mb, gpu_count = model_discovery.local_vram()
+    # The whole summary, not only the two fields the fit needs. Built from those
+    # two, the table still draws and two of its columns go quietly wrong: the
+    # throughput has no bandwidth to estimate from and empties, and the fit
+    # column loses the card's name and is headed "CPU" on a machine with a GPU,
+    # under a legend explaining why the CPU has no published bandwidth.
+    local = hardware.summarise(hardware.detect().get("gpus"))
+    vram_mb, gpu_count = local["vram_mb"], local["gpu_count"]
     overhead_mb = hardware.overhead_mb(gpu_count)
     while True:
         models, problems = local_models.available(
@@ -421,7 +427,7 @@ def choose_model(tr, input_fn, config_file=None,
             # That is why the list looks the way it does, not something the
             # user asked for, so it goes where the rest of the mechanism goes.
             debug.note("setup_llamacpp.choose_model", problem)
-        machine = model_discovery.machine(vram_mb=vram_mb, gpu_count=gpu_count)
+        machine = model_discovery.machine(**local)
         cells = [(item, _row(item, tr, vram_mb, overhead_mb, gpu_count, machine))
                  for item in models]
         # Most usable context first, so the machine's best option is the one

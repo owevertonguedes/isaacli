@@ -2783,8 +2783,14 @@ try:
             roomy_model, lambda _prompt: typed.pop(0))
 finally:
     cli_kaggle.terminal_ui.select = original_context_select
+# Against the catalogue rather than a fragment of it: this used to assert on
+# three words of the sentence, so rewording the screen failed a check about
+# refusing a context, which teaches the next person to reword nothing.
+refusal_text = setup_ollama.Translator("en").t(
+    "cli.kaggle.context.manual.invalid",
+    limit=setup_ollama.format_context(roomy_context))
 check(typed_context == 8192 and not typed
-      and "kernel dies" in refusal_output.getvalue(),
+      and refusal_text in refusal_output.getvalue(),
       "a typed value above what fits is refused with the reason, and a smaller one accepted")
 
 try:

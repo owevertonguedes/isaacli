@@ -2164,6 +2164,43 @@ check(not mismatched,
       f"a message takes the same placeholders in every language ({mismatched or 'aligned'})")
 
 # ----------------------------------------------------------------------
+# Interface text explains the program, not the decisions behind it.
+#
+# Every one of these screens is written by somebody who has just finished
+# arguing themselves into a design, and the argument leaks into the string: a
+# legend that said the throughput column is blank "and a guessed number would
+# read like a measured one", a model list that explained that what does not fit
+# "still appears, saying so", a flag described as the one "which is what stops
+# the quota". All three are true, none of them is what the person reading the
+# screen was asking, and together they read like a transcript of a conversation
+# they were not in. The reasoning belongs in the code comment beside the
+# decision, where the next person to change it will be standing.
+#
+# What is caught here is the wording that argues rather than informs. A refusal
+# saying why it refused is not that, and must keep saying it.
+# ----------------------------------------------------------------------
+ARGUING = {
+    "en": (r"\bwhich is what\b", r"\bwould read like\b", r"\bnobody\b",
+           r"\bis not \w+, it is\b", r"\bthe whole point\b",
+           r"\bwhat this \w+ exists to\b", r"\binstead of a fixed\b",
+           r"\bin the owner's words\b", r"\bit used to\b", r"\bturned out\b"),
+    "pt-BR": (r"\bque é o que\b", r"\bleria como\b", r"\bninguém\b",
+              r"\bnão é \w+, é\b", r"\bo ponto é\b", r"\bexiste para\b",
+              r"\bem vez de um valor fixo\b", r"\bnas palavras d\b",
+              r"\bcostumava\b", r"\bacabou sendo\b"),
+}
+arguing = [
+    f"{name}:{key}: {pattern}"
+    for name, catalogue in catalogues.items()
+    for pattern in ARGUING.get(name, ())
+    for key, value in catalogue.items()
+    if isinstance(value, str) and re.search(pattern, value, re.I)
+]
+check(not arguing,
+      "interface text states what is, and leaves the reasoning to the code: "
+      + ("; ".join(arguing) or "none of it argues"))
+
+# ----------------------------------------------------------------------
 # A key nobody asks for is translated text that no screen can ever show. The
 # comparison above keeps the two catalogues equal to each other, so an orphan
 # stays perfectly aligned in both files and reads as supported wording to

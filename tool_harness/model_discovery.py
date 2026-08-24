@@ -839,10 +839,17 @@ def model_table(rows, machine_profile=None, translate=None, state_header=None,
             legend = translate("model.table.legend.none",
                                gpu=machine_label(machine_profile, translate))
     if uniform:
+        # A collapsed column whose value is the empty cell read as "RANKINGS -"
+        # in a sentence, which is a dash where a reader expects a word. The
+        # column is still named, because "none of these has one" is the answer
+        # to a question somebody is asking on this screen, but it is said in
+        # words rather than in the table's punctuation.
         legend = "\n".join([
             translate("model.table.uniform",
-                      fields="; ".join(f"{name} {value}"
-                                       for name, value in uniform.items())),
+                      fields=", ".join(
+                          f"{name} {translate('model.table.uniform.absent')}"
+                          if value == EMPTY_CELL else f"{name} {value}"
+                          for name, value in uniform.items())),
             legend,
         ])
     return {"header": draw(headings), "rows": [draw(row) for row in rows],
