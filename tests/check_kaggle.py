@@ -884,10 +884,19 @@ original_select = setup_ollama._select
 original_run_kaggle = cli_kaggle.run_kaggle
 kaggle_setup_calls = []
 try:
+    # The Kaggle entry is answered by name, not by the position it happened to
+    # have. A fixed number here kept passing while the screen grew an entry
+    # above Kaggle, and what it then exercised was that other entry.
+    kaggle_index = next(
+        index for index, entry in enumerate(
+            setup_ollama.model_source_entries(
+                config.load(selector_config),
+                setup_ollama.Translator("en"))[0])
+        if entry == "kaggle")
     setup_ollama._select = lambda _tr, _title, options, *_args, **_kwargs: (
         check(any("Kaggle" in option and "not configured" in option for option in options),
               "Kaggle appears in /model before it is configured"),
-        1,
+        kaggle_index,
     )[-1]
     cli_kaggle.run_kaggle = lambda **kwargs: (
         kaggle_setup_calls.append(kwargs), 130,

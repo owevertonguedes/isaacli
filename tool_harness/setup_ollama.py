@@ -259,12 +259,19 @@ def _is_local_engine(item):
 
 
 def _detect_engines(tr, which_fn=None, candidates=()):
-    """Offer what this machine has, in place of a fixed menu of everything.
+    """The four sources, always listed, each saying what this machine has.
 
-    The rule, in the owner's words: use what the user has. A machine with no
-    Ollama is not offered Ollama, because installing a second program to run a
-    file it already has on disk is work nobody asked for. A machine that has
-    Ollama keeps it, listed with what it holds, and nothing is migrated.
+    Hiding an engine that is not installed is how Ollama disappeared from a
+    machine that could have used it, leaving a screen whose absences nobody
+    could tell apart from a program that never had the feature. So the menu is
+    fixed and the evidence is in the label: what is already here says so, and
+    what is not says so too, rather than being left out.
+
+    Ollama is the one entry this program cannot install for the user, so its
+    missing label promises nothing more than the screen behind it delivers,
+    which is the official instructions and a way back. Installing it ourselves
+    means the whole lifecycle, ownership record and removal included, and that
+    is its own piece of work.
 
     Returns (entries, notes) where entries are (key, label) pairs.
     """
@@ -295,15 +302,15 @@ def _detect_engines(tr, which_fn=None, candidates=()):
     entries.append(("llamacpp", tr.t("engine.llamacpp.found" if server is not None
                                      else "engine.llamacpp.install")))
 
-    if ollama_exe:
-        entries.append(("ollama", tr.t("engine.ollama.found",
-                                       count=len(ollama_models))))
-        # The one line the owner asked for, and the only claim it makes is one
-        # this program can keep: the weights are reused where they are. It says
-        # nothing about speed, because the measurement this project has puts
-        # the two engines inside each other's noise, pointing the other way.
-        if server is None and ollama_models:
-            notes.append(tr.t("engine.llamacpp.reuse", count=len(ollama_models)))
+    entries.append(("ollama", tr.t("engine.ollama.found",
+                                   count=len(ollama_models))
+                    if ollama_exe else tr.t("engine.ollama.install")))
+    # The one line the owner asked for, and the only claim it makes is one this
+    # program can keep: the weights are reused where they are. It says nothing
+    # about speed, because the measurement this project has puts the two engines
+    # inside each other's noise, pointing the other way.
+    if ollama_exe and server is None and ollama_models:
+        notes.append(tr.t("engine.llamacpp.reuse", count=len(ollama_models)))
 
     entries.append(("api", tr.t("engine.api")))
     entries.append(("kaggle", tr.t("engine.kaggle")))

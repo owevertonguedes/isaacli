@@ -238,19 +238,68 @@ try:
           "a model without tools is refused without touching the previous profile")
     client.infos[qwen36] = original_qwen_info
 
-    # A machine without Ollama is not offered Ollama. Installing a second
-    # program to run a file the machine already has was the old answer, and it
-    # is not this program's answer any more: the engine screen lists what is
-    # here. So the check is no longer "the instructions appear", it is "the
-    # entry is absent", which is a stronger statement about the same screen.
+    # A machine without Ollama is still offered Ollama. Hiding it left a screen
+    # whose absences read as a program that never had the engine, so the menu
+    # is fixed and the label carries the evidence. What the entry must not do
+    # is promise an installation this program does not perform, so it is asked
+    # for both halves: the entry is there, and it says it is not installed.
     setup_ollama.shutil.which = lambda _name: None
     bare_entries, _bare_notes = setup_ollama._detect_engines(
         pt, which_fn=lambda _name: None)
     bare_keys = [key for key, _label in bare_entries]
-    check("ollama" not in bare_keys,
-          f"a machine with no Ollama is not offered Ollama (menu was {bare_keys})")
-    check(bare_keys[0] == "llamacpp",
-          "and the local engine it can actually install comes first")
+    check(bare_keys == ["llamacpp", "ollama", "api", "kaggle"],
+          f"the four sources are offered whatever this machine has "
+          f"(menu was {bare_keys})")
+    # Read rather than indexed, so that a menu which lost the entry reports the
+    # loss on every line that depended on it instead of ending the file in a
+    # traceback with the remaining checks unrun.
+    bare_ollama = dict(bare_entries).get("ollama")
+    check(bare_ollama == pt.t("engine.ollama.install"),
+          f"and the Ollama entry says it is not installed instead of promising "
+          f"an install this program does not do ({bare_ollama!r})")
+
+    # By effect, not by reading the label: choosing it on a machine with no
+    # Ollama has to land on the instructions and leave without writing a
+    # profile. An entry that leads nowhere is worse than no entry.
+    missing_config = root / "no-ollama.json"
+    printed = io.StringIO()
+    code = None
+    if bare_ollama is not None:
+        with redirect_stdout(printed):
+            code = setup_ollama.run_setup(
+                answers("1", "4", engine_answer("ollama", which=lambda _name: None)),
+                config_file=missing_config,
+            )
+    instructions = printed.getvalue()
+    check(code not in (None, 0) and "ollama.com" in instructions
+          and pt.t("ollama.missing.title") in instructions,
+          f"choosing it prints the official instructions and stops (code {code})")
+    check(not missing_config.exists()
+          or not config.load(missing_config).get("profiles"),
+          "and no profile is written for an engine that is not there")
+
+    # The same entry from the other screen, which reaches the instructions
+    # through a different path: /model does not ask the language or the task
+    # again, so an entry that works in setup can still land nowhere here.
+    model_missing = root / "no-ollama-model.json"
+    config.save(dict(config.empty_config(), language="pt-BR"), model_missing)
+    model_printed = io.StringIO()
+    model_code = None
+    try:
+        with redirect_stdout(model_printed):
+            model_code = setup_ollama.run_model_selector(
+                answers(source_answer("ollama", model_missing, pt,
+                                      which=lambda _name: None)),
+                config_file=model_missing,
+            )
+    except (AssertionError, StopIteration):
+        # Reported as a failed check below rather than as a traceback that
+        # would take the rest of this file with it.
+        pass
+    check(model_code not in (None, 0)
+          and pt.t("ollama.missing.title") in model_printed.getvalue(),
+          f"/model reaches the same instructions and comes back (code "
+          f"{model_code})")
 
     ollama_entries, ollama_notes = setup_ollama._detect_engines(
         pt, which_fn=lambda name: "/usr/bin/ollama" if name == "ollama" else None)
@@ -273,6 +322,30 @@ try:
         pt, which_fn=lambda _name: "/usr/bin/ollama")
     check("llamacpp" in [key for key, _label in setup_entries],
           "and setup offers the same engine, from the same detection")
+
+    # The same fixed menu on the other screen, on the same bare machine, and in
+    # both catalogues: a source offered in setup and missing from /model is the
+    # defect this pair of screens has already produced once.
+    for language in ("pt-BR", "en"):
+        catalogue = setup_ollama.Translator(language)
+        bare_source, bare_options, _bare_initial = setup_ollama.model_source_entries(
+            config.load(config_file), catalogue, which_fn=lambda _name: None)
+        bare_source_keys = [entry[0] if isinstance(entry, tuple) else entry
+                            for entry in bare_source]
+        check("ollama" in bare_source_keys and "llamacpp" in bare_source_keys,
+              f"/model in {language} offers both local engines with neither "
+              f"installed (got {bare_source_keys})")
+
+        # One engine, one name. The screen used to carry `llama.cpp local` and
+        # `Llama Server · qwen2.5-coder-3b` at once, which is one server listed
+        # twice under two names, and the second of them offered an install of
+        # what was already running.
+        aliases = ("llama.cpp", "llama-server", "llama server", "llamacpp")
+        wearing = [option for option in bare_options
+                   if sum(alias in option.casefold() for alias in aliases)]
+        check(not wearing,
+              f"and no entry names the local engine in the jargon of its build "
+              f"({wearing})")
 
     # A llama.cpp profile speaks the OpenAI protocol, so it lands in the same
     # config section as a remote endpoint. Offered as one, /model would try to
