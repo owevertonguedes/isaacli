@@ -23,6 +23,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+from fractions import Fraction
 import zipfile
 from pathlib import Path
 
@@ -48,6 +49,17 @@ DOWNLOAD_TIMEOUT = 600
 _DOWNLOAD_BLOCK_BYTES = 1 << 16
 
 SERVER_NAME = "llama-server"
+
+# --cache-type-k / --cache-type-v values llama.cpp accepts, mapped to the bytes
+# per cache element that type spends. f16 is what the server uses when neither
+# flag is given, so it is the reference the ceiling is measured against by
+# default. A q8_0 block stores 32 quantized values plus one f16 scale, so it
+# spends 34 bytes per 32 elements. That makes the KV cache smaller and lets a
+# fixed memory budget hold more context. That arithmetic is what
+# `context_ceiling` runs, not a claim about output quality, which this project
+# has not measured for either type.
+CACHE_TYPES = {"f16": 2, "q8_0": Fraction(34, 32)}
+DEFAULT_CACHE_TYPE = "f16"
 
 # llama-b10595-bin-ubuntu-vulkan-x64.tar.gz, and the same shape for every other
 # platform. The backend section is optional: a plain "ubuntu-x64" is the CPU
@@ -447,13 +459,19 @@ def preferred_device(devices, gpus=None):
     return next((device for device in devices if device["id"] in ours), devices[0])
 
 
-def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None):
+def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None,
+                    cache_type=DEFAULT_CACHE_TYPE):
     """How much context this machine can actually hold for this model.
 
     Returns (ceiling, reason). The ceiling is the smaller of what the weights
     leave room for and what the model was trained for, and the reason names
     which of the two won, because those are different problems: one is solved
     by a smaller quantization and the other cannot be solved at all.
+
+    `cache_type` is the KV cache precision this ceiling is measured at, one of
+    the keys in `CACHE_TYPES`. A quantized cache spends fewer bytes per token,
+    which is memory arithmetic, not a claim about what a smaller cache does to
+    output quality; nothing here measures that.
 
     This is the number a hand-written launch script cannot know. The one on
     this machine froze -c 8192 into place, and that single frozen value
@@ -464,6 +482,9 @@ def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None):
                if not model.get(key)]
     if missing:
         return (trained or 0), "unknown_geometry"
+    if cache_type not in CACHE_TYPES:
+        raise ValueError(f"unknown cache type: {cache_type!r}")
+    bytes_per_element = CACHE_TYPES[cache_type]
     overhead_mb = hardware.DEFAULT_OVERHEAD_MB if overhead_mb is None else overhead_mb
     # Free memory beats total memory when the driver reports it: a desktop
     # session already spent some of the card before this program asked.
@@ -471,6 +492,7 @@ def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None):
     room = hardware.max_context_that_fits(
         model["model_bytes"], model["n_layers"], model["n_kv_heads"],
         model["head_dim"], usable_mb, overhead_mb=overhead_mb,
+        bytes_per_element=bytes_per_element,
     )
     if not room:
         return 0, "does_not_fit"
@@ -480,7 +502,8 @@ def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None):
 
 
 def server_command(executable, model_path, context, device=None, host="127.0.0.1",
-                   port=8080, alias=None, gpu_layers=99):
+                   port=8080, alias=None, gpu_layers=99,
+                   cache_type_k=None, cache_type_v=None):
     """The exact invocation isaacli uses to serve a local model.
 
     Everything decided here was previously frozen in a shell script outside the
@@ -488,6 +511,12 @@ def server_command(executable, model_path, context, device=None, host="127.0.0.1
     and not a preference, it is what makes llama-server render the chat
     template out of the GGUF, which is the only reason a model can be talked to
     at all.
+
+    `cache_type_k` and `cache_type_v` are the KV cache precisions the caller
+    decided (see `context_ceiling`), one of the keys in `CACHE_TYPES`. Left
+    None, llama-server keeps its own default, f16, and neither flag is
+    emitted; a caller that knows the profile's cache type passes it so the
+    running server matches the ceiling that was shown for it.
     """
     command = [str(executable), "-m", str(model_path)]
     if alias:
@@ -497,6 +526,12 @@ def server_command(executable, model_path, context, device=None, host="127.0.0.1
     command += [
         "-ngl", str(gpu_layers),
         "-c", str(int(context)),
+    ]
+    if cache_type_k:
+        command += ["--cache-type-k", str(cache_type_k)]
+    if cache_type_v:
+        command += ["--cache-type-v", str(cache_type_v)]
+    command += [
         "--host", str(host), "--port", str(port),
         "--jinja",
     ]

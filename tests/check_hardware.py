@@ -7,6 +7,7 @@ the same on a machine with a GPU, without one, and with a broken nvidia-smi.
 import re
 import subprocess
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -94,6 +95,10 @@ check(hardware.kv_cache_bytes(48, 4, 128, 8192) == gqa * 2,
       "doubling the context doubles the cache")
 check(hardware.kv_cache_bytes(48, 4, 128, 4096, bytes_per_element=1) == gqa // 2,
       "a one-byte KV element halves the cache")
+q8 = hardware.kv_cache_bytes(
+    48, 4, 128, 4096, bytes_per_element=Fraction(34, 32))
+check(q8 == 213909504,
+      f"q8_0 charges 34 bytes per 32 elements without early truncation ({q8})")
 
 GB = 1024 ** 3
 # 4 GB card, 768 MB overhead: 3328 MB usable.
@@ -105,6 +110,12 @@ check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096, overhead_mb=0) is True,
       "the overhead is what decides that borderline case, and it is a parameter")
 check(hardware.fits(1, 0, 100) is False,
       "a card smaller than the overhead fits nothing instead of going negative")
+
+q8_context = hardware.max_context_that_fits(
+    2_497_281_120, 36, 8, 128, 4096,
+    bytes_per_element=Fraction(34, 32))
+check(q8_context == 12668,
+      f"the exact q8_0 fraction is kept through the final context floor ({q8_context})")
 
 empty = hardware.summarise([])
 check(empty == {"vram_mb": 0, "gpu_count": 0, "bandwidth_gbs": None, "name": None},

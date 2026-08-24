@@ -472,6 +472,28 @@ check(not hardware.fits(model["model_bytes"],
                         hardware.kv_cache_bytes(36, 8, 128, ceiling + 1), 4096),
       "and it is the largest one that does, not a cautious fraction of it")
 
+# q8_0 stores 32 values plus one f16 scale, not one byte per value. These are
+# the exact file sizes and geometries behind the two numbers that exposed the
+# bug. The old one-byte estimate returned 13,460 and 15,225 tokens.
+qwen3_4b = {"model_bytes": 2_497_281_120, "n_layers": 36,
+            "n_kv_heads": 8, "head_dim": 128, "context_length": 32768}
+phi4_mini = {"model_bytes": 2_491_874_272, "n_layers": 32,
+             "n_kv_heads": 8, "head_dim": 128, "context_length": 131072}
+qwen_f16 = llama_cpp.context_ceiling(
+    qwen3_4b, vram_mb=4096, cache_type="f16")[0]
+qwen_q8 = llama_cpp.context_ceiling(
+    qwen3_4b, vram_mb=4096, cache_type="q8_0")[0]
+phi_f16 = llama_cpp.context_ceiling(
+    phi4_mini, vram_mb=4096, cache_type="f16")[0]
+phi_q8 = llama_cpp.context_ceiling(
+    phi4_mini, vram_mb=4096, cache_type="q8_0")[0]
+check((qwen_f16, qwen_q8) == (6730, 12668),
+      f"Qwen3-4B recalculates from 6,730 f16 to 12,668 q8_0 tokens "
+      f"({qwen_f16}, {qwen_q8})")
+check((phi_f16, phi_q8) == (7612, 14329),
+      f"Phi-4-mini recalculates from 7,612 f16 to 14,329 q8_0 tokens "
+      f"({phi_f16}, {phi_q8})")
+
 ceiling, reason = llama_cpp.context_ceiling(model, vram_mb=24576)
 check((ceiling, reason) == (32768, "trained"),
       "a card with room stops at what the model was trained for, and says so")
@@ -505,12 +527,16 @@ check(tight < llama_cpp.context_ceiling(model, vram_mb=4096)[0],
       "the context is decided against memory that is actually free, when that is known")
 
 command = llama_cpp.server_command(
-    "/bin/llama-server", "/models/x.gguf", 16384, device="Vulkan1", alias="x")
+    "/bin/llama-server", "/models/x.gguf", 16384, device="Vulkan1", alias="x",
+    cache_type_k="q8_0", cache_type_v="q8_0")
 check(command[:3] == ["/bin/llama-server", "-m", "/models/x.gguf"]
       and "--jinja" in command and "-c" in command
       and command[command.index("-c") + 1] == "16384"
       and command[command.index("-dev") + 1] == "Vulkan1",
       "the launch command carries the chosen context, the chosen device and --jinja")
+check(command[command.index("--cache-type-k") + 1] == "q8_0"
+      and command[command.index("--cache-type-v") + 1] == "q8_0",
+      "the launch command carries the cache type used for its context ceiling")
 
 # --- the table the choice is actually made on -------------------------------
 
@@ -518,6 +544,13 @@ import setup_llamacpp
 from i18n import Translator
 
 tr = Translator("en")
+pt = Translator("pt-BR")
+check("half" not in tr.t("llamacpp.cache.option.q8_0", context="12.7K").casefold()
+      and "double" not in tr.t("llamacpp.cache.explain").casefold(),
+      "the cache screen promises only a smaller cache and more context")
+check("metade" not in pt.t("llamacpp.cache.option.q8_0", context="12,7K").casefold()
+      and "dobro" not in pt.t("llamacpp.cache.explain").casefold(),
+      "the Portuguese cache screen makes the same bounded promise")
 GTX1650, OVERHEAD = 4096, 768
 gtx = model_discovery.machine(vram_mb=GTX1650, gpu_count=1,
                               bandwidth_gbs=128.0, name="NVIDIA GeForce GTX 1650")
@@ -820,20 +853,29 @@ check(llama_cpp.preferred_device([integrated, discrete], cards) is discrete,
 device_screens = []
 original_device_select = setup_llamacpp.terminal_ui.select
 original_list_devices = llama_cpp.list_devices
+original_gpus = hardware.gpus
+real_gpu_queries = []
 try:
     llama_cpp.list_devices = lambda _executable: [integrated, discrete]
+    hardware.gpus = lambda: real_gpu_queries.append(True) or []
     setup_llamacpp.terminal_ui.select = lambda title, options, **kwargs: (
         device_screens.append(options) or 0)
-    setup_llamacpp.choose_device(tr, lambda _prompt="": "", "llama-server")
+    setup_llamacpp.choose_device(
+        tr, lambda _prompt="": "", "llama-server", gpus=cards)
 finally:
     llama_cpp.list_devices = original_list_devices
+    hardware.gpus = original_gpus
     setup_llamacpp.terminal_ui.select = original_device_select
 rows = device_screens[-1]
+check(not real_gpu_queries,
+      f"the offline device check never queries the machine's real GPU ({real_gpu_queries})")
 check("1.5 of 4.2 GiB free" in rows[1],
       f"the row states free and total, so a card is never reported as smaller "
       f"than it is ({rows[1]})")
-check("system RAM" in rows[0] and "system RAM" not in rows[1],
+check("system RAM" in rows[0],
       f"and borrowed system memory is named on the row that borrows it ({rows[0]})")
+check("system RAM" not in rows[1],
+      f"and dedicated memory is not mislabeled as borrowed ({rows[1]})")
 
 # Everything on those screens is read off the card, and the server this session
 # started for the outgoing model is still holding it. Measured around it, this

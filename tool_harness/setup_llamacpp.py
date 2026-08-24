@@ -536,7 +536,7 @@ def choose_model(tr, input_fn, config_file=None,
 
 # --- device and context -----------------------------------------------------
 
-def choose_device(tr, input_fn, executable):
+def choose_device(tr, input_fn, executable, gpus=None):
     """Which compute device serves this model, offered rather than assumed.
 
     The launch script on the developer's machine names -dev Vulkan1 by hand,
@@ -552,12 +552,12 @@ def choose_device(tr, input_fn, executable):
         return None
     if len(devices) == 1:
         return devices[0]["id"]
-    preferred = llama_cpp.preferred_device(devices)
+    preferred = llama_cpp.preferred_device(devices, gpus)
     # Free without total made a 4 GB card read as a 1.5 GB one, under an
     # integrated GPU claiming 7.4 GiB of borrowed system RAM: the row said the
     # discrete card was the smaller device. Both numbers, and the row says which
     # of them is memory of its own.
-    dedicated = llama_cpp.dedicated_devices(devices)
+    dedicated = llama_cpp.dedicated_devices(devices, gpus)
     options = [
         _t(tr, "llamacpp.device.option" if item["id"] in dedicated
               else "llamacpp.device.option.shared",
@@ -573,19 +573,60 @@ def choose_device(tr, input_fn, executable):
     return devices[index]["id"] if index < len(devices) else None
 
 
+def _choose_cache_type(tr, input_fn, ceilings):
+    """Offer the KV cache precision, only when it actually changes the ceiling.
+
+    `ceilings` maps each key in `llama_cpp.CACHE_TYPES` to the ceiling
+    `context_ceiling` computed for it. When quantizing the cache does not move
+    the ceiling, nothing here is worth a screen, and f16 is kept without
+    asking. When it does, this shows both budgets side by side and says the
+    one thing this project actually knows about the trade: less memory, more
+    context, and no measurement of what it costs in quality.
+
+    Returns the chosen cache type key, or None if the user backed out.
+    """
+    if ceilings.get("q8_0", 0) <= ceilings.get("f16", 0):
+        return llama_cpp.DEFAULT_CACHE_TYPE
+    options = [
+        _t(tr, "llamacpp.cache.option.f16",
+           context=_short_context(ceilings["f16"])),
+        _t(tr, "llamacpp.cache.option.q8_0",
+           context=_short_context(ceilings["q8_0"])),
+        _t(tr, "navigation.back"),
+    ]
+    index = _select(tr, _t(tr, "llamacpp.cache.title"), options, input_fn,
+                    _t(tr, "llamacpp.cache.explain"))
+    return ["f16", "q8_0", None][index]
+
+
 def choose_context(tr, input_fn, model, device_free_mb=None):
     """Offer a context this machine can actually hold, and say what capped it.
 
     This is the number that stopped being a stranger's decision. The script
     outside this repository froze -c 8192, which falsified two of this
     project's own measurements before anybody noticed it was there.
+
+    Returns (context, cache_type), or None if the user backed out at either
+    step.
     """
     from setup_ollama import _choose_context
 
     vram_mb, gpu_count = model_discovery.local_vram()
     overhead_mb = hardware.overhead_mb(gpu_count)
-    ceiling, reason = llama_cpp.context_ceiling(
-        model, vram_mb, overhead_mb=overhead_mb, device_free_mb=device_free_mb)
+    ceilings = {}
+    reasons = {}
+    for cache_type in llama_cpp.CACHE_TYPES:
+        ceiling, reason = llama_cpp.context_ceiling(
+            model, vram_mb, overhead_mb=overhead_mb,
+            device_free_mb=device_free_mb, cache_type=cache_type)
+        ceilings[cache_type] = ceiling
+        reasons[cache_type] = reason
+
+    cache_type = _choose_cache_type(tr, input_fn, ceilings)
+    if cache_type is None:
+        return None
+    ceiling, reason = ceilings[cache_type], reasons[cache_type]
+
     # Named one by one rather than built from `reason`. A key assembled by
     # interpolation is a key no scan can find, and this project's catalogue
     # check exists precisely to catch a string that no screen appears to ask
@@ -597,7 +638,10 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
         say(_t(tr, "llamacpp.context.capped.memory", context=shown))
     elif reason == "trained":
         say(_t(tr, "llamacpp.context.capped.trained", context=shown))
-    return _choose_context(ceiling or None, input_fn, tr)
+    context = _choose_context(ceiling or None, input_fn, tr)
+    if context is None:
+        return None
+    return context, cache_type
 
 
 # --- saving the profile -----------------------------------------------------
@@ -607,20 +651,27 @@ def _profile_name(model):
     return f"llamacpp-{slug or 'model'}"
 
 
-def save_profile(data, model, executable, context, device, port, alias=None):
+def save_profile(data, model, executable, context, device, port, alias=None,
+                 cache_type=None):
     """Write the profile, with the launch command this program decided.
 
     Saved as openai_compatible with an autostart, which is the same shape the
     developer's own hand-made profile already has. The difference is that every
     number in the command was measured here rather than typed once into a file
     outside the repository.
+
+    `cache_type` is stored next to `num_ctx` because it is a decision at the
+    same level: per model, per card. Left None, this records the runtime's own
+    default, f16, so the profile always says which precision the ceiling on
+    screen was measured against.
     """
     from setup_ollama import LLAMACPP_PROVIDER_NAME
 
     alias = alias or model["name"]
+    cache_type = cache_type or llama_cpp.DEFAULT_CACHE_TYPE
     command = llama_cpp.server_command(
         executable, model["path"], context, device=device, port=port,
-        alias=alias)
+        alias=alias, cache_type_k=cache_type, cache_type_v=cache_type)
     base_url = f"http://127.0.0.1:{port}/v1"
     name = _profile_name(model)
     data.setdefault("profiles", {})[name] = {
@@ -631,6 +682,7 @@ def save_profile(data, model, executable, context, device, port, alias=None):
         "thinking": None,
         "temperature": 0,
         "num_ctx": context,
+        "cache_type": cache_type,
         "context_limit": model.get("context_length"),
         "weights": model["path"],
         "autostart": {"cmd": command, "health_url": base_url + "/models"},
@@ -674,9 +726,10 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
                 free_mb = item.get("free_mb")
     except llama_cpp.InstallError:
         debug.swallowed("setup_llamacpp.run free memory")
-    context = choose_context(tr, input_fn, model, device_free_mb=free_mb)
-    if context is None:
+    chosen = choose_context(tr, input_fn, model, device_free_mb=free_mb)
+    if chosen is None:
         return "__engine__"
+    context, cache_type = chosen
     port = free_port()
     if port is None:
         say(_t(tr, "llamacpp.port.none", base=BASE_PORT))
@@ -686,6 +739,7 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     if onboarding_task is not None and onboarding_task is not _UNCHANGED:
         _store_onboarding(data, onboarding_task)
     remember_folder(data, model)
-    save_profile(data, model, executable, context, device, port)
+    save_profile(data, model, executable, context, device, port,
+                cache_type=cache_type)
     config.save(data, config_file)
     return 0
