@@ -310,7 +310,17 @@ def _authenticated_username(executable, run_fn=subprocess.run, env=None):
     result = _run_capture([str(executable), "config", "view"], run_fn, env)
     match = re.search(
         r"(?:username:\s*|- username:\s*)([^\s]+)", result.stdout or "", re.I)
-    if result.returncode != 0 or not match:
+    if result.returncode != 0:
+        # The CLI's own stderr is the only place the reason lives: a refused
+        # token answers 401 here, a broken install answers something else, and
+        # collapsing both into "no username" named the credential for whatever
+        # had actually happened. `_quota` and `_kernel_refs` already carry the
+        # CLI's answer through, and this is the same contract.
+        raise RuntimeError(t(
+            "cli.kaggle.username.error",
+            error=(result.stderr or result.stdout or "").strip()
+            or t("cli.kaggle.username.silent")))
+    if not match:
         raise RuntimeError(t("cli.kaggle.username.failed"))
     return match.group(1)
 
@@ -725,7 +735,9 @@ def _kernel_refs(executable, run_fn=subprocess.run, env=None):
             "--page", str(page), "--page-size", "100",
         ], run_fn, env)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout).strip())
+            raise RuntimeError(t(
+                "cli.kaggle.kernels.list.failed",
+                error=(result.stderr or result.stdout or "").strip()))
         rows = list(csv.DictReader(io.StringIO(result.stdout)))
         page_refs = [row.get("ref") or row.get("Ref") for row in rows]
         refs.extend(ref for ref in page_refs if ref)
@@ -752,7 +764,8 @@ def live_kernels(executable, run_fn=subprocess.run, env=None):
             if "GetKernelSessionStatus" in output and "404" in output:
                 debug.note(f"cli_kaggle.live_kernels {ref}", output)
                 continue
-            raise RuntimeError(output)
+            raise RuntimeError(t(
+                "cli.kaggle.kernels.status.failed", ref=ref, error=output))
         state = next((name for name in TERMINAL_STATES if name in output.upper()), None)
         if state is None:
             live.append((ref, output))
@@ -1002,7 +1015,9 @@ def _dataset_refs(executable, run_fn=subprocess.run, env=None):
             "--page", str(page), "--page-size", "100",
         ], run_fn, env)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout).strip())
+            raise RuntimeError(t(
+                "cli.kaggle.datasets.list.failed",
+                error=(result.stderr or result.stdout or "").strip()))
         rows = list(csv.DictReader(io.StringIO(result.stdout)))
         for row in rows:
             ref = row.get("ref") or row.get("Ref")

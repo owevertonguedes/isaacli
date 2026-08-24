@@ -1588,14 +1588,71 @@ def refused_run(command, check=False, capture_output=False, text=False, env=None
 
 # A kernel we cannot ask about might be spending quota right now, so anything
 # that is not the session-less answer still stops the flow.
-still_raises = False
+still_raises = ""
 try:
     with redirect_stdout(io.StringIO()):
         cli_kaggle.live_kernels(Path("/fake/kaggle"), refused_run)
-except RuntimeError:
-    still_raises = True
-check(still_raises,
+except RuntimeError as error:
+    still_raises = str(error)
+check(bool(still_raises),
       "a status failure that is not a missing session still stops the flow")
+
+# ----------------------------------------------------------------------
+# The three ways this flow can end before a kernel is pushed, and what each
+# of them puts on screen. A launch of his ended right here and the screen
+# said nothing usable, because the step that failed threw away the CLI's own
+# answer and named the credential instead. Every one of these is driven with
+# the failure planted, and read for the reason the CLI gave, not for a
+# refusal string: a message that always blames the token passes a test that
+# only looks for the word.
+# ----------------------------------------------------------------------
+def unauthorised_run(command, check=False, capture_output=False, text=False,
+                     env=None, **kwargs):
+    return SimpleNamespace(
+        returncode=1, stdout="",
+        stderr="401 Client Error: Unauthorized for url: https://api.kaggle.com")
+
+
+config_view_error = ""
+try:
+    cli_kaggle._authenticated_username(Path("/fake/kaggle"), unauthorised_run)
+except RuntimeError as error:
+    config_view_error = str(error)
+check("401" in config_view_error and "Unauthorized" in config_view_error
+      and "config view" in config_view_error,
+      "a refused config view carries the CLI's own reason, not a guess at it")
+
+
+def nameless_run(command, check=False, capture_output=False, text=False,
+                 env=None, **kwargs):
+    return SimpleNamespace(returncode=0, stdout="key: value\n", stderr="")
+
+
+nameless_error = ""
+try:
+    cli_kaggle._authenticated_username(Path("/fake/kaggle"), nameless_run)
+except RuntimeError as error:
+    nameless_error = str(error)
+check(nameless_error and "401" not in nameless_error,
+      "a config view that answers without a username stays its own message")
+
+
+def unlistable_run(command, check=False, capture_output=False, text=False,
+                   env=None, **kwargs):
+    return SimpleNamespace(returncode=1, stdout="", stderr="500 Server Error")
+
+
+listing_error = ""
+try:
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.live_kernels(Path("/fake/kaggle"), unlistable_run)
+except RuntimeError as error:
+    listing_error = str(error)
+check("kernels list" in listing_error and "500 Server Error" in listing_error,
+      "a listing failure names the command that failed and what it answered")
+
+check("user/one" in still_raises and "403 Forbidden" in still_raises,
+      "a status failure names the kernel it could not ask about")
 
 # ----------------------------------------------------------------------
 # The session lifecycle: what isaacli starts on Kaggle, isaacli ends.
