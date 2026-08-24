@@ -372,16 +372,16 @@ else:
 
 # --- recognising whose llama-server this is ----------------------------------
 
-found, owner = llama_cpp.find_server(record_path=record_path, home_dir=install_home)
+found, owner = llama_cpp.find_server(record_path=record_path)
 check(owner == "isaacli" and found == result["executable"],
       "the build this program installed is recognised as ours")
 found, owner = llama_cpp.find_server(
-    record_path=root / "absent.json", home_dir=root / "absent",
+    record_path=root / "absent.json",
     which_fn=lambda name: "/usr/bin/llama-server")
 check(owner == "user" and str(found) == "/usr/bin/llama-server",
       "a llama-server the user already had is used, and never claimed as ours")
 found, owner = llama_cpp.find_server(
-    record_path=root / "absent.json", home_dir=root / "absent",
+    record_path=root / "absent.json",
     which_fn=lambda name: None)
 check((found, owner) == (None, None),
       "no llama-server anywhere is an answer, not a failure")

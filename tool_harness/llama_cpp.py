@@ -496,7 +496,7 @@ def server_command(executable, model_path, context, device=None, host="127.0.0.1
     return command
 
 
-def installed(record_path=None, home_dir=None):
+def installed(record_path=None):
     """The llama.cpp this program installed, or None.
 
     Reads the record rather than looking for a binary: a llama-server found on
@@ -521,14 +521,14 @@ def installed(record_path=None, home_dir=None):
     return data
 
 
-def find_server(record_path=None, home_dir=None, which_fn=shutil.which):
+def find_server(record_path=None, which_fn=shutil.which):
     """A usable llama-server and who it belongs to.
 
     Returns (path, owner) with owner "isaacli" or "user", or (None, None). The
     user's own build wins nothing and loses nothing by being found here; it is
     simply used as it is, and never recorded as ours.
     """
-    ours = installed(record_path, home_dir)
+    ours = installed(record_path)
     if ours:
         return ours["executable"], "isaacli"
     found = which_fn(SERVER_NAME)

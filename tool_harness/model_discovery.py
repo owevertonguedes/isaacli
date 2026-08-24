@@ -593,7 +593,7 @@ def local_measurement(model):
         model.get("catalog") or {}).get("measured_here")
 
 
-def throughput_cell(model, machine_profile, translate=None, fits=None):
+def throughput_cell(model, machine_profile, fits=None):
     """Tokens per second as a bare number, or a dash.
 
     No word inside the cell. A column of numbers each carrying "measured" or
@@ -732,7 +732,7 @@ def model_row(model, machine_profile=None, translate=None, fit=None, state=None,
         # `fits` is the yes/no behind the fit cell, which is text a screen chose
         # and cannot be read back. The throughput needs the answer, not the
         # wording: an estimate is only about a model the card actually holds.
-        "tps": throughput_cell(model, machine_profile, translate, fits),
+        "tps": throughput_cell(model, machine_profile, fits),
         "rankings": ranking_cell(model, translate) or EMPTY_CELL,
         "state": EMPTY_CELL if state is None else state,
         # Read by model_table for the legend, never drawn as a column.

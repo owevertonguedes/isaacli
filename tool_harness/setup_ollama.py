@@ -137,7 +137,7 @@ def parse_context(texto):
         return 0
 
 
-def _title(tr, title, explanation=None):
+def _title(title, explanation=None):
     parts = [title]
     if explanation:
         parts.extend(("", explanation))
@@ -147,7 +147,7 @@ def _title(tr, title, explanation=None):
 def _select(tr, title, options, input_fn=input, explanation=None, initial=0,
                 disabled=None):
     return terminal_ui.select(
-        _title(tr, title, explanation), options, input_fn=input_fn,
+        _title(title, explanation), options, input_fn=input_fn,
         prompt=tr.t("select.prompt"), invalid=tr.t("select.invalid"), initial=initial,
         disabled=disabled,
         more_above=tr.t("ui.more_above", count="{count}"),
@@ -768,7 +768,7 @@ def _choose_context(limit, input_fn, tr):
     if index < len(levels):
         return levels[index][1]
     while True:
-        print(_title(tr, tr.t("context.title"), explanation))
+        print(_title(tr.t("context.title"), explanation))
         value = parse_context(input_fn(tr.t("context.manual.prompt")))
         if value >= MIN_CONTEXT and (not limit or value <= limit):
             return value
@@ -880,7 +880,7 @@ def _ask_autostart(base_url, input_fn, tr):
     Only offered for a local endpoint: there is nothing to start on a machine
     that is not this one. An empty answer keeps the previous behaviour, where
     the user starts the server before opening isaacli."""
-    print(_title(tr, tr.t("api.autostart.title"), tr.t("api.autostart.explain")))
+    print(_title(tr.t("api.autostart.title"), tr.t("api.autostart.explain")))
     raw = input_fn(tr.t("api.autostart.prompt")).strip()
     if not raw:
         return None
@@ -903,7 +903,7 @@ def _setup_api(language, input_fn, config_file, tr, onboarding_task=_UNCHANGED):
         explanation = tr.t("api.explain")
         if field_error:
             explanation += "\n\n" + field_error
-        print(_title(tr, tr.t("api.title"), explanation))
+        print(_title(tr.t("api.title"), explanation))
         field_error = None
         name = input_fn(tr.t("api.name.prompt")).strip()
         base_url = input_fn(tr.t("api.url.prompt")).strip()

@@ -76,12 +76,14 @@ def free_port(base=BASE_PORT, attempts=PORT_ATTEMPTS, is_free=None):
 
 # --- getting a server -------------------------------------------------------
 
-def _install_plan(tr, input_fn, urlopen_fn=urllib.request.urlopen):
-    """Show what would be installed, from where, and ask.
+def _install_plan(tr, urlopen_fn=urllib.request.urlopen):
+    """What would be installed and from where, for the screen that asks.
 
-    Nothing is downloaded before this screen is answered. What it names is the
+    Nothing is downloaded before that screen is answered. What it names is the
     exact asset, its size and the backend, because "install llama.cpp" without
-    those three is asking somebody to approve something they cannot see.
+    those three is asking somebody to approve something they cannot see. The
+    asking is `ensure_server`'s, and this used to take the `input_fn` for it
+    and never call it.
     """
     try:
         tag, assets = llama_cpp.available_builds(urlopen_fn=urlopen_fn)
@@ -106,8 +108,7 @@ def _install_plan(tr, input_fn, urlopen_fn=urllib.request.urlopen):
     return asset, tag
 
 
-def ensure_server(tr, input_fn, config_file=None,
-                  urlopen_fn=urllib.request.urlopen):
+def ensure_server(tr, input_fn, urlopen_fn=urllib.request.urlopen):
     """A llama-server to serve with, installing one only after being told to.
 
     Returns (executable, owner) or (None, None). A llama-server the user
@@ -117,7 +118,7 @@ def ensure_server(tr, input_fn, config_file=None,
     if executable:
         return executable, owner
 
-    plan = _install_plan(tr, input_fn, urlopen_fn)
+    plan = _install_plan(tr, urlopen_fn)
     if plan is None:
         return None, None
     asset, tag = plan
@@ -233,7 +234,7 @@ def _add_directory(tr, input_fn, config_file=None):
     return True
 
 
-def _download_from_hub(tr, input_fn, config_file=None,
+def _download_from_hub(tr, input_fn,
                        urlopen_fn=urllib.request.urlopen):
     """Resolve an exact Hugging Face reference and fetch its weights here."""
     from setup_ollama import MODEL_CATALOG_PATH
@@ -332,7 +333,7 @@ def choose_model(tr, input_fn, config_file=None,
             _add_directory(tr, input_fn, config_file)
             continue
         if chosen == "__hub__":
-            chosen = _download_from_hub(tr, input_fn, config_file, urlopen_fn)
+            chosen = _download_from_hub(tr, input_fn, urlopen_fn)
             if chosen is None:
                 continue
         if chosen.get("geometry_missing"):
@@ -457,7 +458,7 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     """The whole local path: a server, a model, a device, a context, a profile."""
     from setup_ollama import _store_onboarding, _UNCHANGED
 
-    executable, _owner = ensure_server(tr, input_fn, config_file, urlopen_fn)
+    executable, _owner = ensure_server(tr, input_fn, urlopen_fn)
     if executable is None:
         return "__engine__"
     model = choose_model(tr, input_fn, config_file, urlopen_fn)
