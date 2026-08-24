@@ -139,7 +139,6 @@ DECLARED = {
 # Names that look like a limit on what reaches the model. Deliberately narrow:
 # a scan that flags everything gets switched off, and one that flags the family
 # of defects that caused this already earns its place.
-_LIMIT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _LIMIT_WORDS = ("BYTES", "LIMIT", "SHARE", "CHARS_PER", "CONTEXT")
 _ASSIGNMENT = re.compile(r"^([A-Z][A-Z0-9_]*)\s*=\s*[-0-9]")
 

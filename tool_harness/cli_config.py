@@ -42,10 +42,6 @@ ORIGIN_HAND = "cli.config.origin.hand"
 ORIGIN_UNSET = "cli.config.origin.unset"
 ORIGIN_INHERITED = "cli.config.origin.inherited"
 
-# Recorded next to the value itself, so the next reader can tell a choice from
-# an edit without having to remember this session.
-SET_HERE = "isaacli"
-
 
 def _origin(item, key, unset=ORIGIN_UNSET):
     """Whether a profile value was chosen on this screen or written by hand."""
