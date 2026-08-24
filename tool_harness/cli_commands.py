@@ -223,10 +223,10 @@ class CommandsMixin:
                     self.apply_profile(item)
                     source = t("cli.model.source.profile", name=arg)
                 else:
-                    self.model = arg
-                    self.thinking = None
-                    self.num_ctx = None
-                    self.provider = {"provider": "ollama"}
+                    # A bare name is a profile that chose nothing but the
+                    # model, so it goes through the same door: whatever the
+                    # last profile chose belonged to the model being replaced.
+                    self.apply_profile({"model": arg})
                     source = t("cli.model.source.ollama")
                 self._log("meta", event="model", model=self.model,
                           thinking=self.thinking)

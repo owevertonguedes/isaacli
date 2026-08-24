@@ -535,6 +535,18 @@ with redirect_stdout(out):
     cli.internal_command("/model other")
 check(cli.model == "other", "/model swaps the model")
 
+# A bare model name is not a profile, and what the previous profile chose does
+# not survive it. The temperature was the field that did: it was the one the
+# four-line version of this branch did not clear, so a model picked by name
+# ran at a temperature chosen for a different model.
+leftover = app.IsaacCLI("m", sub, 4, autostart_ollama=False,
+                        thinking="high", num_ctx=8192, temperature=0.7)
+with redirect_stdout(io.StringIO()):
+    leftover.internal_command("/model bare-name")
+check((leftover.model, leftover.thinking, leftover.num_ctx,
+       leftover.temperature) == ("bare-name", None, None, None),
+      "a model named by hand starts from nothing, temperature included")
+
 setup_config = root / "config-setup.json"
 cli_setup = app.IsaacCLI(
     "old-model", sub, 4, autostart_ollama=False, config_file=setup_config,
