@@ -216,7 +216,7 @@ only lets *that job's* VM allow the same unprivileged user namespace calls a
 contributor's own machine already allows.
 
 `tests/check_sandbox.py` also runs in CI and proves the mount policy
-(`~/.ssh`, the real `DevTools` tree, and similar host paths never getting
+(`~/.ssh`, the user's own project trees, and similar host paths never getting
 bound in) independently of `bwrap`, so that coverage exists even on a host
 where `bwrap` cannot run at all.
 

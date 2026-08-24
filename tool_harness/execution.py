@@ -135,7 +135,7 @@ DELIBERATE EXCEPTION: `graphify query/path/explain/diagnose` is allowed for
 querying `graphify-out/graph.json` maps. For the binary to work, the jail mounts
 read-only just the Graphify `uv tool` and the embedded Python it uses. That
 creates parent paths such as `/home/user`, but it does not mount the real home,
-`.ssh`, DevTools, histories or credentials.
+`.ssh`, the user's other project trees, histories or credentials.
 
 PROCESS NOTE: whoever writes the jail cannot be whoever already proved they do
 not respect the jail. That is why the tests in `check_execution.py` try to
@@ -1202,9 +1202,8 @@ def _missing_program_note(err: str):
     login shell snapshot, exactly the set `_path_entries` mounted from. So the
     note may claim about that PATH and about nothing else. Saying "not installed on this
     machine" was false in exactly the two cases that opened the task: measured
-    on 2026-08-23, cargo is on this machine under
-    `DevTools/workspace/036/toolchains`, and yarn 1.22.22 is in three npx
-    caches, neither of them on the PATH. That is the same category of error the
+    on 2026-08-23, cargo was installed under a project tree of its own and
+    yarn 1.22.22 sat in three npx caches, with neither on the PATH. That is the same category of error the
     note exists to remove, made by the note itself, so both branches below
     speak only of the PATH.
 

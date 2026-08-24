@@ -86,9 +86,9 @@ print("\n=== 2b. a program that is missing says WHICH kind of missing ===")
 # `shutil.which`, which looks at ONE thing, the PATH isaacli was started with.
 # So it may claim about that PATH and never about the machine. The first version
 # of this note said "not installed on this machine", which was false for exactly
-# the two tools that opened the task: on 2026-08-23 cargo was found under
-# DevTools/workspace/036/toolchains and yarn 1.22.22 in three npx caches, with
-# neither on the PATH. A note that overclaims is the defect, not a wording nit.
+# the two tools that opened the task: on 2026-08-23 cargo was found under a
+# project tree of its own and yarn 1.22.22 in three npx caches, with neither on
+# the PATH. A note that overclaims is the defect, not a wording nit.
 ABOUT_THE_MACHINE = (
     "not installed on this machine",
     "DOES exist on this machine",

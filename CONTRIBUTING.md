@@ -95,7 +95,7 @@ container to exercise install and purge without touching your own HOME.
   produced.
 - **English for identifiers, comments and docstrings**, and every
   user-facing string through `i18n.py` with a key in both
-  `locales/en.json` and `locales/pt-BR.json`. Text the *model* reads
+  `tool_harness/locales/en.json` and `tool_harness/locales/pt-BR.json`. Text the *model* reads
   (system prompts, tool descriptions, tool results, sandbox refusals)
   stays English regardless of the interface language: it is a contract
   with the model, not a user preference.

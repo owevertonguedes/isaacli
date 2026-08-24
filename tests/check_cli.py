@@ -966,7 +966,7 @@ check(any(len(line) > wrap_width for line in code_lines),
       "a code block is never rewrapped")
 
 # An unbreakable word is left whole on its own line instead of being cut.
-long_path = "/home/weverton/um/caminho/muito/longo/que/nao/pode/ser/cortado.txt"
+long_path = "/home/user/um/caminho/muito/longo/que/nao/pode/ser/cortado.txt"
 path_lines = visible_lines(app._format_markdown_terminal(
     "final " + long_path, colors=True, width=wrap_width))
 check(path_lines == ["final", long_path],
