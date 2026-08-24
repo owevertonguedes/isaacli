@@ -577,13 +577,13 @@ def machine(vram_mb=None, gpu_count=None, bandwidth_gbs=None, name=None):
     the model will run on a T4 is worse than quoting nothing.
     """
     if vram_mb is None or gpu_count is None:
-        found = hardware.detect().get("gpus") or []
-        vram_mb = sum(item.get("vram_mb", 0) for item in found)
-        gpu_count = len(found)
-        if bandwidth_gbs is None and len(found) == 1:
-            bandwidth_gbs = found[0].get("bandwidth_gbs")
-        if name is None and found:
-            name = found[0].get("name")
+        local = hardware.summarise(hardware.detect().get("gpus"))
+        vram_mb = local["vram_mb"]
+        gpu_count = local["gpu_count"]
+        if bandwidth_gbs is None:
+            bandwidth_gbs = local["bandwidth_gbs"]
+        if name is None:
+            name = local["name"]
     return {"vram_mb": vram_mb or 0, "gpu_count": gpu_count or 0,
             "bandwidth_gbs": bandwidth_gbs, "name": name}
 
@@ -887,8 +887,8 @@ def order_for_task(models, task):
 
 
 def local_vram():
-    gpus = hardware.detect().get("gpus") or []
-    return sum(item.get("vram_mb", 0) for item in gpus), len(gpus)
+    local = hardware.summarise(hardware.detect().get("gpus"))
+    return local["vram_mb"], local["gpu_count"]
 
 
 def ollama_reference(model):

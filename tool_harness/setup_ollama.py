@@ -392,17 +392,10 @@ def _row_machine(profile):
     """The card the suggestion rows are drawn against: this machine's.
 
     One profile for the whole list, because the column heading names the card
-    once. Bandwidth is only carried when there is exactly one card: two cards
-    do not add their buses together for a single decode loop, and summing them
-    would inflate every number in the column.
+    once. What counts as one machine's worth of cards, including which of them
+    lends its bandwidth to the estimate, is `hardware.summarise`.
     """
-    gpus = [item for item in profile.get("gpus") or [] if isinstance(item, dict)]
-    return model_discovery.machine(
-        vram_mb=sum(int(item.get("vram_mb") or 0) for item in gpus),
-        gpu_count=len(gpus),
-        bandwidth_gbs=gpus[0].get("bandwidth_gbs") if len(gpus) == 1 else None,
-        name=gpus[0].get("name") if gpus else None,
-    )
+    return model_discovery.machine(**hardware.summarise(profile.get("gpus")))
 
 
 def _catalog_row_name(reference):
@@ -448,11 +441,8 @@ def _resolve_live(reference):
 
 
 def _resolved_local_catalog(task, profile, tr):
-    vram_mb = sum(
-        int(item.get("vram_mb") or 0)
-        for item in profile.get("gpus") or [] if isinstance(item, dict)
-    )
-    gpu_count = len(profile.get("gpus") or [])
+    local = hardware.summarise(profile.get("gpus"))
+    vram_mb, gpu_count = local["vram_mb"], local["gpu_count"]
     overhead_mb = hardware.overhead_mb(gpu_count)
     ordered = model_discovery.order_for_task(LOCAL_CATALOG, task)
     pending = [
@@ -705,9 +695,8 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     # their machine, the way the curated screen already is. A model that does
     # not fit still appears, saying so: hiding it would make the list look like
     # the whole of Hugging Face fits in this GPU.
-    local_gpus = hardware.detect().get("gpus") or []
-    vram_mb = sum(item.get("vram_mb", 0) for item in local_gpus)
-    gpu_count = len(local_gpus)
+    local = hardware.summarise(hardware.detect().get("gpus"))
+    vram_mb, gpu_count = local["vram_mb"], local["gpu_count"]
     overhead_mb = hardware.overhead_mb(gpu_count)
     ranked = []
     for item in discovered:
@@ -730,14 +719,7 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
                                     else "model.fit.no_cell"), report["fits"]))
     ranked.sort(key=lambda entry: not entry[0]["fits"])
     discovered = [report for report, _label, _fits in ranked]
-    row_machine = model_discovery.machine(
-        vram_mb=vram_mb, gpu_count=gpu_count,
-        # One card, one bus. Two cards do not add their buses together for a
-        # single decode loop, so there is no honest figure to divide by.
-        bandwidth_gbs=(local_gpus[0].get("bandwidth_gbs")
-                       if len(local_gpus) == 1 else None),
-        name=local_gpus[0].get("name") if local_gpus else None,
-    )
+    row_machine = model_discovery.machine(**local)
     table = model_discovery.model_table(
         [model_discovery.model_row(
             dict(report, name=model_discovery.resolved_row_name(report)),

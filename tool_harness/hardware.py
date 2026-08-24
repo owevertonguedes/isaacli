@@ -112,6 +112,36 @@ def gpus():
     return found
 
 
+def summarise(gpus):
+    """One machine's worth of cards, reduced to what a screen has to know.
+
+    Four callers were doing this reduction by hand, with three different
+    treatments of a card whose VRAM field is missing, so a list that read as
+    "4 GB, one card" in one screen could read as "0 GB, one card" in another.
+    There is one treatment here: an entry that is not a card at all is
+    dropped, and a card whose VRAM cannot be read is still a card, with zero
+    VRAM, because the count is what decides the reserve.
+
+    `bandwidth_gbs` is filled only when there is exactly one card. Two cards
+    do not add their buses together for a single decode loop, which reads one
+    layer at a time from whichever card holds it, so summing them would
+    inflate every throughput estimate drawn against this machine.
+    """
+    cards = [item for item in (gpus or []) if isinstance(item, dict)]
+    total_mb = 0
+    for card in cards:
+        try:
+            total_mb += int(float(card.get("vram_mb") or 0))
+        except (TypeError, ValueError):
+            debug.swallowed("hardware.summarise vram")
+    return {
+        "vram_mb": total_mb,
+        "gpu_count": len(cards),
+        "bandwidth_gbs": cards[0].get("bandwidth_gbs") if len(cards) == 1 else None,
+        "name": cards[0].get("name") if cards else None,
+    }
+
+
 def ram_mb():
     """System RAM in MB, 0 when /proc/meminfo is unreadable."""
     try:

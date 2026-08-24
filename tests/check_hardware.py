@@ -4,6 +4,7 @@
 Nothing here runs nvidia-smi for real: the point is that the module behaves
 the same on a machine with a GPU, without one, and with a broken nvidia-smi.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -105,6 +106,33 @@ check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096, overhead_mb=0) is True,
 check(hardware.fits(1, 0, 100) is False,
       "a card smaller than the overhead fits nothing instead of going negative")
 
+empty = hardware.summarise([])
+check(empty == {"vram_mb": 0, "gpu_count": 0, "bandwidth_gbs": None, "name": None},
+      "no card summarises to zero VRAM, zero cards and no bandwidth")
+check(hardware.summarise(None) == empty,
+      "a missing GPU list is the same machine as an empty one")
+one = hardware.summarise(
+    [{"name": "GTX 1650", "vram_mb": 4096, "bandwidth_gbs": 128.0}])
+check(one == {"vram_mb": 4096, "gpu_count": 1, "bandwidth_gbs": 128.0,
+              "name": "GTX 1650"},
+      "a single card lends its VRAM, its name and its bandwidth")
+pair = hardware.summarise([{"name": "Tesla T4", "vram_mb": 15360,
+                            "bandwidth_gbs": 300.0}] * 2)
+check(pair["vram_mb"] == 30720 and pair["gpu_count"] == 2
+      and pair["bandwidth_gbs"] is None,
+      "two cards add their VRAM but never their buses: one decode reads one")
+# The three treatments that used to disagree, now one. A card whose VRAM the
+# driver did not report still counts as a card, because the count is what
+# decides the reserve; what is not a card at all is dropped.
+check(hardware.summarise([{"name": "a"}, {"vram_mb": None},
+                          {"vram_mb": "junk"}])
+      == {"vram_mb": 0, "gpu_count": 3, "bandwidth_gbs": None, "name": "a"},
+      "an unreadable VRAM field is zero VRAM, not a card that stopped existing")
+check(hardware.summarise([{"vram_mb": 4096.0}, "not a card", None])["vram_mb"]
+      == 4096
+      and hardware.summarise([{"vram_mb": 4096.0}, "not a card"])["gpu_count"] == 1,
+      "a float VRAM is an integer of MB, and a non-card is not counted")
+
 check(hardware.overhead_mb(1) == hardware.DEFAULT_OVERHEAD_MB
       and hardware.overhead_mb(2) == 2 * hardware.DEFAULT_OVERHEAD_MB,
       "the reserve multiplies by the number of cards, because each card has one")
@@ -119,15 +147,25 @@ check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096,
 # in six places across two interface modules, which is a hardware rule living
 # where hardware rules are not read. This refuses the seventh.
 handwritten = []
+summed = []
 for source in sorted((HERE.parent / "tool_harness").glob("*.py")):
     if source.name == "hardware.py":
         continue
-    for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+    body = source.read_text(encoding="utf-8")
+    for number, line in enumerate(body.splitlines(), 1):
         if "DEFAULT_OVERHEAD_MB" in line and "*" in line.split("DEFAULT_OVERHEAD_MB")[1]:
             handwritten.append(f"{source.name}:{number}")
+    # Across lines and across the parentheses of the `.get()` inside, because
+    # the version this replaced was a four-line generator expression and both
+    # a one-line pattern and a paren-free one would have missed it.
+    for match in re.finditer(r"sum\(.{0,200}?vram_mb", body, re.S):
+        summed.append(f"{source.name}:{body.count(chr(10), 0, match.start()) + 1}")
 check(not handwritten,
       "no module multiplies the per-card reserve by hand: " + (
           ", ".join(handwritten) or "none does"))
+check(not summed,
+      "no module adds a machine's VRAM up by hand: " + (
+          ", ".join(summed) or "none does"))
 
 check(hardware.bytes_read_per_token(16 * GB) == float(16 * GB),
       "a dense model reads its whole file per token")
