@@ -822,6 +822,18 @@ check(model_discovery.carried_measurement(
 check(model_discovery.carried_measurement({"name": "x"}, "any.gguf") is None,
       "a row with no measurement is not given one")
 
+# Where a row's measurement is looked up is one rule, and the origin label and
+# the throughput cell have to be reading the same one: a row that says
+# "measured here" while the legend under the table does not name it is two
+# answers to one question.
+carried = {"name": "curated row", "catalog": {"measured_here": sample}}
+check(model_discovery.local_measurement(carried) is sample
+      and model_discovery.origin(carried) == "measured",
+      "a measurement carried on the catalogue entry is found by both readers")
+check(model_discovery.local_measurement({"name": "x"}) is None
+      and model_discovery.origin({"name": "x"}) == "discovered",
+      "and a row with none is measured by neither")
+
 # These read the row in both languages on purpose. The session's language is
 # whatever the machine is configured for, so a check that reads the row through
 # the default translator silently stops testing the other catalogue, and the

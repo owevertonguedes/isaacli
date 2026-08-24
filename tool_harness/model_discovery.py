@@ -429,8 +429,7 @@ def origin(model):
     A row measured on this machine outranks a curated one, because curation is
     somebody's judgement and a measurement is a number anybody can re-run.
     """
-    if model.get("measured_here") or (model.get("catalog") or {}).get(
-            "measured_here"):
+    if local_measurement(model):
         return "measured"
     if model.get("curated"):
         return "curated"
