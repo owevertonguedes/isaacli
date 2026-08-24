@@ -312,15 +312,30 @@ out = execution.run_command("""python3 -c "open('/etc/passwd','a').write('x')" "
 check("Read-only" in out or "Permission" in out or "Errno" in out,
       f"/etc is read-only inside the sandbox ({out[:200]!r})")
 
-# The user's real home must not be mounted. With Graphify, parent paths such as
-# /home/user may exist so the read-only uv tool can be reached, but .ssh and real
-# projects stay out.
-out = execution.run_command(f"ls {Path.home() / '.ssh'}")
-check("(exit code: 0)" not in out,
-      f"the user's .ssh is not reachable inside the sandbox ({out[:200]!r})")
-out = execution.run_command(f"ls {Path.home() / 'DevTools'}")
-check("(exit code: 0)" not in out,
-      f"the user's real DevTools is not reachable inside the sandbox ({out[:200]!r})")
+# The user's real home must not be mounted. Toolchain mounts let read-only
+# parent paths appear so an install tree can be reached, but .ssh and the
+# user's own projects stay out. This does not touch the real HOME: a fake one
+# is planted under a temp dir, with a neutral-named project directory inside
+# it, and HOME is pointed there only for the two commands below.
+fake_home = base / "fake_home"
+(fake_home / ".ssh").mkdir(parents=True)
+(fake_home / ".ssh" / "id_ed25519").write_text("not a real key")
+(fake_home / "private_projects").mkdir()
+(fake_home / "private_projects" / "secret.txt").write_text("must stay out")
+old_home_env = os.environ.get("HOME")
+os.environ["HOME"] = str(fake_home)
+try:
+    out = execution.run_command(f"ls {fake_home / '.ssh'}")
+    check("(exit code: 0)" not in out,
+          f"the user's .ssh is not reachable inside the sandbox ({out[:200]!r})")
+    out = execution.run_command(f"ls {fake_home / 'private_projects'}")
+    check("(exit code: 0)" not in out,
+          f"the user's real projects are not reachable inside the sandbox ({out[:200]!r})")
+finally:
+    if old_home_env is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = old_home_env
 
 # And writing INSIDE the working directory has to work, otherwise the sandbox is
 # too tight to be useful.
