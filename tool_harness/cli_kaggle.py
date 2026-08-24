@@ -1209,6 +1209,10 @@ def _choose_kernel_context(model, input_fn):
               if value <= ceiling]
     if ceiling not in {value for _key, value in levels}:
         levels.append(("cli.kaggle.context.maximum", ceiling))
+    # MIN_CONTEXT is the smallest rung worth offering when there is room for it,
+    # not a floor the accelerator has to clear. Treated as a floor, a ceiling
+    # under it leaves a screen that refuses every value including the ceiling.
+    floor = min(setup_ollama.MIN_CONTEXT, ceiling)
     options = [t(key, limit=setup_ollama.format_context(value))
                for key, value in levels]
     options += [t("context.manual"), t("navigation.back")]
@@ -1228,10 +1232,13 @@ def _choose_kernel_context(model, input_fn):
         return levels[index][1]
     while True:
         print(f"{title}\n\n{explanation}")
-        value = setup_ollama.parse_context(input_fn(t("context.manual.prompt")))
-        if setup_ollama.MIN_CONTEXT <= value <= ceiling:
+        value = setup_ollama.parse_context(input_fn(t(
+            "context.manual.prompt",
+            minimum=setup_ollama.format_context(floor))))
+        if floor <= value <= ceiling:
             return value
         print(t("cli.kaggle.context.manual.invalid",
+                minimum=setup_ollama.format_context(floor),
                 limit=setup_ollama.format_context(ceiling)))
 
 

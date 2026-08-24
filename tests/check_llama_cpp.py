@@ -750,6 +750,75 @@ check("Found-27B" in hub_options[1]
       f"a live find is listed after it, once, and choosing a row returns the "
       f"file that row names ({(picked or {}).get('file')})")
 
+# --- the device row, and when the card is measured ---------------------------
+#
+# Free without total made a 4 GB card read as a 1.5 GB one, next to an
+# integrated GPU claiming 7.4 GiB of borrowed system RAM: by the numbers on the
+# rows, the discrete card was the smaller device.
+integrated = {"id": "Vulkan0", "name": "Intel(R) UHD Graphics 630 (CFL GT2)",
+              "total_mb": 11859, "free_mb": 7602}
+discrete = {"id": "Vulkan1", "name": "NVIDIA GeForce GTX 1650",
+            "total_mb": 4342, "free_mb": 1561}
+cards = [{"name": "NVIDIA GeForce GTX 1650", "vram_mb": 4096}]
+check(llama_cpp.dedicated_devices([integrated, discrete], cards) == {"Vulkan1"},
+      "a second source, not the bigger number, says which device has memory of "
+      "its own")
+check(llama_cpp.preferred_device([integrated, discrete], cards) is discrete,
+      "and that is the one the cursor starts on")
+
+device_screens = []
+original_device_select = setup_llamacpp.terminal_ui.select
+original_list_devices = llama_cpp.list_devices
+try:
+    llama_cpp.list_devices = lambda _executable: [integrated, discrete]
+    setup_llamacpp.terminal_ui.select = lambda title, options, **kwargs: (
+        device_screens.append(options) or 0)
+    setup_llamacpp.choose_device(tr, lambda _prompt="": "", "llama-server")
+finally:
+    llama_cpp.list_devices = original_list_devices
+    setup_llamacpp.terminal_ui.select = original_device_select
+rows = device_screens[-1]
+check("1.5 of 4.2 GiB free" in rows[1],
+      f"the row states free and total, so a card is never reported as smaller "
+      f"than it is ({rows[1]})")
+check("system RAM" in rows[0] and "system RAM" not in rows[1],
+      f"and borrowed system memory is named on the row that borrows it ({rows[0]})")
+
+# Everything on those screens is read off the card, and the server this session
+# started for the outgoing model is still holding it. Measured around it, this
+# machine reported 1.5 GiB free of a 4 GiB card, the ceiling came out at 6730
+# tokens for a model whose real ceiling there is 32768, and the context screen
+# then had no value it would accept.
+released_before = []
+measured_after = []
+original_ensure = setup_llamacpp.ensure_server
+original_choose_model = setup_llamacpp.choose_model
+original_choose_device = setup_llamacpp.choose_device
+try:
+    setup_llamacpp.ensure_server = lambda *_a, **_k: ("llama-server", "user")
+    setup_llamacpp.choose_model = lambda *_a, **_k: None
+    setup_llamacpp.choose_device = lambda *_a, **_k: measured_after.append(
+        "measured") or "Vulkan1"
+    setup_llamacpp.run("en", lambda _prompt="": "", None, tr,
+                       release_fn=lambda: released_before.append(len(measured_after)))
+    # choose_model returning None leaves before any measurement, so the release
+    # must not have happened yet either: stopping somebody's server for a screen
+    # they backed out of is a reload they did not ask for.
+    check(released_before == [] and measured_after == [],
+          f"backing out before a model is chosen releases nothing "
+          f"({released_before})")
+    setup_llamacpp.choose_model = lambda *_a, **_k: fixture(path="/tmp/x.gguf")
+    setup_llamacpp.choose_context = lambda *_a, **_k: None
+    setup_llamacpp.run("en", lambda _prompt="": "", None, tr,
+                       release_fn=lambda: released_before.append(len(measured_after)))
+finally:
+    setup_llamacpp.ensure_server = original_ensure
+    setup_llamacpp.choose_model = original_choose_model
+    setup_llamacpp.choose_device = original_choose_device
+check(released_before == [0] and measured_after == ["measured"],
+      f"and once a model is chosen the outgoing server is released before the "
+      f"card is measured, not after ({released_before}, {measured_after})")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

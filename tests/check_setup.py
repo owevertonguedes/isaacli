@@ -528,6 +528,44 @@ try:
     check(back is None and back_thinking == "__context__",
           "the context and reasoning menus allow going back")
 
+    # MIN_CONTEXT is the smallest rung worth offering when the card has room for
+    # it, not a floor the hardware has to clear. Treated as a floor it emptied
+    # the menu of every rung and then refused every typed value, the ceiling
+    # itself included: a screen reading "use a value between 8K and 6,730" whose
+    # only working key was Back. Answered here the way the owner answered it,
+    # by typing the ceiling and expecting it to be taken.
+    tight_screens = []
+    original_tight_select = setup_ollama.terminal_ui.select
+
+    def record_tight(title, options, **kwargs):
+        tight_screens.append(options)
+        # The row before "back" is the one that takes a typed value.
+        return len(options) - 2
+
+    try:
+        setup_ollama.terminal_ui.select = record_tight
+        with redirect_stdout(io.StringIO()) as tight_out:
+            tight = setup_ollama._choose_context(
+                6730, answers("8K", "6730"), pt)
+    except StopIteration:
+        # The defect is an unsatisfiable prompt, so the screen asks forever and
+        # the scripted answers run out. Caught and named here: a check that let
+        # the StopIteration through reported this as a traceback and took the
+        # rest of the file down with it, which hides the result instead of
+        # showing it.
+        tight = "the screen refused every value, including the ceiling"
+    finally:
+        setup_ollama.terminal_ui.select = original_tight_select
+    check(tight == 6730,
+          f"a ceiling under the smallest rung still accepts the ceiling, "
+          f"instead of refusing every value there is ({tight})")
+    check(any(pt.t("context.maximum", limit="6.730") in option
+              for option in tight_screens[-1]),
+          f"and it is on the menu as a row, so the screen is never a list with "
+          f"no context on it ({tight_screens[-1]})")
+    check(pt.t("context.manual.only", limit="6.730") in tight_out.getvalue(),
+          "a range of one value says so instead of naming it twice")
+
     # ------------------------------------------------------------------
     # Task-oriented onboarding.
     #

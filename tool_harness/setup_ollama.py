@@ -758,9 +758,20 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
 
 
 def _choose_context(limit, input_fn, tr):
+    """Offer the contexts that fit, always including at least one.
+
+    MIN_CONTEXT is the smallest rung worth offering when there is room for it,
+    not a floor the hardware has to clear. Treated as a floor, a ceiling below
+    it emptied the menu of every rung and then rejected every typed value,
+    including the ceiling itself: a screen whose only working key was Back,
+    under a prompt reading "use a value between 8K and 6,730".
+    """
     levels = [level for level in CONTEXT_LEVELS if not limit or level[1] <= limit]
-    if limit and limit >= MIN_CONTEXT and limit not in {value for _, value in levels}:
+    if limit and limit not in {value for _, value in levels}:
         levels.append(("context.maximum", limit))
+    # Below the smallest rung the ceiling is the only thing on offer, so it is
+    # also the floor: the range the prompt names is never an empty one.
+    floor = min(MIN_CONTEXT, limit) if limit else MIN_CONTEXT
     options = ([tr.t(key, limit=format_context(value)) for key, value in levels]
               + [tr.t("context.manual"), tr.t("navigation.back")])
     explanation = tr.t("context.explain")
@@ -773,11 +784,18 @@ def _choose_context(limit, input_fn, tr):
         return levels[index][1]
     while True:
         print(_title(tr.t("context.title"), explanation))
-        value = parse_context(input_fn(tr.t("context.manual.prompt")))
-        if value >= MIN_CONTEXT and (not limit or value <= limit):
+        value = parse_context(input_fn(
+            tr.t("context.manual.prompt", minimum=format_context(floor))))
+        if floor <= value and (not limit or value <= limit):
             return value
         ceiling = format_context(limit) if limit else "∞"
-        print(tr.t("context.manual.invalid", limit=ceiling))
+        if limit and floor == limit:
+            # A range of one is not a range, and naming it twice reads as a
+            # typo in the program rather than as the only value that fits.
+            print(tr.t("context.manual.only", limit=ceiling))
+            continue
+        print(tr.t("context.manual.invalid",
+                   minimum=format_context(floor), limit=ceiling))
 
 
 def _choose_thinking(item, input_fn, tr):
@@ -1476,7 +1494,7 @@ def model_source_entries(data, tr, which_fn=None):
     return entries, options, initial
 
 
-def _select_configured_api(input_fn, config_file, language, tr):
+def _select_configured_api(input_fn, config_file, language, tr, release_fn=None):
     data = config.load(config_file)
     api_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
@@ -1494,11 +1512,13 @@ def _select_configured_api(input_fn, config_file, language, tr):
         return "__ollama__"
     if chosen == "llamacpp":
         import setup_llamacpp
-        result = setup_llamacpp.run(language, input_fn, config_file, tr)
+        result = setup_llamacpp.run(language, input_fn, config_file, tr,
+                                    release_fn=release_fn)
         # Going back out of the local screen returns to this one rather than
         # leaving the session on whatever was selected before it opened.
         if result == "__engine__":
-            return _select_configured_api(input_fn, config_file, language, tr)
+            return _select_configured_api(
+                input_fn, config_file, language, tr, release_fn)
         return result
     if chosen == "kaggle":
         return _setup_kaggle(language, input_fn, config_file)
@@ -1548,14 +1568,15 @@ def _select_configured_api(input_fn, config_file, language, tr):
     return 0
 
 
-def run_model_selector(input_fn=input, config_file=None):
+def run_model_selector(input_fn=input, config_file=None, release_fn=None):
     """Troca model sem repetir language, workspace ou o restante do setup."""
     try:
         data = config.load(config_file)
         language = data.get("language") or "en"
         tr = Translator(language)
         with terminal_ui.alternate_screen(input_fn):
-            source = _select_configured_api(input_fn, config_file, language, tr)
+            source = _select_configured_api(
+                input_fn, config_file, language, tr, release_fn)
             if source == "__ollama__":
                 source = _run_setup(
                     input_fn, config_file, initial_language=language,

@@ -594,7 +594,7 @@ cli_picker.redraw_session = lambda message=None: model_redraws.append(message)
 original_model_selector = setup_ollama.run_model_selector
 
 
-def fake_model_selector(config_file=None):
+def fake_model_selector(config_file=None, release_fn=None):
     data = config.load(config_file)
     item = data["profiles"]["qwen"]
     item["thinking"] = "high"

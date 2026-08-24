@@ -2788,6 +2788,7 @@ finally:
 # refusing a context, which teaches the next person to reword nothing.
 refusal_text = setup_ollama.Translator("en").t(
     "cli.kaggle.context.manual.invalid",
+    minimum=setup_ollama.format_context(setup_ollama.MIN_CONTEXT),
     limit=setup_ollama.format_context(roomy_context))
 check(typed_context == 8192 and not typed
       and refusal_text in refusal_output.getvalue(),

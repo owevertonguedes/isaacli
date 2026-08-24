@@ -116,7 +116,8 @@ class ProvidersMixin:
     def select_model(self):
         import setup_ollama
 
-        code = setup_ollama.run_model_selector(config_file=self.config_file)
+        code = setup_ollama.run_model_selector(
+            config_file=self.config_file, release_fn=self.release_local_server)
         if code != 0:
             message = (t("cli.model.selection_cancelled") if code == 130
                        else t("cli.model.unchanged"))

@@ -505,9 +505,17 @@ def choose_device(tr, input_fn, executable):
     if len(devices) == 1:
         return devices[0]["id"]
     preferred = llama_cpp.preferred_device(devices)
+    # Free without total made a 4 GB card read as a 1.5 GB one, under an
+    # integrated GPU claiming 7.4 GiB of borrowed system RAM: the row said the
+    # discrete card was the smaller device. Both numbers, and the row says which
+    # of them is memory of its own.
+    dedicated = llama_cpp.dedicated_devices(devices)
     options = [
-        _t(tr, "llamacpp.device.option", id=item["id"], name=item["name"],
-           free=f"{(item.get('free_mb') or item['total_mb']) / 1024:.1f}")
+        _t(tr, "llamacpp.device.option" if item["id"] in dedicated
+              else "llamacpp.device.option.shared",
+           id=item["id"], name=item["name"],
+           free=f"{(item.get('free_mb') or item['total_mb']) / 1024:.1f}",
+           total=f"{item['total_mb'] / 1024:.1f}")
         for item in devices
     ] + [_t(tr, "llamacpp.device.auto")]
     initial = next((index for index, item in enumerate(devices)
@@ -584,8 +592,13 @@ def save_profile(data, model, executable, context, device, port, alias=None):
 
 
 def run(language, input_fn, config_file, tr, onboarding_task=None,
-        urlopen_fn=urllib.request.urlopen):
-    """The whole local path: a server, a model, a device, a context, a profile."""
+        urlopen_fn=urllib.request.urlopen, release_fn=None):
+    """The whole local path: a server, a model, a device, a context, a profile.
+
+    `release_fn` stops whatever local server this session is holding. It is a
+    callback rather than a call because the state it releases belongs to the
+    running CLI, and setup runs with no CLI behind it.
+    """
     from setup_ollama import _store_onboarding, _UNCHANGED
 
     executable, _owner = ensure_server(
@@ -596,6 +609,15 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     model = choose_model(tr, input_fn, config_file, urlopen_fn)
     if model is None:
         return "__engine__"
+    # Every number from here on is read off the card, and the server this
+    # session started for the outgoing model is still holding it. Measured
+    # around it, a 4 GB card reported 1.5 GB free, the ceiling came out at 6 730
+    # tokens for a model whose real ceiling on that card is 32 768, and the
+    # screen offered a context no rung could satisfy. The outgoing server is
+    # released here, before anything is measured, because it is released before
+    # the new one starts either way.
+    if release_fn is not None:
+        release_fn()
     device = choose_device(tr, input_fn, executable)
     free_mb = None
     try:

@@ -420,24 +420,31 @@ def list_devices(executable, run_fn=subprocess.run, environ=None):
     return devices
 
 
-def preferred_device(devices, gpus=None):
-    """The device to offer first, decided by a second source and not by size.
+def dedicated_devices(devices, gpus=None):
+    """The ids a second source confirms as cards with memory of their own.
 
-    Reported memory does not rank these: an integrated GPU on this machine
+    Reported memory does not tell these apart: an integrated GPU on this machine
     advertises 11859 MiB of shared system RAM against a discrete card's 4342 MiB,
-    so picking the largest number picks the slower device every time. What
-    settles it is whether nvidia-smi also reports the card, which is a separate
-    observation of the same hardware rather than a preference written here.
+    so the largest number is the slower device. What settles it is whether the
+    card is also reported by nvidia-smi, which is a separate observation of the
+    same hardware rather than a preference written here.
     """
-    if not devices:
-        return None
     known = [str(item.get("name", "")).casefold()
              for item in (hardware.gpus() if gpus is None else gpus)]
-    for device in devices:
-        name = str(device.get("name", "")).casefold()
-        if any(entry and (entry in name or name in entry) for entry in known):
-            return device
-    return devices[0]
+    return {
+        device["id"] for device in devices or []
+        if any(entry and (entry in str(device.get("name", "")).casefold()
+                          or str(device.get("name", "")).casefold() in entry)
+               for entry in known)
+    }
+
+
+def preferred_device(devices, gpus=None):
+    """The device to offer first: a card of its own, not the biggest number."""
+    if not devices:
+        return None
+    ours = dedicated_devices(devices, gpus)
+    return next((device for device in devices if device["id"] in ours), devices[0])
 
 
 def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None):
