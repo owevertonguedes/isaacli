@@ -20,6 +20,7 @@ import debug
 import hardware
 import model_discovery
 import terminal_ui
+import units
 from cli_i18n import translator
 from i18n import SUPPORTED_LANGUAGES, Translator
 
@@ -490,7 +491,7 @@ def _resolved_local_catalog(task, profile, tr):
             # is that it runs on CPU and system RAM, and that this is slow.
             item["fit_label"] = (
                 tr.t("model.fit.no_gpu_sized",
-                     weights=f"{resolved['model_bytes'] / 1024 ** 3:.2f}")
+                     weights=units.gib(resolved["model_bytes"]))
                 if complete else tr.t("model.fit.no_gpu")
             )
             # Nothing was computed against a card, because there is no card.
@@ -626,7 +627,7 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
             "model.quantization.option_prepared" if prepared
             else "model.quantization.option",
             quantization=model_discovery.quantization_label(item["file"]),
-            size=f"{item['model_bytes'] / 1024 ** 3:.2f}",
+            size=units.gib(item["model_bytes"]),
             fit=tr.t("model.fit.fits") if report["fits"]
             else tr.t("model.fit.does_not_fit")))
     index = _select(

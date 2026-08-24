@@ -22,6 +22,7 @@ import llama_cpp
 import local_models
 import model_discovery
 import terminal_ui
+import units
 
 # The port the local server listens on. First free one from here, because a
 # second isaacli, or the user's own llama-server, may already hold it.
@@ -50,10 +51,6 @@ def _short_context(tokens):
     worth being exact about, so they keep their real number.
     """
     return f"{tokens // 1024}K" if tokens >= 1024 else str(tokens)
-
-
-def _gib(value):
-    return f"{(value or 0) / 1024 ** 3:.2f}"
 
 
 def free_port(base=BASE_PORT, attempts=PORT_ATTEMPTS, is_free=None):
@@ -251,7 +248,7 @@ def _download_from_hub(tr, input_fn, config_file=None,
         print(model_discovery.text("model.discovery.unresolved", error=error))
         return None
     print(_t(tr, "llamacpp.model.download.start", name=model["name"],
-             size=_gib(model["model_bytes"])))
+             size=units.gib(model["model_bytes"])))
 
     shown = [0]
 

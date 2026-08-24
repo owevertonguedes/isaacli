@@ -12,6 +12,7 @@ from pathlib import Path
 import config
 import debug
 import local_models
+import units
 from cli_i18n import t
 from cli_ollama import _runtime_ollama_dir, _same_process
 from cli_sessions import FEEDBACK_DIR, SESSIONS_DIR
@@ -143,7 +144,7 @@ def _report_kept_weights(models_dir=None):
         debug.swallowed("installation._report_kept_weights")
         return None
     print(t("cli.uninstall.weights_kept", path=folder, count=len(weights),
-            size=f"{total / 1024 ** 3:.2f}"))
+            size=units.gib(total)))
     return folder
 
 

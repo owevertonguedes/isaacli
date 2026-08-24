@@ -23,6 +23,7 @@ import config
 import debug
 import hardware
 import terminal_ui
+import units
 from cli_i18n import t
 from installation import _package_owns
 
@@ -1128,7 +1129,7 @@ def _context_ceiling(model):
             break
     debug.note("cli_kaggle._context_ceiling",
                f"{model.get('alias')} allows up to {best} tokens, "
-               f"{budget_per_card / 1024 ** 3:.2f} GiB free for cache on each "
+               f"{units.gib(budget_per_card)} GiB free for cache on each "
                f"of {count} card(s)")
     return best
 
@@ -1374,7 +1375,7 @@ def _require_space(directory, needed_bytes):
         return
     raise RuntimeError(t(
         "cli.kaggle.prepare.no_space", path=directory,
-        needed=f"{needed_bytes / 1024 ** 3:.2f}", free=f"{free / 1024 ** 3:.2f}"))
+        needed=units.gib(needed_bytes), free=units.gib(free)))
 
 
 def _prepare_assets(executable, username, model, available, input_fn,
@@ -1418,8 +1419,8 @@ def _prepare_assets(executable, username, model, available, input_fn,
             print(t("cli.kaggle.prepare.kernel_remove", slug=slug))
         available["binary"] = expected["binary"]
     if "model" not in available:
-        size = model["model_bytes"] / 1024 ** 3
-        print(t("cli.kaggle.prepare.weight", size=f"{size:.1f}", name=model["name"]))
+        print(t("cli.kaggle.prepare.weight",
+                size=units.gib_short(model["model_bytes"]), name=model["name"]))
         if input_fn(t("cli.kaggle.prepare.weight_confirm")).strip().lower() == t(
                 "cli.kaggle.confirm_yes"):
             _require_space(scratch, model["model_bytes"])
@@ -1929,7 +1930,7 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
         print(t("cli.kaggle.prepare.plan_binary", arch=model["cuda_arch"]))
     if "model" in missing:
         print(t("cli.kaggle.prepare.plan_model",
-                size=f"{model['model_bytes'] / 1024 ** 3:.1f}"))
+                size=units.gib_short(model["model_bytes"])))
     if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() != t(
             "cli.kaggle.confirm_yes"):
         print(t("cli.kaggle.cancelled"))
@@ -2624,7 +2625,7 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 print(t("cli.kaggle.assets.cost_build"))
             if "model" in missing:
                 print(t("cli.kaggle.assets.cost_download",
-                        size=f"{model['model_bytes'] / 1024 ** 3:.1f}"))
+                        size=units.gib_short(model["model_bytes"])))
             if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() == t(
                     "cli.kaggle.confirm_yes"):
                 try:

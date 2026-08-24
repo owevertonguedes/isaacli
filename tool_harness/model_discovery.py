@@ -14,6 +14,7 @@ from pathlib import Path
 import agent
 import debug
 import hardware
+import units
 from cli_i18n import t
 
 
@@ -511,15 +512,14 @@ def format_fit(report, translate=None, state_key="model.discovery.fit",
                fit_yes_key="model.discovery.fit_yes",
                fit_no_key="model.discovery.fit_no"):
     translate = translate or text
-    gib = 1024 ** 3
     available = max(0, report["vram_mb"] - report["overhead_mb"]) * 1024 ** 2
     return translate(
         state_key,
         fits=translate(fit_yes_key) if report["fits"] else translate(fit_no_key),
-        weights=f"{report['model_bytes'] / gib:.2f}",
-        kv=f"{report['kv_bytes'] / gib:.2f}",
-        total=f"{(report['model_bytes'] + report['kv_bytes']) / gib:.2f}",
-        available=f"{available / gib:.2f}",
+        weights=units.gib(report["model_bytes"]),
+        kv=units.gib(report["kv_bytes"]),
+        total=units.gib(report["model_bytes"] + report["kv_bytes"]),
+        available=units.gib(available),
     )
 
 
@@ -727,7 +727,7 @@ def model_row(model, machine_profile=None, translate=None, fit=None, state=None,
         # a smaller way of saying that: it is a number, and it reads like one.
         "size": translate(
             "model.row.size",
-            size=f"{model['model_bytes'] / 1024 ** 3:.1f}",
+            size=units.gib_short(model["model_bytes"]),
         ) if model.get("model_bytes") else EMPTY_CELL,
         "fit": fit or EMPTY_CELL,
         # `fits` is the yes/no behind the fit cell, which is text a screen chose
