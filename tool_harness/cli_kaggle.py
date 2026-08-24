@@ -2045,8 +2045,12 @@ def _endpoint_answers(profile, secret_path=None,
         # the stored key does not open it.
         debug.note("cli_kaggle._endpoint_answers status",
                    f"saved endpoint refused with HTTP {error.code}")
-    except (urllib.error.URLError, OSError, TimeoutError):
-        debug.swallowed("cli_kaggle._endpoint_answers probe")
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        # A tunnel that is gone is the answer this function exists to give, so
+        # it is named in one line. A traceback here would be printed on every
+        # beat of the heartbeat that calls it.
+        debug.note("cli_kaggle._endpoint_answers probe",
+                   f"the saved endpoint is not answering: {error}")
     return False
 
 

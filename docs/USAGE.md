@@ -145,9 +145,10 @@ card and that build; measure your own before relying on either.
 
 ### Debugging
 
-`isaacli --debug` prints the traceback for exceptions the normal flow absorbs on
-purpose, such as probing a server that is not up yet or reading an error body
-that turned out to be unreadable. It changes nothing about what runs or what is
+`isaacli --debug` reports what the normal flow absorbs on purpose. An expected
+answer, such as a server that is not listening yet or one still loading the
+model, is one line naming the cause; a traceback is kept for the exceptions
+nobody predicted, such as an error body that turned out to be unreadable. It changes nothing about what runs or what is
 returned; it only stops those causes from being invisible. `ISAACLI_DEBUG=1`
 does the same for the paths that run before arguments are parsed. Each site
 reports once per run.

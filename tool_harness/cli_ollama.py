@@ -141,10 +141,20 @@ def _close_without_interruption(cli):
     return _without_interruption(cli.close)
 
 
+# What a server that is not up yet raises. It is the expected answer to the
+# question a probe asks, not an anomaly, so it is reported as the one line that
+# names it and never as a traceback: a poll that prints thirty lines of stack
+# for "not listening yet" buries the failure the user opened --debug to find.
+NOT_LISTENING = (urllib.error.URLError, OSError, TimeoutError)
+
+
 def _ollama_ok(timeout=2):
     try:
         with urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=timeout) as r:
             return json.load(r).get("version") or "ok"
+    except NOT_LISTENING as error:
+        debug.note("cli_ollama._ollama_ok", f"Ollama is not answering: {error}")
+        return None
     except Exception:
         debug.swallowed("cli_ollama._ollama_ok")
         return None
@@ -165,10 +175,14 @@ def _probe_health(url, timeout=2):
         # that as ready hands the user's first request to a server that then
         # refuses it.
         if e.code in (502, 503, 504):
-            debug.swallowed("cli_ollama._probe_health not ready")
+            debug.note("cli_ollama._probe_health not ready",
+                       f"{url} answered HTTP {e.code}, still loading the model")
             return None
         return "ok"
     except Exception:
+    except NOT_LISTENING as error:
+        debug.note("cli_ollama._probe_health", f"{url} is not answering yet: {error}")
+        return None
         debug.swallowed("cli_ollama._probe_health")
         return None
 

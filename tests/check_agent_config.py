@@ -1056,3 +1056,32 @@ assert printed.count("test.site") == 1, (
 assert "second from the same site" not in printed
 assert "other.site" in printed, "a different site still reports"
 print("DEBUG NOTE OK: silent by default, once per site when enabled")
+
+# A server that is not listening yet is the expected answer to a probe, and it
+# is reported as the line that names it. It used to arrive as a full traceback,
+# and two of them opened every session that started a local engine, pushing the
+# failure the user opened --debug for off the top of the screen.
+import socket  # noqa: E402
+
+import cli_ollama  # noqa: E402
+
+closed = socket.socket()
+closed.bind(("127.0.0.1", 0))
+dead_port = closed.getsockname()[1]
+closed.close()
+probe_out = io.StringIO()
+debug.enable(True)
+try:
+    with contextlib.redirect_stderr(probe_out):
+        answer = cli_ollama._probe_health(f"http://127.0.0.1:{dead_port}/health",
+                                          timeout=1)
+finally:
+    debug.enable(False)
+probe_printed = probe_out.getvalue()
+assert answer is None, "a port nothing listens on is not a server that is up"
+assert "Traceback" not in probe_printed, (
+    "a probe that found nothing listening must not print a stack: " + probe_printed)
+assert str(dead_port) in probe_printed and "refused" in probe_printed.lower(), (
+    "the one line has to name what was probed and why it did not answer: "
+    + probe_printed)
+print("DEBUG PROBE OK: a closed port is one line with its cause, not a traceback")

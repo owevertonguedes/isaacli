@@ -181,6 +181,11 @@ def _ensure_server(client, ollama_exe, tr=None):
     try:
         return client.version(), None
     except Exception:
+    except (OSError, TimeoutError) as error:
+        # Nothing listening is what this probe is asking about, and the answer
+        # fits on one line. Anything else is a surprise and keeps its traceback.
+        debug.note("setup_ollama._ensure_server probe",
+                   f"Ollama is not answering yet: {error}")
         debug.swallowed("setup_ollama._ensure_server probe")
     proc = subprocess.Popen([ollama_exe, "serve"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
