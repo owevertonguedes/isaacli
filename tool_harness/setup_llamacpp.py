@@ -301,6 +301,54 @@ def _add_directory(tr, input_fn, config_file=None):
     return True
 
 
+def search_dirs(config_file=None, urlopen_fn=urllib.request.urlopen):
+    """Every folder the model screen looks in, beyond this program's own.
+
+    One function because there are two callers that must not drift: the screen
+    itself, and the check that asks what the screen would find. Composed at the
+    call site, a check proves a list nobody draws.
+    """
+    return (_configured_dirs(config_file)
+            + served_weight_dirs(config_file, urlopen_fn))
+
+
+def remember_folder(data, model, home_dir=None):
+    """Keep the folder a chosen weight was found in, as a place to look.
+
+    The folders searched are otherwise derived from the weight each profile is
+    serving, and only that: choosing a model that lives one subfolder deeper
+    than the last one moves the search to that subfolder and the rest of the
+    collection leaves the screen. It happened on the developer's machine, where
+    a list of ten became a list of one the moment the model he picked came from
+    a subfolder.
+
+    So the folder that was searched is written down, once, at the moment a
+    model is taken out of it. Only a folder of the user's: what this program
+    downloads into and what Ollama holds are already searched by name, and
+    writing them down would mean a configuration file naming this program's own
+    directories. Deriving stays too, which is what finds a folder nobody has
+    registered yet.
+
+    Returns True when the configuration gained a folder.
+    """
+    root = model.get("search_root")
+    if not root or model.get("origin") != "local":
+        return False
+    root = Path(root).expanduser()
+    if root in (local_models.downloaded_dir(home_dir),
+                local_models.linked_dir(home_dir)):
+        return False
+    dirs = data.setdefault("model_dirs", [])
+    known = [Path(item).expanduser() for item in dirs]
+    # An ancestor already registered covers this folder, because the scan is
+    # recursive. Adding the child anyway would list the same weights twice in
+    # the configuration and change nothing on screen.
+    if any(folder == root or folder in root.parents for folder in known):
+        return False
+    dirs.append(str(root))
+    return True
+
+
 def _choose_from_hub(tr, input_fn, urlopen_fn=urllib.request.urlopen):
     """What Hugging Face is publishing that this card can hold, as a list.
 
@@ -420,8 +468,7 @@ def choose_model(tr, input_fn, config_file=None,
     overhead_mb = hardware.overhead_mb(gpu_count)
     while True:
         models, problems = local_models.available(
-            extra_dirs=_configured_dirs(config_file)
-            + served_weight_dirs(config_file, urlopen_fn))
+            extra_dirs=search_dirs(config_file, urlopen_fn))
         for problem in problems:
             # A weight that could not be read explains why the list is shorter.
             # That is why the list looks the way it does, not something the
@@ -637,6 +684,7 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     data["language"] = language
     if onboarding_task is not None and onboarding_task is not _UNCHANGED:
         _store_onboarding(data, onboarding_task)
+    remember_folder(data, model)
     save_profile(data, model, executable, context, device, port)
     config.save(data, config_file)
     return 0

@@ -708,6 +708,51 @@ listed, _problems = local_models.available(extra_dirs=folders)
 check({item["path"] for item in listed} == {str(weight), str(sibling)},
       "and both of them reach the list the choice is made on")
 
+# The collection with subfolders, which is what a collection looks like after a
+# while, and the sequence that emptied it on the developer's machine: the screen
+# lists ten because the served weight sits at the root, he picks the one inside
+# a subfolder, and from then on the folder derived from the new profile is that
+# subfolder and the other nine are gone. The folder searched is remembered when
+# a model is taken out of it, so the second opening still sees the collection.
+deep = served_root / "qwen3-4b"
+deep.mkdir()
+deep_weight = write_gguf(deep / "deep-model-Q4_K_M.gguf", dense_keys())
+collection = {str(weight), str(sibling), str(deep_weight)}
+
+before, _problems = local_models.available(
+    extra_dirs=setup_llamacpp.search_dirs(served_config, props))
+check({item["path"] for item in before} == collection,
+      f"a collection kept in subfolders is listed whole while the root is the "
+      f"folder being served ({len(before)} rows)")
+
+chosen = next(item for item in before if item["path"] == str(deep_weight))
+served_data = config.load(served_config)
+remembered = setup_llamacpp.remember_folder(served_data, chosen)
+# The profile now serves the weight inside the subfolder, which is what saving
+# it does, so deriving alone would answer with the subfolder from here on.
+served_data["profiles"]["served"] = {"weights": str(deep_weight)}
+config.save(served_data, served_config)
+after, _problems = local_models.available(
+    extra_dirs=setup_llamacpp.search_dirs(served_config, props))
+check(remembered and config.load(served_config)["model_dirs"] == [str(served_root)],
+      f"choosing one out of it writes down the folder that was searched, not "
+      f"the subfolder the file sits in ({config.load(served_config).get('model_dirs')})")
+check({item["path"] for item in after} == collection,
+      f"so picking the model in the subfolder does not take the other models "
+      f"off the screen ({sorted(Path(item['path']).name for item in after)})")
+
+# Written down once. A second choice out of the same collection must not grow
+# the configuration a line at a time, and a subfolder of a folder already
+# listed is already searched.
+again = setup_llamacpp.remember_folder(
+    config.load(served_config),
+    # From the full list, so that a screen which lost its rows fails on the
+    # line that says so instead of on a lookup here, taking the rest with it.
+    next(item for item in before if item["path"] == str(weight)))
+deeper = setup_llamacpp.remember_folder(config.load(served_config), chosen)
+check(not again and not deeper,
+      "and a folder already covered by one that is listed is not listed again")
+
 # --- the download screen ----------------------------------------------------
 #
 # It used to be a bare prompt asking for a "model reference", which is a

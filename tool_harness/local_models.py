@@ -199,9 +199,17 @@ def scan(directories, recursive=True):
                 continue
             seen.add(resolved)
             try:
-                models.append(describe_cached(path))
+                item = describe_cached(path)
             except gguf.GGUFError as error:
                 problems.append(f"{path.name}: {error}")
+                continue
+            # The folder that was searched, which is not the file's parent when
+            # the collection has subfolders. Whoever chose this model chose it
+            # out of this folder, so this is the folder worth remembering, and
+            # remembering the parent instead is how a collection of ten shrinks
+            # to the one subfolder the current model happens to sit in.
+            item["search_root"] = str(directory)
+            models.append(item)
     return models, problems
 
 
