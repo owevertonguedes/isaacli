@@ -1578,6 +1578,58 @@ check([ref for ref, _state in dormant_live] == ["user/running"],
       "a notebook with no session counts as not running, not as a failure")
 
 
+# The states Kaggle actually reports, from its own enum. A cancelled kernel
+# comes back as CANCEL_ACKNOWLEDGED, and while that state was not on the list a
+# kernel deleted days earlier still counted as live and refused every launch
+# after it. CANCEL_REQUESTED is the other half of the pair and stays live: the
+# worker has not accepted the cancellation yet and may still be spending.
+def cancelled_run(command, check=False, capture_output=False, text=False, env=None,
+                  **kwargs):
+    parts = list(map(str, command))
+    if parts[1:3] == ["kernels", "list"]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ref,title\nuser/acked,Acked\nuser/asked,Asked\n"
+                   "user/done,Done\nuser/queued,Queued\n",
+            stderr="")
+    if parts[1:3] == ["kernels", "status"]:
+        state = {"user/acked": "CANCEL_ACKNOWLEDGED",
+                 "user/asked": "CANCEL_REQUESTED",
+                 "user/done": "COMPLETE",
+                 "user/queued": "QUEUED"}[parts[3]]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f'has status "KernelWorkerStatus.{state}"', stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    cancelled_live = cli_kaggle.live_kernels(Path("/fake/kaggle"), cancelled_run)
+check(sorted(ref for ref, _state in cancelled_live) == ["user/asked", "user/queued"],
+      "a kernel that acknowledged its cancellation stops counting as live")
+
+
+# `kernels status` carries prose as well as the state, and reading the state as
+# any word found anywhere in it filed a running kernel as finished because its
+# message contained "error".
+def wordy_run(command, check=False, capture_output=False, text=False, env=None,
+              **kwargs):
+    parts = list(map(str, command))
+    if parts[1:3] == ["kernels", "list"]:
+        return SimpleNamespace(returncode=0, stdout="ref,title\nuser/wordy,Wordy\n",
+                               stderr="")
+    return SimpleNamespace(
+        returncode=0,
+        stdout='user/wordy has status "KernelWorkerStatus.RUNNING" after an '
+               "error in the previous complete run", stderr="")
+
+
+with redirect_stdout(io.StringIO()):
+    wordy_live = cli_kaggle.live_kernels(Path("/fake/kaggle"), wordy_run)
+check([ref for ref, _state in wordy_live] == ["user/wordy"],
+      "the state is read as the name Kaggle prints, not as a word in the message")
+
+
 def refused_run(command, check=False, capture_output=False, text=False, env=None,
                 **kwargs):
     parts = list(map(str, command))

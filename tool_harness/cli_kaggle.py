@@ -31,7 +31,17 @@ from installation import _package_owns
 HERE = Path(__file__).resolve().parent
 TEMPLATE_DIR = HERE.parent / "contrib" / "kaggle"
 MODEL_CATALOG_PATH = HERE / "model_catalog.json"
-TERMINAL_STATES = {"COMPLETE", "ERROR", "CANCELLED"}
+# The states in which a kernel is over. The whole enum is
+# kagglesdk.kernels.types.kernels_enums.KernelWorkerStatus, read in the
+# installed SDK: QUEUED, RUNNING, COMPLETE, ERROR, CANCEL_REQUESTED,
+# CANCEL_ACKNOWLEDGED, NEW_SCRIPT. There is no CANCELLED in it, so the name
+# this set used to carry matched nothing Kaggle ever prints: a kernel that had
+# been cancelled came back as CANCEL_ACKNOWLEDGED, counted as live, and refused
+# every later launch until somebody deleted it by hand.
+# CANCEL_REQUESTED stays out on purpose, because the worker has not accepted the
+# cancellation yet and may still be spending quota. NEW_SCRIPT is a notebook
+# that has never run, which is the same answer as the 404 handled below.
+TERMINAL_STATES = {"COMPLETE", "ERROR", "CANCEL_ACKNOWLEDGED", "NEW_SCRIPT"}
 URL_PATTERN = re.compile(r"TUNNEL_URL=(https://[-a-z0-9]+\.trycloudflare\.com)")
 MODEL_CONTEXT = 16384
 # There is no `kaggle kernels stop`, only `delete`, so a kernel nobody watches
@@ -766,9 +776,19 @@ def live_kernels(executable, run_fn=subprocess.run, env=None):
                 continue
             raise RuntimeError(t(
                 "cli.kaggle.kernels.status.failed", ref=ref, error=output))
-        state = next((name for name in TERMINAL_STATES if name in output.upper()), None)
+        # The status is read as the enum name Kaggle prints, not as a substring
+        # of the whole output: `kernels status` also carries prose, and a
+        # notebook whose message happens to contain the word "error" would have
+        # been filed as finished by a search for "ERROR" anywhere in the line.
+        # A state we cannot name still counts as live, because a kernel we
+        # cannot classify may be spending quota right now.
+        match = re.search(r"KernelWorkerStatus\.([A-Z_]+)", output)
+        state = match.group(1) if match else None
         if state is None:
             live.append((ref, output))
+            debug.note(f"cli_kaggle.live_kernels {ref}",
+                       f"no status name in this answer, counted as live: {output}")
+        if state not in TERMINAL_STATES:
     return live
 
 
