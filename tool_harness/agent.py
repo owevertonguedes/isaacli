@@ -132,9 +132,7 @@ def context_report(messages, num_ctx, measured=0, measured_upto=0):
     used = counted + estimated
     budget = int(num_ctx * CONTEXT_INPUT_SHARE) if num_ctx else 0
     # The largest single thing one step can add is one tool result, and the cap
-    # on that is already derived from this same window. Warning any earlier
-    # would be a fraction chosen by hand; warning any later is warning after
-    # the request has already been refused.
+    # on that is already derived from this same window.
     headroom = context_budget.tokens_for("read", num_ctx) if num_ctx else 0
     return {
         "num_ctx": num_ctx or 0,
@@ -143,8 +141,21 @@ def context_report(messages, num_ctx, measured=0, measured_upto=0):
         "estimated": estimated,
         "budget": budget,
         "headroom": headroom,
+        # Two different harms, and they were being measured against one ceiling.
+        # Going over `budget` squeezes the answer: the request is still accepted
+        # and the turn survives, it just has less room to reply in. Going over
+        # `num_ctx` is what the endpoint refuses, and that is what loses
+        # everything the model did in this turn.
         "over": bool(num_ctx) and used > budget,
-        "approaching": bool(num_ctx) and used + headroom > budget,
+        # So the reserve for one more tool result belongs against the window,
+        # not against the budget. Held against the budget it warned at half the
+        # window, which on a 6.730 token profile left 1.042 tokens of
+        # conversation after the fixed part of every request and fired on the
+        # first file written. Against the window it warns where the next step
+        # could actually be refused. The two lines coincide today only because
+        # CONTEXT_INPUT_SHARE and the read share happen to sum to one; they
+        # answer different questions and are kept apart for when they do not.
+        "approaching": bool(num_ctx) and used + headroom > num_ctx,
         "compactable": sum(1 for msg in messages if _compactable(msg)),
     }
 
@@ -216,7 +227,7 @@ def fit_to_context(messages, num_ctx, on_pressure=None, on_note=None,
                    f"context management is off: {report['used']} tokens against a "
                    f"budget of {report['budget']} in a {num_ctx} token window")
         if on_note:
-            on_note(report, [])
+            on_note(dict(report, outcome="unmanaged"), [])
         return []
     if not report["compactable"]:
         # Asking a question whose only answer changes nothing is worse than not
@@ -231,20 +242,34 @@ def fit_to_context(messages, num_ctx, on_pressure=None, on_note=None,
                    "is the system prompt, the tool schema and the workspace "
                    "instructions, not the conversation")
         if on_note:
-            on_note(report, [])
+            on_note(dict(report, outcome="nothing_compactable"), [])
         return []
     if on_pressure is not None and not on_pressure(report):
         debug.note("agent.fit_to_context", "compaction was offered and declined")
         return []
     index = _tool_call_index(messages)
-    used, budget, summaries = report["used"], report["budget"], []
+    used, summaries = report["used"], []
+    # Stopping at `budget` is what made the offer do nothing: it is the line
+    # that triggered the check, so the loop found it already satisfied and broke
+    # on its first pass, and the user was asked, answered yes, and not one
+    # result was touched. Compaction has to land below the line that fired, not
+    # on it, or the same warning is waiting on the very next step. The distance
+    # below it is the room one more tool result needs, which is the same number
+    # the trigger reserves, so nothing new is chosen here.
+    target = report["budget"] - report["headroom"]
     for msg in messages:
-        if used <= budget:
+        if used <= target:
             break
         if not _compactable(msg):
             continue
-        before = int(len(msg.get("content") or "") / CHARS_PER_TOKEN)
+        content = msg.get("content") or ""
+        before = int(len(content) / CHARS_PER_TOKEN)
         summary = _summarise_result(msg, index, num_ctx)
+        # A summary longer than what it replaces buys nothing and costs the
+        # window. Leaving the result whole is the honest outcome, and it stays
+        # compactable so nothing here pretends the work was done.
+        if len(summary) >= len(content):
+            continue
         msg["content"] = summary
         # The measured base still counts what this message used to be, so the
         # saving is subtracted from it rather than the whole thing recounted
@@ -253,11 +278,20 @@ def fit_to_context(messages, num_ctx, on_pressure=None, on_note=None,
         summaries.append(summary)
     if summaries:
         debug.note("agent.fit_to_context",
-                   f"compacted {len(summaries)} tool result(s) to fit {budget} "
+                   f"compacted {len(summaries)} tool result(s) to fit {target} "
                    f"tokens of a {num_ctx} token window: "
                    + "; ".join(summary.split(" returned ")[0] for summary in summaries))
-        if on_note:
-            on_note(report, summaries)
+    else:
+        # Accepted and nothing shrank. Silence here is what let the previous
+        # defect run unseen: the screen said the offer was taken and the next
+        # step warned again with the same numbers.
+        debug.note("agent.fit_to_context",
+                   f"compaction was accepted but nothing shrank: {used} tokens "
+                   f"against a target of {target}, every compactable result "
+                   "already smaller than the summary that would replace it")
+    if on_note:
+        on_note(dict(report, outcome="compacted" if summaries else "no_shrink"),
+                summaries)
     return summaries
 
 

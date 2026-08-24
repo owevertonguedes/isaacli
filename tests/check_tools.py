@@ -430,9 +430,14 @@ check([m.get("content") for m in kept_history]
 # unable to decide whether reading the file again is worth a step.
 history = [dict(m) for m in pressure_history]
 summaries = agent.fit_to_context(history, 32_768, on_pressure=lambda report: True)
-check(len(summaries) == 1 and agent.context_report(history, 32_768)["used"]
-      <= agent.context_report(history, 32_768)["budget"],
-      "accepting compacts exactly as much as it takes to fit and no more")
+# Fitting under `budget` is not enough and asserting only that hid the defect
+# that made the whole offer do nothing: what is checked every step is
+# `approaching`, so a compaction that stops at `budget` leaves the same warning
+# waiting on the next step. Accepting has to end the pressure, not postpone it.
+after = agent.context_report(history, 32_768)
+check(summaries and not after["over"] and not after["approaching"],
+      "accepting compacts until the pressure is gone, not merely under budget")
+check(after["compactable"], "and stops there, leaving what it did not need to take")
 check("read_file" in history[3]["content"] and "client.ts" in history[3]["content"]
       and "60000" in history[3]["content"].replace(",", ""),
       "what replaces a result names the call, its arguments and the size that went")
@@ -452,8 +457,73 @@ try:
     auto = agent.fit_to_context(silent_history, 32_768)
 finally:
     agent.debug.note = original_note
-check(len(auto) == 1 and any("read_file" in line for line in noted),
+check(auto and any("read_file" in line for line in noted),
       "with nobody at the terminal it compacts and the log names what it compacted")
+
+# The two things that went wrong on a real 6.730 token profile on 2026-08-25,
+# both measured here against that same window and the 2.323 tokens the server
+# counted for the fixed part of every request on it.
+def _bank_session(results):
+    history = [
+        {"role": "system", "content": "contract"},
+        {"role": "user", "content": "write a bank account simulator"},
+    ]
+    for number in range(results):
+        history.append({"role": "assistant", "tool_calls": [
+            {"id": f"w{number}",
+             "function": {"name": "write_file",
+                          "arguments": '{"path": "bank.py"}'}}]})
+        history.append({"role": "tool", "tool_call_id": f"w{number}",
+                        "content": "y" * 1_350})
+    return history
+
+
+# First: it warned on the first file written. The reserve for one more tool
+# result was held against `budget` rather than against the window, which puts
+# the line at half the window and left 1.042 tokens of conversation after the
+# fixed part. Over budget squeezes the answer; only the window loses the turn.
+early = _bank_session(3)
+early_report = agent.context_report(early, 6_730, measured=2_323, measured_upto=2)
+check(early_report["used"] > early_report["num_ctx"] // 2
+      and not early_report["over"] and not early_report["approaching"],
+      "past half the window is not pressure: the reserve is held against the window")
+
+# Second: accepting compacted nothing. The target was `budget`, the same line
+# that fired the check, so the loop found it already satisfied and broke on its
+# first pass. The user was asked, answered yes, and not one result was touched.
+loaded = _bank_session(7)
+before = agent.context_report(loaded, 6_730, measured=2_323, measured_upto=2)
+check(before["over"] and before["approaching"] and before["compactable"] == 7,
+      "the reproduction really is under pressure with results on the table")
+accepted = agent.fit_to_context(loaded, 6_730, on_pressure=lambda report: True,
+                                measured=2_323, measured_upto=2)
+settled = agent.context_report(loaded, 6_730, measured=2_323, measured_upto=2)
+check(accepted and not settled["over"] and not settled["approaching"],
+      "saying yes actually compacts, and ends the pressure it was offered for")
+check(settled["used"] <= before["budget"] - before["headroom"],
+      "and lands below the line that fired, so the next step is not warned again")
+
+# A summary bigger than the result it replaces spends window to buy nothing, so
+# the result stays whole and stays compactable rather than being counted as work.
+tiny = [
+    {"role": "system", "content": "contract"},
+    {"role": "user", "content": "u" * 100_000},
+    {"role": "assistant", "tool_calls": [
+        {"id": "t", "function": {"name": "list_dir", "arguments": '{"path": "."}'}}]},
+    {"role": "tool", "tool_call_id": "t", "content": "(empty)"},
+]
+tiny_pressure = agent.context_report(tiny, 32_768)
+check(tiny_pressure["approaching"] and tiny_pressure["compactable"] == 1,
+      "the reproduction is under pressure with one result that cannot shrink")
+untouched_tiny = [dict(m) for m in tiny]
+tiny_notes = []
+check(agent.fit_to_context(untouched_tiny, 32_768,
+                           on_pressure=lambda report: True,
+                           on_note=lambda report, s: tiny_notes.append(
+                               (report.get("outcome"), len(s)))) == []
+      and untouched_tiny[3]["content"] == "(empty)"
+      and tiny_notes == [("no_shrink", 0)],
+      "a result smaller than its own summary is left alone, and that is reported")
 
 # The task itself is never compactable, and a task that does not fit is a refusal
 # with the numbers, not a silent shrinking of what the user asked for. This is

@@ -528,6 +528,7 @@
   "cli.context.compacted": "{count} tool result(s) were compacted into summaries. The model was told what each one was.",
   "cli.context.recoverable": "Nothing was lost: the full results are in this session's log, and {command} rebuilds the conversation from it.",
   "cli.context.unmanaged": "Context management is off, so nothing was compacted. The next request may be refused by the endpoint for exceeding the window.",
+  "cli.context.no_shrink": "Nothing was compacted: every result that could go is already smaller than the summary that would replace it. What fills the window is the fixed part of every request, so raise this profile's context with /config.",
   "cli.cmd.config": "session preferences (context, window, temperature)",
   "cli.config.title": "Preferences",
   "cli.config.explain": "Each row shows the value in use and where that value came from.",
