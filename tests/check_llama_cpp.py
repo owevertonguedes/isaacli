@@ -385,6 +385,37 @@ found, owner = llama_cpp.find_server(
 check((found, owner) == (None, None),
       "no llama-server anywhere is an answer, not a failure")
 
+# A build somebody compiled themselves is not on PATH: the developer's own is
+# launched by a wrapper script sitting beside it. PATH alone reported "nothing
+# here" on a machine that had been serving GGUF files all week, and /model then
+# offered to install a second copy of the server it was talking to.
+hand_built = root / "hand-built"
+hand_built.mkdir()
+(hand_built / "llama-server").write_text("#!/bin/sh\n", encoding="utf-8")
+(hand_built / "llama-server").chmod(0o755)
+(hand_built / "start-llama-server.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+(hand_built / "start-llama-server.sh").chmod(0o755)
+by_script = llama_cpp.profile_servers({"profiles": {
+    "hand-made": {"autostart": {"cmd": [str(hand_built / "start-llama-server.sh")]}},
+}})
+check([str(item) for item in by_script] == [str(hand_built / "llama-server")],
+      "the server beside a profile's wrapper script is found")
+by_binary = llama_cpp.profile_servers({"profiles": {
+    "ours": {"autostart": {"cmd": [str(hand_built / "llama-server"), "-m", "x.gguf"]}},
+}})
+check([str(item) for item in by_binary] == [str(hand_built / "llama-server")],
+      "and so is one the profile launches directly")
+check(llama_cpp.profile_servers({"profiles": {
+          "remote": {"base_url": "https://api.example/v1"},
+          "gone": {"autostart": {"cmd": [str(root / "absent" / "llama-server")]}},
+      }}) == [],
+      "a profile with no autostart, or one naming a path that is gone, offers nothing")
+found, owner = llama_cpp.find_server(
+    record_path=root / "absent.json", which_fn=lambda name: None,
+    candidates=by_script)
+check(owner == "user" and found == hand_built / "llama-server",
+      "and find_server uses it, off PATH, without ever claiming it as ours")
+
 # --- removal, and every refusal it owes the user -----------------------------
 
 code, key, _values = llama_cpp.uninstall(

@@ -521,7 +521,44 @@ def installed(record_path=None):
     return data
 
 
-def find_server(record_path=None, which_fn=shutil.which):
+def profile_servers(data):
+    """llama-server binaries reachable through a saved profile's autostart.
+
+    A build somebody compiled themselves is usually not on PATH: it sits in the
+    working directory it was built in, launched by a wrapper script next to it.
+    PATH alone therefore reports "no llama.cpp here" on a machine that has been
+    serving GGUF files all week, and the screen then offers to install a second
+    copy of what is already running. The profile names the command it launches,
+    so the binary is read off that command instead of guessed: the command
+    itself when it is the server, otherwise the server sitting beside it.
+    """
+    found = []
+    for item in (data.get("profiles") or {}).values():
+        command = (item.get("autostart") or {}).get("cmd") or []
+        if not command or not str(command[0]).strip():
+            continue
+        # An empty first word would make the sibling candidate a bare relative
+        # name, and then whatever the working directory happens to hold decides
+        # which server this program is about to run.
+        first = Path(str(command[0]))
+        for candidate in (first, first.parent / SERVER_NAME):
+            if candidate.name == SERVER_NAME and _executable(candidate):
+                found.append(candidate)
+                break
+    return found
+
+
+def _executable(path):
+    """A file this machine can run. A directory answers X_OK too, and a
+    directory handed to Popen is an exception, not a server."""
+    try:
+        return Path(path).is_file() and os.access(path, os.X_OK)
+    except OSError:
+        debug.note("llama_cpp._executable", f"unreadable: {path}")
+        return False
+
+
+def find_server(record_path=None, which_fn=shutil.which, candidates=()):
     """A usable llama-server and who it belongs to.
 
     Returns (path, owner) with owner "isaacli" or "user", or (None, None). The
@@ -534,6 +571,9 @@ def find_server(record_path=None, which_fn=shutil.which):
     found = which_fn(SERVER_NAME)
     if found:
         return Path(found), "user"
+    for candidate in candidates:
+        if _executable(candidate):
+            return Path(candidate), "user"
     return None, None
 
 

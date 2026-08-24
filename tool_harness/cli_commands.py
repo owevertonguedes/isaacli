@@ -161,7 +161,7 @@ class CommandsMixin:
                     self.redraw_session(t("cli.setup.reread_failed", error=e))
                     return True
                 if item:
-                    self.apply_profile(item)
+                    self.apply_profile(item, name=name)
                     self._log("meta", event="setup", profile=name,
                               model=self.model, thinking=self.thinking)
                     self.redraw_session(
@@ -220,7 +220,7 @@ class CommandsMixin:
                     data = config.empty_config()
                 item = (data.get("profiles") or {}).get(arg)
                 if item:
-                    self.apply_profile(item)
+                    self.apply_profile(item, name=arg)
                     source = t("cli.model.source.profile", name=arg)
                 else:
                     # A bare name is a profile that chose nothing but the
@@ -244,7 +244,7 @@ class CommandsMixin:
                     self.redraw_session(t("cli.setup.reread_failed", error=e))
                     return True
                 if item:
-                    self.apply_profile(item)
+                    self.apply_profile(item, name=name)
                     # A kernel started from inside the session is this run's to
                     # end, exactly like one opened from the command line.
                     import cli_kaggle

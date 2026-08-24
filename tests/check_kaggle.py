@@ -885,7 +885,7 @@ original_run_kaggle = cli_kaggle.run_kaggle
 kaggle_setup_calls = []
 try:
     setup_ollama._select = lambda _tr, _title, options, *_args, **_kwargs: (
-        check(any("Kaggle" in option and "not installed" in option for option in options),
+        check(any("Kaggle" in option and "not configured" in option for option in options),
               "Kaggle appears in /model before it is configured"),
         1,
     )[-1]

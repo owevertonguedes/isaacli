@@ -30,6 +30,7 @@ os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 import agent
 import cli as app
 import cli_commands
+import cli_kaggle
 import cli_ollama
 import cli_presentation
 import cli_sessions
@@ -1793,6 +1794,49 @@ switching.apply_profile({"model": "third", "thinking": "low", "num_ctx": 4096,
 check((switching.model, switching.thinking, switching.num_ctx,
        switching.temperature) == ("third", "low", 4096, 0.1),
       "and every field a profile does choose is carried, not only the model")
+
+# Choosing another model says the old one is done, and the engine serving it has
+# to hear that. It did not: /model swapped the fields and left llama-server (or
+# Ollama) resident, holding the card for a model nothing would ask again, while
+# the next engine tried to load onto the same card.
+released = []
+switching.release_local_server = lambda: released.append(switching.model)
+switching.apply_profile({"model": "fourth"})
+check(released == ["third"],
+      f"switching model releases the engine that was serving the old one, "
+      f"and does it before the fields move (released {released})")
+switching.apply_profile({"model": "fourth"})
+check(released == ["third"],
+      "and re-picking the profile already loaded releases nothing, because "
+      "stopping a server to start it again is a minute of loading for no change")
+switching.apply_profile({"model": "fourth", "provider": "openai_compatible",
+                         "provider_name": "Kaggle",
+                         "base_url": "https://example.invalid/v1"})
+check(released == ["third", "fourth"],
+      f"and the same model served from somewhere else is a switch too, "
+      f"because the server here stops being the one answering (released {released})")
+
+# A Kaggle kernel is the expensive case: it spends quota by wall clock, from a
+# weekly 30 hours, until something deletes it. Switching away from it used to
+# leave it billing until the program was closed.
+original_stop_session = cli_kaggle.stop_profile_session
+stopped_kernels = []
+try:
+    cli_kaggle.stop_profile_session = (
+        lambda profile, _config_file=None, **_kwargs: stopped_kernels.append(profile))
+    switching.kaggle_profile = "kaggle-qwen"
+    switching.apply_profile({"model": "kaggle-qwen-model"}, name="kaggle-qwen")
+    check(stopped_kernels == [] and switching.kaggle_profile == "kaggle-qwen",
+          "re-selecting the Kaggle profile already held does not end its kernel")
+    switching.apply_profile({"model": "back-to-local"}, name="local")
+    check(stopped_kernels == ["kaggle-qwen"] and switching.kaggle_profile is None,
+          f"and switching away from it does, instead of leaving quota burning "
+          f"for a model nothing will ask again (stopped {stopped_kernels})")
+    switching.apply_profile({"model": "somewhere-else"}, name="other")
+    check(stopped_kernels == ["kaggle-qwen"],
+          "and the next switch has nothing left to end, so it ends nothing twice")
+finally:
+    cli_kaggle.stop_profile_session = original_stop_session
 
 profile_fields = []
 for module in ("cli_commands.py", "cli_providers.py", "cli.py"):

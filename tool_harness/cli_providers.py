@@ -32,7 +32,29 @@ class ProvidersMixin:
             provider["autostart"] = autostart
         return provider
 
-    def apply_profile(self, item):
+    def release_kaggle_session(self, keeping=None):
+        """End the Kaggle kernel this window opened, when it is no longer the one
+        being talked to.
+
+        A kernel spends quota by wall clock until something deletes it, and the
+        quota is 30 hours a week. Until this existed the only end was leaving the
+        program: switching to a local model kept the kernel billing for a model
+        nothing was going to ask again. `keeping` is the profile being switched
+        to, so re-selecting the kernel already held does not end it.
+
+        The decision of whether it really stops is stop_profile_session's, not
+        this one's: another window may be talking to the same kernel, and the
+        last one out is what ends it.
+        """
+        held = getattr(self, "kaggle_profile", None)
+        if not held or held == keeping:
+            return
+        import cli_kaggle
+
+        cli_kaggle.stop_profile_session(held, self.config_file)
+        self.kaggle_profile = None
+
+    def apply_profile(self, item, name=None):
         """Everything a chosen profile decides about the next request.
 
         The five move together or not at all. They were assigned one by one in
@@ -44,12 +66,31 @@ class ProvidersMixin:
         Absent is a decision here, not a missing value. `None` means the
         profile did not choose, and the agent's own default holds; that is why
         this reads every field rather than updating only the ones present.
+
+        Releasing whatever was serving the old model belongs here for the same
+        reason: picking another model says the old one is done, and the four
+        callers are four chances to forget it. Left running, llama-server or
+        Ollama stayed resident with a model nothing would ask again, holding the
+        card while the next engine tried to load onto it, and a Kaggle kernel
+        went on spending quota by wall clock until the program was closed.
+
+        `name` is the profile being applied, and it is what keeps the Kaggle
+        release from ending the kernel it was just handed.
         """
+        provider = self._provider_from_profile(item)
+        # Re-picking what is already loaded releases nothing: stopping a server
+        # only to start it again is a minute of loading for no change. The
+        # release runs before the fields move, because the registration is keyed
+        # on the provider being replaced.
+        if item.get("model") != getattr(self, "model", None) or provider != getattr(
+                self, "provider", None):
+            self.release_local_server()
+        self.release_kaggle_session(keeping=name)
         self.model = item["model"]
         self.thinking = item.get("thinking")
         self.num_ctx = item.get("num_ctx")
         self.temperature = item.get("temperature")
-        self.provider = self._provider_from_profile(item)
+        self.provider = provider
 
     def _persist_adjusted_thinking(self):
         """Write thinking=None to the active profile after the provider rejected
@@ -90,7 +131,7 @@ class ProvidersMixin:
         if not item:
             print(t("cli.model.profile_missing"))
             return
-        self.apply_profile(item)
+        self.apply_profile(item, name=name)
         self._log("meta", event="model", profile=name, model=self.model,
                   thinking=self.thinking, num_ctx=self.num_ctx)
         context = (t("cli.model.context_suffix", context=_short_context(self.num_ctx))

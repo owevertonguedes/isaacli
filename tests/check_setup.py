@@ -15,6 +15,7 @@ sys.path.insert(0, str(HERE.parent / "tool_harness"))
 import config
 import model_discovery
 import setup_ollama
+import terminal_ui
 
 # The curated references, in catalog order. Derived here rather than read from
 # a module constant, because the constant this used to read was a list nothing
@@ -182,6 +183,36 @@ try:
           "/model hides only the context copies the configuration recognises")
     client.installed.remove("isaac-qwen-legacy-16k")
 
+    # Everything /model prints is printed onto the alternate screen, which is
+    # torn down on the way out. A source that failed said why, the screen took
+    # the sentence with it, and the REPL then said only "model unchanged": a
+    # Kaggle launch that reported a real error looked, from outside, like the
+    # command doing nothing at all. The reason is held until it has been read.
+    original_source = setup_ollama._select_configured_api
+    original_interactive = terminal_ui.interactive
+    acknowledged = []
+    try:
+        setup_ollama._select_configured_api = (
+            lambda *_args, **_kwargs: print("the Kaggle launch failed: no quota") or 1)
+        terminal_ui.interactive = lambda _input_fn=None: True
+        failing_out = io.StringIO()
+
+        def reader(prompt):
+            acknowledged.append(prompt)
+            return ""
+
+        with redirect_stdout(failing_out):
+            failed_code = setup_ollama.run_model_selector(
+                reader, config_file=selector_config)
+    finally:
+        setup_ollama._select_configured_api = original_source
+        terminal_ui.interactive = original_interactive
+    check(failed_code == 1 and len(acknowledged) == 1,
+          f"a failed /model waits for the reason to be read before the screen "
+          f"closes, and still reports the failure (code {failed_code})")
+    check("no quota" in failing_out.getvalue(),
+          "and the reason itself is what was on that screen")
+
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             answers("1", "4", engine_answer("ollama"), "5", "3", "3"), config_file=config_file,
@@ -262,6 +293,43 @@ try:
           "a saved llama.cpp profile is not listed as somebody's remote API")
     check(local_entries[local_initial] == "llamacpp",
           "and opening /model on it starts the cursor on the local engine")
+
+    # The same profile written by hand, before this program existed, carries the
+    # user's own name for the engine. Recognised by the provider name alone it
+    # came out as a remote API next to the engine entry, which is a local server
+    # listed twice, once under a name the screen offers to install.
+    hand_root = root / "hand-built"
+    hand_root.mkdir(exist_ok=True)
+    hand_server = hand_root / "llama-server"
+    hand_server.write_text("#!/bin/sh\n", encoding="utf-8")
+    hand_server.chmod(0o755)
+    launcher = hand_root / "start-llama-server.sh"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    hand_config = root / "hand-made-engine.json"
+    hand_data = dict(config.empty_config(), language="pt-BR")
+    hand_data["profiles"]["llama-server-fixture"] = {
+        "provider": "openai_compatible",
+        "provider_name": "Llama Server",
+        "base_url": "http://127.0.0.1:8080/v1", "model": "fixture",
+        "autostart": {"cmd": [str(launcher)],
+                      "health_url": "http://127.0.0.1:8080/v1/models"},
+    }
+    hand_data["default_profile"] = "llama-server-fixture"
+    config.save(hand_data, hand_config)
+    hand_entries, hand_options, hand_initial = setup_ollama.model_source_entries(
+        config.load(hand_config), pt, which_fn=lambda _name: None)
+    check(not any(isinstance(entry, tuple) and entry[1] == "llama-server-fixture"
+                  for entry in hand_entries),
+          "a hand-made local server profile is not listed a second time as an API")
+    check(hand_entries[hand_initial] == "llamacpp",
+          "and the cursor starts on the engine it belongs to")
+    engine_label = hand_options[hand_entries.index("llamacpp")]
+    check(engine_label == pt.t("engine.llamacpp.found",
+                               owner=pt.t("engine.llamacpp.owner.user")),
+          f"and the entry reports the server it already runs rather than offering "
+          f"to install one ({engine_label!r})")
+
     # Back to the machine the rest of this file describes. engine_answer asks
     # the same question the screen will ask, so the two have to be looking at
     # the same machine when they ask it.

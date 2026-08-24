@@ -244,7 +244,21 @@ def _model_cells(item, installed, tr, row_machine=None):
     )
 
 
-def _detect_engines(tr, which_fn=None):
+def _is_local_engine(item):
+    """Whether a saved openai_compatible profile is a local engine of ours.
+
+    The protocol is not the question. A profile that carries an autostart
+    command is a server this program starts on this machine, so listing it among
+    somebody's remote endpoints would offer a model swap that queries a server
+    which is not running, and would show the engine twice: once as an engine and
+    once as an API. The provider name is checked too, for a profile written
+    before autostart existed.
+    """
+    return (item.get("provider_name") == LLAMACPP_PROVIDER_NAME
+            or bool((item.get("autostart") or {}).get("cmd")))
+
+
+def _detect_engines(tr, which_fn=None, candidates=()):
     """Offer what this machine has, in place of a fixed menu of everything.
 
     The rule, in the owner's words: use what the user has. A machine with no
@@ -263,7 +277,8 @@ def _detect_engines(tr, which_fn=None):
     entries = []
     notes = []
 
-    server, owner = llama_cpp.find_server(which_fn=which_fn)
+    server, owner = llama_cpp.find_server(
+        which_fn=which_fn, candidates=candidates)
     try:
         ollama_models = local_models.ollama_manifests()
     except Exception:
@@ -1194,7 +1209,10 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
             engine_explanation = tr.t("engine.explain")
             if ruler_line:
                 engine_explanation += "\n" + ruler_line
-            engines, engine_notes = _detect_engines(tr)
+            import llama_cpp
+
+            engines, engine_notes = _detect_engines(
+                tr, candidates=llama_cpp.profile_servers(setup_data))
             if engine_notes:
                 engine_explanation += "\n" + "\n".join(engine_notes)
             engine = _select(
@@ -1424,20 +1442,23 @@ def model_source_entries(data, tr, which_fn=None):
     # server which is not running, so it gets its own entry and its own screen.
     llamacpp_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
-        if item.get("provider") == "openai_compatible"
-        and item.get("provider_name") == LLAMACPP_PROVIDER_NAME
+        if item.get("provider") == "openai_compatible" and _is_local_engine(item)
     ]
     api_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
         if item.get("provider") == "openai_compatible"
-        and item.get("provider_name") not in ("Kaggle", LLAMACPP_PROVIDER_NAME)
+        and item.get("provider_name") != "Kaggle"
+        and not _is_local_engine(item)
     ]
-    kaggle_state = "model.configured" if kaggle_profiles else "model.not_installed"
+    kaggle_state = "model.configured" if kaggle_profiles else "model.not_configured"
 
     # The same detection the setup screen runs, so a feature that exists in one
     # branch exists in the other. This screen used to be a fixed list, which is
     # how the local engine could work in setup and be unreachable from /model.
-    engines, _notes = _detect_engines(tr, which_fn=which_fn)
+    import llama_cpp
+
+    engines, _notes = _detect_engines(
+        tr, which_fn=which_fn, candidates=llama_cpp.profile_servers(data))
     entries = []
     options = []
     for key, label in engines:
@@ -1471,7 +1492,8 @@ def _select_configured_api(input_fn, config_file, language, tr):
     api_profiles = [
         (name, item) for name, item in (data.get("profiles") or {}).items()
         if item.get("provider") == "openai_compatible"
-        and item.get("provider_name") not in ("Kaggle", LLAMACPP_PROVIDER_NAME)
+        and item.get("provider_name") != "Kaggle"
+        and not _is_local_engine(item)
     ]
     entries, options, initial = model_source_entries(data, tr)
     index = _select(
@@ -1546,9 +1568,23 @@ def run_model_selector(input_fn=input, config_file=None):
         with terminal_ui.alternate_screen(input_fn):
             source = _select_configured_api(input_fn, config_file, language, tr)
             if source == "__ollama__":
-                return _run_setup(
-                    input_fn, config_file, initial_language=language, ollama_only=True,
+                source = _run_setup(
+                    input_fn, config_file, initial_language=language,
+                    ollama_only=True,
                 )
+            # The alternate screen is torn down on the way out of this block,
+            # taking with it everything printed inside it. A path that failed
+            # says why on that screen and then the REPL says only "model
+            # unchanged", which is how a Kaggle launch that reported a real
+            # error looked, from the outside, like the command doing nothing.
+            # The reason is held on screen until it has been read.
+            if source not in (0, 130) and terminal_ui.interactive(input_fn):
+                try:
+                    input_fn("\n" + tr.t("model.failed.acknowledge"))
+                except (EOFError, KeyboardInterrupt):
+                    # Not reading the reason is allowed; it does not turn a
+                    # failure into a cancellation, so the code is unchanged.
+                    print()
             return source
     except (RuntimeError, ValueError, urllib.error.URLError) as e:
         print(Translator("en").t("setup.error", error=e))

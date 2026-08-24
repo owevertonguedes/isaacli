@@ -441,9 +441,28 @@ class OllamaMixin:
             self._autostart_registered = False
             self._log("meta", event="autostart_stop", pid=server_pid)
 
-    def close(self):
+    def release_local_server(self):
+        """Give up the local server this session is holding, and stop it if this
+        session is the last one holding it.
+
+        Separate from close() because leaving a session is not the only way to
+        stop needing a server: switching to another model says the same thing.
+        Without this, /model left llama-server (or Ollama) resident and busy for
+        a model nothing was going to ask again, and the user watched a card stay
+        occupied by the engine they had just walked away from.
+
+        Must run before the new profile is applied: the registration is keyed on
+        the provider being replaced, so a swap first would release the lock of a
+        server this session never started.
+        """
         self._close_autostart_provider()
-        if not self._ollama_registered:
+        self._close_ollama()
+
+    def close(self):
+        self.release_local_server()
+
+    def _close_ollama(self):
+        if not getattr(self, "_ollama_registered", False):
             return
         with _shared_local_state("ollama") as state:
             clients = [

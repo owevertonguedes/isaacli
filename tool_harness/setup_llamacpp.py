@@ -108,13 +108,17 @@ def _install_plan(tr, urlopen_fn=urllib.request.urlopen):
     return asset, tag
 
 
-def ensure_server(tr, input_fn, urlopen_fn=urllib.request.urlopen):
+def ensure_server(tr, input_fn, urlopen_fn=urllib.request.urlopen,
+                  candidates=()):
     """A llama-server to serve with, installing one only after being told to.
 
     Returns (executable, owner) or (None, None). A llama-server the user
-    already has is used exactly as it is and never recorded as ours.
+    already has is used exactly as it is and never recorded as ours, including
+    the one a saved profile already launches from outside PATH: offering to
+    install a copy of the server currently answering requests is the screen
+    saying it cannot see what the user is looking at.
     """
-    executable, owner = llama_cpp.find_server()
+    executable, owner = llama_cpp.find_server(candidates=candidates)
     if executable:
         return executable, owner
 
@@ -458,7 +462,9 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     """The whole local path: a server, a model, a device, a context, a profile."""
     from setup_ollama import _store_onboarding, _UNCHANGED
 
-    executable, _owner = ensure_server(tr, input_fn, urlopen_fn)
+    executable, _owner = ensure_server(
+        tr, input_fn, urlopen_fn,
+        candidates=llama_cpp.profile_servers(config.load(config_file)))
     if executable is None:
         return "__engine__"
     model = choose_model(tr, input_fn, config_file, urlopen_fn)
