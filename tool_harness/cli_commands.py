@@ -166,6 +166,7 @@ class CommandsMixin:
                               model=self.model, thinking=self.thinking)
                     self.redraw_session(
                         t("cli.setup.profile_loaded", name=name, model=self.model))
+                    self.announce_model_change()
             else:
                 self.redraw_session(
                     t("cli.setup.cancelled") if code == 130
@@ -230,7 +231,8 @@ class CommandsMixin:
                     source = t("cli.model.source.ollama")
                 self._log("meta", event="model", model=self.model,
                           thinking=self.thinking)
-                print(t("cli.model.set", model=self.model, source=source))
+                say(t("cli.model.set", model=self.model, source=source))
+                self.announce_model_change()
             return True
         if cmd == "/kaggle":
             import setup_ollama
@@ -258,6 +260,7 @@ class CommandsMixin:
                               model=self.model, thinking=self.thinking)
                     self.redraw_session(
                         t("cli.setup.profile_loaded", name=name, model=self.model))
+                    self.announce_model_change()
             else:
                 self.redraw_session(
                     t("cli.setup.cancelled") if code == 130

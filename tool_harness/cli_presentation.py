@@ -396,6 +396,17 @@ def _welcome_lines(model, engine, workspace, session=None, width=None):
         body(t("cli.welcome.compact"))
         lines.append("├" + "─" * inner + "┤")
 
+    lines.extend(_summary_rows(model, engine, workspace, session, inner))
+    lines.append("╰" + "─" * inner + "╯")
+    return lines
+
+
+def _summary_rows(model, engine, workspace, session, inner):
+    """The label/value rows at the foot of the panel, without the frame's ends.
+
+    Shared with _print_session_summary so the box a model change reprints says
+    the same things, in the same order, as the one the session opened with.
+    """
     value_width = inner - 13
     rows = [
         (t("cli.welcome.label.model"), model),
@@ -406,10 +417,37 @@ def _welcome_lines(model, engine, workspace, session=None, width=None):
     # copy it before the conversation scrolls it away.
     if session:
         rows.append((t("cli.welcome.label.session"), session))
+    out = []
     for label, content in rows:
-        body(f"{label:<10} {_shorten(content, value_width)}")
-    lines.append("╰" + "─" * inner + "╯")
-    return lines
+        text = _shorten(f"{label:<10} {_shorten(content, value_width)}", inner - 2)
+        out.append("│ " + _pad_visual(text, inner - 2) + " │")
+    return out
+
+
+def _session_summary_lines(model, engine, workspace, session=None, width=None):
+    """The panel's foot on its own, for reprinting after something in it changed.
+
+    The opening panel is scrollback: once printed it cannot be edited, so a
+    model chosen later left the old name sitting at the top of the screen as
+    if nothing had happened. This prints the current answer where the user is
+    looking, instead of asking them to trust the summary line.
+    """
+    columns = width if width is not None else shutil.get_terminal_size((100, 24)).columns - 2
+    width = max(36, min(columns, 112))
+    inner = width - 2
+    return [
+        "╭" + "─" * inner + "╮",
+        *_summary_rows(model, engine, workspace, session, inner),
+        "╰" + "─" * inner + "╯",
+    ]
+
+
+def _print_session_summary(model, engine, workspace, session=None):
+    for line in _session_summary_lines(model, engine, workspace, session):
+        decorated = line
+        for glyph in "│╭╮╯╰─":
+            decorated = decorated.replace(glyph, _color(glyph, "assistant"))
+        print(decorated)
 
 
 def _print_welcome(model, engine, workspace, session=None):

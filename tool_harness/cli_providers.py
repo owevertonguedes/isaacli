@@ -92,6 +92,25 @@ class ProvidersMixin:
         self.temperature = item.get("temperature")
         self.provider = provider
 
+    def announce_model_change(self):
+        """What the session owes the user right after the model changed.
+
+        Two things the opening of the session already does and a later change
+        did not: say on screen which model is answering now, and bring its
+        engine up. Without the first, the panel at the top still names the
+        model that was replaced. Without the second, applying a profile stops
+        the old server and starts nothing, so the wait for the new one landed
+        on the next question the user typed, looking like the message caused
+        it.
+        """
+        import terminal_ui
+
+        if terminal_ui.interactive():
+            _print_session_summary(self.model, self._engine_label(), self.workspace,
+                                   self.session_id)
+        self.prewarm_engine()
+        print()
+
     def _persist_adjusted_thinking(self):
         """Write thinking=None to the active profile after the provider rejected
         the configured reasoning effort, so the error (and the extra round trip
@@ -141,6 +160,7 @@ class ProvidersMixin:
                   if self.thinking not in (None, False) else t("cli.model.no_reasoning"))
         self.redraw_session(
             t("cli.model.summary", name=name, context=context, effort=effort))
+        self.announce_model_change()
 
     def _permission_mode_label(self):
         return (t("cli.mode.saved_only") if self.permission_mode == "authorized_only"
