@@ -937,6 +937,11 @@ def prepared_weight_probe(executable, username, run_fn=subprocess.run, env=None)
 
 
 def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH, prepared_fn=None):
+    # `prepared_fn` is unread here and is not dead: this is the offline screen,
+    # drawn from the versioned catalog alone, and `setup_ollama` replaces this
+    # very name with the live one, which does read it. The parameter is the
+    # shape both implementations answer to, so both call sites can pass it
+    # without knowing which is installed.
     models = prepared_models(catalog_path)
     if not models:
         raise RuntimeError(t("cli.kaggle.models.none"))
