@@ -274,43 +274,6 @@ out = execution.run_command("curl http://example.com")
 check("Runs unasked:" in out and "approve" in out,
       f"the refusal says what runs unasked AND that the user can approve it: {out!r}")
 
-print("\n=== 6b. graphify only queries a local graph ===")
-check(not denied(execution.run_command('graphify query "where is X"')),
-      "graphify query passes as a local query")
-for attempt in [
-    "graphify extract .",
-    "graphify update .",
-    "graphify clone https://github.com/example/repo",
-    "graphify add https://example.com",
-    "graphify watch .",
-]:
-    check(denied(execution.run_command(attempt)), f"refused: {attempt!r}")
-
-# The mounts that exist for graphify belong to graphify's jail and to no other.
-# Ungated, they went into the jail of every command a model ran: measured on
-# 2026-08-25, `ls` was handed a Python interpreter tree bound in for a tool that
-# is not installed on this machine at all. Planted here rather than read from the
-# machine, so the answer does not depend on who is running the suite.
-planted_tool = base / "graphify-tool"
-(planted_tool / "bin").mkdir(parents=True)
-planted_python = base / "graphify-python"
-planted_python.mkdir()
-original_roots = (execution.GRAPHIFY_TOOL_ROOT, execution.GRAPHIFY_PYTHON_ROOT)
-execution.GRAPHIFY_TOOL_ROOT, execution.GRAPHIFY_PYTHON_ROOT = planted_tool, planted_python
-try:
-    def graphify_binds(argv):
-        line = execution.build_bwrap(argv, root)
-        return [a for a in line
-                if a in (str(planted_tool), str(planted_python))]
-
-    check(graphify_binds(["graphify", "query", "x"]),
-          "the graphify jail carries the mounts graphify needs")
-    for other in (["ls", "-la"], ["python3", "-c", "print(1)"], ["git", "status"]):
-        check(not graphify_binds(other),
-              f"and no other command carries them ({other[0]})")
-finally:
-    execution.GRAPHIFY_TOOL_ROOT, execution.GRAPHIFY_PYTHON_ROOT = original_roots
-
 print("\n=== 6c. gh: queries run unasked, mutations need the user ===")
 check(not denied(execution.run_command(
     "gh issue view 246 --repo aws-cloudformation/cloudformation-validate")),

@@ -55,12 +55,6 @@ OPERATING CONTEXT:
 - run_command executes exactly one program without a shell. Never use pipes,
   redirections, `&&`, `||`, `;`, `cd`, `$VARIABLE` or `2>/dev/null`; make separate
   tool calls instead.
-- If `graphify-out/graph.json` exists and the user asks where a flow, resource,
-  module, test or architectural relation lives, look it up first with
-  `graphify query "question" --graph graphify-out/graph.json --budget 700`.
-  Graphify is for locating context; after that read the files and verify before
-  declaring success. If there is no graph, fall back to local search with
-  find/rg, and do not edit before locating.
 - To delete a file or perform another operation not covered by a specialized
   file tool, call run_command with the exact terminal command (for example,
   `rm hello-world.txt`). The CLI, not you, handles user approval.

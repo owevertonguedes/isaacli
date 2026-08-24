@@ -131,12 +131,6 @@ command is destructive (`cli._destructive_command`), because approval that becam
 a reflex is not a decision. The lever belongs to the user; our job is to make
 sure they see what they are pulling.
 
-DELIBERATE EXCEPTION: `graphify query/path/explain/diagnose` is allowed for
-querying `graphify-out/graph.json` maps. For the binary to work, the jail mounts
-read-only just the Graphify `uv tool` and the embedded Python it uses. That
-creates parent paths such as `/home/user`, but it does not mount the real home,
-`.ssh`, the user's other project trees, histories or credentials.
-
 PROCESS NOTE: whoever writes the jail cannot be whoever already proved they do
 not respect the jail. That is why the tests in `check_execution.py` try to
 actually ESCAPE (write outside, open the network, delete the home) instead of
@@ -179,7 +173,7 @@ OPERATORS = {"|", "||", ">", ">>", "<", "<<", "&&", "&", ";", ";;", "(", ")", "$
 # Deliberately short. Every entry needs a reason to be here.
 ALLOWED = {
     "ls", "cat", "head", "tail", "wc", "grep", "find",
-    "python3", "pytest", "git", "gh", "graphify",
+    "python3", "pytest", "git", "gh",
 }
 
 # Read-only git plus add/commit/push. commit is local, no risk. push is the only
@@ -187,10 +181,6 @@ ALLOWED = {
 # for push itself, never for the other commands in the list (python3, pytest and
 # so on stay 100% offline).
 GIT_ALLOWED = {"status", "diff", "log", "show", "branch", "add", "commit", "push"}
-
-# Graphify is here as a local structural-map query. Subcommands that could
-# download, extract, watch or rewrite a graph stay out.
-GRAPHIFY_ALLOWED = {"query", "path", "explain", "diagnose"}
 
 # GitHub queries that do not change remote state: these are the ones that run
 # without asking. Anything else (`gh api`, `gh pr create`, workflows) is shown to
@@ -214,16 +204,6 @@ PUSH_FORBIDDEN_FLAGS = {"--force", "-f", "--force-with-lease", "--force-if-inclu
 # on the first connection.
 KNOWN_HOSTS_HOST = Path.home() / ".ssh" / "known_hosts"
 GH_CONFIG_HOST = Path(os.environ.get("GH_CONFIG_DIR", Path.home() / ".config" / "gh"))
-GRAPHIFY_TOOL_ROOT = Path.home() / ".local" / "share" / "uv" / "tools" / "graphifyy"
-GRAPHIFY_PYTHON_ROOT = (
-    Path.home()
-    / ".var"
-    / "app"
-    / "com.visualstudio.code"
-    / "data"
-    / "uv"
-    / "python"
-)
 
 
 class Denied(Exception):
@@ -953,16 +933,6 @@ def review(cmd, authorized=False):
                 "does not run on its own. Ask the user: they can approve it. "
                 "A normal push (without --force) is allowed.")
 
-    if program == "graphify":
-        sub = next((p for p in parts[1:] if not p.startswith("-")), None)
-        if sub is None:
-            raise Denied("name the graphify subcommand (e.g. graphify query)")
-        if sub not in GRAPHIFY_ALLOWED and not authorized:
-            raise Denied(
-                f"'graphify {sub}' does not run without asking. Ask the user: "
-                f"they can approve it. Runs unasked: "
-                f"{', '.join(sorted(GRAPHIFY_ALLOWED))}")
-
     if program == "gh" and not authorized:
         route = tuple(p for p in parts[1:] if not p.startswith("-"))[:2]
         if route not in GH_ALLOWED:
@@ -1078,17 +1048,6 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
         if gh_exe:
             line += ["--ro-bind", gh_exe, gh_exe]
             path_env = f"{Path(gh_exe).parent}:{path_env}"
-    # Only for the command that needs them, like `gh` above. Ungated, these two
-    # went into the jail of every command a model ran, so `ls` was handed an
-    # interpreter tree it has no use for, on a machine where the tool they exist
-    # for is not even installed. The jail carries what the command needs and
-    # nothing else, and this is the mount that has to prove it.
-    if argv and argv[0] == "graphify":
-        if GRAPHIFY_TOOL_ROOT.exists():
-            line += ["--ro-bind", str(GRAPHIFY_TOOL_ROOT), str(GRAPHIFY_TOOL_ROOT)]
-            path_env = f"{GRAPHIFY_TOOL_ROOT / 'bin'}:{path_env}"
-        if GRAPHIFY_PYTHON_ROOT.exists():
-            line += ["--ro-bind", str(GRAPHIFY_PYTHON_ROOT), str(GRAPHIFY_PYTHON_ROOT)]
     # The user's own toolchain, read-only. AFTER the tmpfs over /tmp, so a mount
     # is never wiped by it, and BEFORE the workspace bind, which must stay the
     # one writable thing. `--ro-bind-try` and not `--ro-bind`: a directory that
