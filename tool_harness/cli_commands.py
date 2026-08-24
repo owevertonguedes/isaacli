@@ -26,7 +26,7 @@ import tools
 from cli_i18n import set_language, t
 from cli_ollama import _ollama_ok
 from cli_presentation import _color, _short_context, say
-from cli_sessions import FEEDBACK_DIR, _build_history, _now
+from cli_sessions import _build_history, _now
 
 # The catalogue key for each slash command's description. The text itself lives
 # in locales/*.json so the palette and /help speak the chosen language.
@@ -417,7 +417,7 @@ class CommandsMixin:
         self.save_feedback("score", score, comment)
 
     def save_feedback(self, kind, score, comment):
-        FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+        self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
         event = {
             "ts": _now(),
             "feedback_kind": kind,

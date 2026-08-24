@@ -91,14 +91,17 @@ recovery and destructive validation live in
 
 - Configuration: `~/.config/isaacli/config.json` (or `XDG_CONFIG_HOME`).
 - Secrets: `~/.config/isaacli/secrets.json`.
-- Sessions: `tool_harness/cli_sessions/*.jsonl`.
-- Feedback: `tool_harness/feedback/*.jsonl`.
+- Sessions: `$XDG_DATA_HOME/isaacli/cli_sessions/*.jsonl`, defaulting to
+  `~/.local/share/isaacli/cli_sessions/*.jsonl`.
+- Feedback: `$XDG_DATA_HOME/isaacli/feedback/*.jsonl`, defaulting to
+  `~/.local/share/isaacli/feedback/*.jsonl`.
 - Managed-Ollama coordination: the user's runtime directory, or `/tmp`.
 
 New sessions use UUIDv4. Older date-based IDs are still accepted for resuming,
 and `_load_session` also reads logs written before the JSONL field names were
 translated, so sessions recorded by earlier versions do not silently rebuild as
-empty.
+empty. Session logs left in the package directory by older releases remain
+visible and resumable in place.
 
 `isaacli install` creates only a per-user symlink in `~/.local/bin`. A normal
 `uninstall` removes only that symlink; `uninstall --purge` also removes the

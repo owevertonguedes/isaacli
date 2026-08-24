@@ -103,9 +103,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     sessions = base / "sessions"
     sessions.mkdir()
-    original_sessions = cli_sessions.SESSIONS_DIR
-    cli_sessions.SESSIONS_DIR = sessions
-    try:
+    with patch.object(cli_sessions, "sessions_dir", lambda home_dir=None: sessions):
         session_id = "2026-08-07-123456-abcdef"
         session_path = sessions / f"{session_id}.jsonl"
         session_path.write_text(json.dumps({
@@ -113,8 +111,6 @@ with tempfile.TemporaryDirectory() as temp:
         }) + "\n", encoding="utf-8")
         agents.write_text("current at resume", encoding="utf-8")
         resumed = cli_sessions._load_session(session_id)
-    finally:
-        cli_sessions.SESSIONS_DIR = original_sessions
     check("current at resume" in resumed["history"][0]["content"],
           "resume loads the current instructions rather than stale session data")
     check("current at resume" not in session_path.read_text(encoding="utf-8"),

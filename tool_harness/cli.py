@@ -53,8 +53,9 @@ from cli_presentation import (
     _print_welcome, _terminal_safe_text, say, wrap_text,
 )
 from cli_sessions import (
-    FEEDBACK_DIR, SESSIONS_DIR, SessionsMixin, _build_history, _load_session,
+    SessionsMixin, _build_history, _load_session,
     _new_session_id, _resume_command, _workspace_transition,
+    feedback_dir, sessions_dir,
 )
 from cli_commands import (
     COMMANDS, CommandsMixin, _CommandCompleter, _install_autocomplete,
@@ -248,8 +249,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         self._runtime_start = _pid_identity(self._runtime_pid)
         self.history = []
         self.session_id = _new_session_id()
-        self.session_path = SESSIONS_DIR / f"{self.session_id}.jsonl"
-        self.feedback_path = FEEDBACK_DIR / f"{self.session_id}.jsonl"
+        self.session_path = sessions_dir() / f"{self.session_id}.jsonl"
+        self.feedback_path = feedback_dir() / f"{self.session_id}.jsonl"
         self.turns = 0
         self.failures = 0
         self.commands = []

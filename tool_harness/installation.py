@@ -16,7 +16,9 @@ import units
 from cli_i18n import t
 from cli_presentation import say
 from cli_ollama import _runtime_ollama_dir, _same_process
-from cli_sessions import FEEDBACK_DIR, SESSIONS_DIR
+from cli_sessions import (
+    LEGACY_FEEDBACK_DIR, LEGACY_SESSIONS_DIR, feedback_dir, sessions_dir,
+)
 
 HERE = Path(__file__).resolve().parent
 OFFICIAL_SERVICE = Path("/etc/systemd/system/ollama.service")
@@ -70,7 +72,8 @@ def uninstall_launcher(
             return 1
 
     purge_dirs = list(data_dirs) if data_dirs is not None else [
-        SESSIONS_DIR, FEEDBACK_DIR, HERE / "curation",
+        sessions_dir(), feedback_dir(), LEGACY_SESSIONS_DIR,
+        LEGACY_FEEDBACK_DIR, HERE / "curation",
         # Links into Ollama's blob store are ours and cost nothing to recreate,
         # so they go. Removing a link never touches what it points at, which is
         # the whole reason reuse was built out of links.

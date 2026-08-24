@@ -278,8 +278,11 @@ approve them like anything else.
 
 ## Sessions
 
-Every session is a JSONL log under `tool_harness/cli_sessions/`. On exit,
-isaacli prints the exact `--resume` command on its own copyable line.
+Every new session is a JSONL log under
+`$XDG_DATA_HOME/isaacli/cli_sessions/`, defaulting to
+`~/.local/share/isaacli/cli_sessions/`. Sessions left inside the package by
+older releases remain listed and resumable in place. On exit, isaacli prints
+the exact `--resume` command on its own copyable line.
 
 A resumed run restores the workspace, model, messages and tool results into a
 *new* session log, and redraws recent messages, tool calls, results and

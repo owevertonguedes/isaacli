@@ -22,15 +22,16 @@ security remain part of the protection model.
 | --- | --- | --- |
 | Configuration | `~/.config/isaacli/config.json` or `XDG_CONFIG_HOME` | Atomically written with mode `0600`; contains profiles, endpoints, credential identifiers and permissions, not API-key values |
 | API keys | Adjacent `secrets.json` | Plain JSON, atomically written with mode `0600`; no application-level encryption or OS keyring yet |
-| Sessions | `tool_harness/cli_sessions/*.jsonl` | Plain JSONL; contains prompts, answers, commands, tool arguments/results, paths, errors and bounded diffs returned by file mutations; directory/file modes currently follow the process umask |
-| Feedback | `tool_harness/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask |
+| Sessions | `$XDG_DATA_HOME/isaacli/cli_sessions/*.jsonl`, default `~/.local/share/isaacli/cli_sessions/*.jsonl` | Plain JSONL; contains prompts, answers, commands, tool arguments/results, paths, errors and bounded diffs returned by file mutations; directory/file modes currently follow the process umask. Logs left under the package directory by older releases remain readable in place. |
+| Feedback | `$XDG_DATA_HOME/isaacli/feedback/*.jsonl`, default `~/.local/share/isaacli/feedback/*.jsonl` | Plain JSONL; may include the last answer and session metrics; modes currently follow the process umask. Feedback left under the package directory by older releases remains there until an explicit purge. |
 | Runtime coordination | `XDG_RUNTIME_DIR/isaacli` or `/tmp/isaacli-<uid>` | Process identities and managed-Ollama state, not conversation content; the application requests a `0700` directory |
 | Ollama models | Ollama-managed paths | Model weights and Ollama data; outside isaacli's secret store |
 | Kaggle orchestration | `~/.config/isaacli/kaggle-install.json`, `kaggle-accounts/`, the regular config and secrets files | Account credentials and generated tunnel API keys stay in `secrets.json` with mode `0600`. A selected credential is materialized with mode `0600` under `kaggle-accounts/` inside a `0700` per-account folder. Isolation is by `HOME`, not by `KAGGLE_CONFIG_DIR`: read from the Kaggle CLI 2.2.4 source and then confirmed by running it, `authenticate` reaches `~/.kaggle/access_token` and `~/.kaggle/credentials.json` through `expanduser`, which that variable does not redirect, so an account folder holding a deliberately invalid credential still answered with the ambient account's quota. The selected account is verified against what the server says owns the assets before anything is spent. Kernel slugs record their owning account. Prepared datasets default to private. |
 
-Git ignores sessions, feedback and secrets, but `.gitignore` is not access
-control, encryption or a backup exclusion. Copying the clone can copy ignored
-conversation files. Tests that construct sessions must redirect all private
+Git ignores legacy sessions, legacy feedback and secrets, but `.gitignore` is
+not access control, encryption or a backup exclusion. Copying an older clone can
+copy ignored conversation files. Current sessions and feedback use the user's
+XDG data directory. Tests that construct sessions must redirect all private
 state to temporary directories rather than relying only on an isolated config.
 File reads and mutation diffs are bounded before anything is built, not after:
 past the limit the old content is never loaded and the diff is never computed,

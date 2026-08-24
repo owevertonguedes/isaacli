@@ -52,11 +52,11 @@ GGUF_SUFFIX = ".gguf"
 
 def data_dir(home_dir=None):
     """Where this program keeps what it installed for itself."""
-    base = os.environ.get("XDG_DATA_HOME")
+    base = None if home_dir is not None else os.environ.get("XDG_DATA_HOME")
     if base:
         root = Path(base).expanduser()
     else:
-        root = (Path(home_dir) if home_dir else Path.home()) / ".local" / "share"
+        root = (Path(home_dir) if home_dir is not None else Path.home()) / ".local" / "share"
     return root / "isaacli"
 
 

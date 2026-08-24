@@ -4,7 +4,8 @@ from it.
 CLI_KNOWLEDGE lives here rather than with the slash commands (as the task
 inventory first placed it) because its only real consumer is
 _build_history(); keeping it next to that avoids a cli_commands <-> here
-import cycle (cli_commands needs FEEDBACK_DIR from here for save_feedback).
+import cycle (cli_commands used to need FEEDBACK_DIR from here for
+save_feedback; it now reads self.feedback_path instead).
 """
 import datetime as dt
 import json
@@ -16,14 +17,15 @@ import uuid
 from pathlib import Path
 
 import agent
+import local_models
 import terminal_ui
 import workspace_instructions
 from cli_i18n import t
 from cli_presentation import _color, _format_markdown_terminal, say
 
 HERE = Path(__file__).resolve().parent
-SESSIONS_DIR = HERE / "cli_sessions"
-FEEDBACK_DIR = HERE / "feedback"
+LEGACY_SESSIONS_DIR = HERE / "cli_sessions"
+LEGACY_FEEDBACK_DIR = HERE / "feedback"
 SESSION_ID_UUID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
@@ -76,6 +78,36 @@ OPERATING CONTEXT:
 """
 
 
+def sessions_dir(home_dir=None):
+    """Where session logs live: the user's data directory, not the package's.
+
+    An explicit home_dir isolates tests even when XDG_DATA_HOME is set.
+    """
+    return local_models.data_dir(home_dir) / "cli_sessions"
+
+
+def feedback_dir(home_dir=None):
+    """Where /good and /bad feedback lives. See sessions_dir above."""
+    return local_models.data_dir(home_dir) / "feedback"
+
+
+def session_search_dirs(home_dir=None):
+    """Current storage first, then the package directory used by old releases."""
+    directories = [sessions_dir(home_dir)]
+    if LEGACY_SESSIONS_DIR.exists() and LEGACY_SESSIONS_DIR not in directories:
+        directories.append(LEGACY_SESSIONS_DIR)
+    return directories
+
+
+def _session_path(session_id, home_dir=None):
+    """Find an existing session without moving or rewriting user data."""
+    for directory in session_search_dirs(home_dir):
+        path = directory / f"{session_id}.jsonl"
+        if path.is_file():
+            return path
+    return sessions_dir(home_dir) / f"{session_id}.jsonl"
+
+
 def _now():
     return dt.datetime.now().isoformat(timespec="seconds")
 
@@ -123,7 +155,7 @@ def _load_session(session_id):
     """Rebuild the conversation and tool calls from a local JSONL by exact ID."""
     if not _valid_session_id(session_id):
         raise ValueError(t("cli.session.invalid_id"))
-    path = SESSIONS_DIR / f"{session_id}.jsonl"
+    path = _session_path(session_id)
     if not path.is_file():
         raise ValueError(t("cli.session.not_found", id=session_id))
     if path.stat().st_size > 20 * 1024 * 1024:
@@ -207,7 +239,7 @@ def _load_session(session_id):
 
 class SessionsMixin:
     def _log(self, kind, **data):
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
         event = {
             "ts": _now(),
             "type": kind,
@@ -226,8 +258,8 @@ class SessionsMixin:
         self._log("meta", event="new_session", next_session=new_id)
 
         self.session_id = new_id
-        self.session_path = SESSIONS_DIR / f"{new_id}.jsonl"
-        self.feedback_path = FEEDBACK_DIR / f"{new_id}.jsonl"
+        self.session_path = sessions_dir() / f"{new_id}.jsonl"
+        self.feedback_path = feedback_dir() / f"{new_id}.jsonl"
         self.turns = 0
         self.failures = 0
         self.commands = []
@@ -251,9 +283,15 @@ class SessionsMixin:
         self._show_workspace_instruction_warning()
 
     def list_sessions(self):
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        files = sorted(SESSIONS_DIR.glob("*.jsonl"),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
+        self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        files = []
+        seen = set()
+        for directory in session_search_dirs():
+            for path in directory.glob("*.jsonl"):
+                if path.stem not in seen:
+                    files.append(path)
+                    seen.add(path.stem)
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         if not files:
             say(t("cli.sessions.none"))
             return
