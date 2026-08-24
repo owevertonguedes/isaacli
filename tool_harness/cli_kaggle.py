@@ -782,24 +782,32 @@ def _load_model_candidates(path=MODEL_CATALOG_PATH):
 
 
 def models_for_accelerator(machine_shape, catalog_path=MODEL_CATALOG_PATH):
-    """Benchmark-backed candidates that fit this exact Kaggle accelerator."""
+    """Benchmark-backed candidates that fit this exact Kaggle accelerator.
+
+    Whether a model fits a card is one question with one answer, so it is
+    asked of `model_discovery.fit_report`, the same function every local
+    screen asks. This used to compute the cache and call `hardware.fits`
+    itself, which meant a correction to the fit arithmetic would have reached
+    the screens that choose a model to run here and not the one that chooses a
+    model to run on a borrowed GPU. Only the context differs, and it is passed.
+    """
+    import model_discovery
+
     accelerator = ACCELERATORS[machine_shape]
     selected = []
     for candidate in _load_model_candidates(catalog_path):
-        kv_bytes = hardware.kv_cache_bytes(
-            candidate["n_layers"], candidate["n_kv_heads"],
-            candidate["head_dim"], MODEL_CONTEXT,
+        report = model_discovery.fit_report(
+            candidate, accelerator["vram_mb"],
+            overhead_mb=accelerator["overhead_mb"], context=MODEL_CONTEXT,
         )
-        if hardware.fits(
-                candidate["model_bytes"], kv_bytes, accelerator["vram_mb"],
-                overhead_mb=accelerator["overhead_mb"]):
+        if report["fits"]:
             model = dict(candidate)
             model.update({
                 "machine_shape": machine_shape,
                 "machine_label": accelerator["label"],
                 "cuda_arch": accelerator["cuda_arch"],
                 "gpu_count": accelerator["gpu_count"],
-                "kv_bytes": kv_bytes,
+                "kv_bytes": report["kv_bytes"],
             })
             selected.append(model)
     # Order is a recommendation whether or not it means to be, so it follows the

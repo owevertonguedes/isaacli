@@ -438,6 +438,61 @@ check(len(recommended) > 2 and p100_aliases != t4_aliases
       and p100_aliases < t4_aliases,
       "the catalog is larger than two and changing accelerator changes the fit list")
 
+# Whether a model fits a card is one question, and the borrowed GPU has to get
+# the same answer as the card under the desk. This used to be computed twice,
+# so a correction to the fit arithmetic would have reached one screen and not
+# the other. Entering through the function the screen runs, against the real
+# catalog: every candidate offered is one the shared report says fits, every
+# candidate withheld is one it says does not, and the cache size carried into
+# the launch is the one that decided it.
+import model_discovery  # noqa: E402  (after the path insert above)
+
+agreed = []
+for shape in ("NvidiaTeslaP100", "NvidiaTeslaT4"):
+    accelerator = cli_kaggle.ACCELERATORS[shape]
+    offered = {model["alias"]: model
+               for model in cli_kaggle.models_for_accelerator(shape)}
+    for candidate in cli_kaggle._load_model_candidates(
+            cli_kaggle.MODEL_CATALOG_PATH):
+        report = model_discovery.fit_report(
+            candidate, accelerator["vram_mb"],
+            overhead_mb=accelerator["overhead_mb"],
+            context=cli_kaggle.MODEL_CONTEXT)
+        chosen = offered.get(candidate["alias"])
+        agreed.append(bool(chosen) == report["fits"]
+                      and (chosen is None
+                           or chosen["kv_bytes"] == report["kv_bytes"]))
+check(len(agreed) >= 6 and all(agreed),
+      "the Kaggle list asks the same fit question the local screens ask, "
+      f"and agrees on all {len(agreed)} card-and-model pairs")
+
+# The real catalog has no candidate near a boundary, so agreement on it alone
+# would also hold for two calculations that disagree. These two straddle the
+# T4 ceiling by a mebibyte each: any divergence in the reserve, the context or
+# the cache formula moves one of them across and this check says so.
+_shape = "NvidiaTeslaT4"
+_card = cli_kaggle.ACCELERATORS[_shape]
+_geometry = {"n_layers": 48, "n_kv_heads": 4, "head_dim": 128}
+_cache = model_discovery.hardware.kv_cache_bytes(
+    _geometry["n_layers"], _geometry["n_kv_heads"], _geometry["head_dim"],
+    cli_kaggle.MODEL_CONTEXT)
+_ceiling = (_card["vram_mb"] - _card["overhead_mb"]) * 1024 * 1024 - _cache
+_edge = tempfile.mkdtemp(prefix="isaacli-check-fit-")
+_edge_path = Path(_edge) / "model_catalog.json"
+_edge_path.write_text(json.dumps({"kaggle": [
+    {"name": name, "repo": "o/r", "file": "m.gguf", "alias": name,
+     "source": "test", "model_bytes": _ceiling + offset, "benchmark": "none",
+     "benchmark_source": "none", "scores": {}, "active_ratio": 1.0,
+     **_geometry}
+    for name, offset in (("just-fits", -1024 * 1024),
+                         ("just-over", 1024 * 1024))]}), encoding="utf-8")
+_offered = {model["alias"]
+            for model in cli_kaggle.models_for_accelerator(_shape, _edge_path)}
+check(_offered == {"just-fits"},
+      "a model a mebibyte under the T4 ceiling is offered and one a mebibyte "
+      f"over it is not (offered: {sorted(_offered) or 'nothing'})")
+shutil.rmtree(_edge, ignore_errors=True)
+
 # `TUNNEL_URL=` is what isaacli turns into a ready profile, so the GPU template
 # must not print it until the server answers. cloudflared publishes its URL in
 # seconds while loading tens of gigabytes takes minutes, and announcing the
