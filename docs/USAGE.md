@@ -130,14 +130,18 @@ edit it directly in `~/.config/isaacli/config.json`:
 ```
 
 Ollama remains the recommended engine, because it is one installer with a model
-catalog and it already manages its own lifecycle. A direct llama-server is
-offered as an alternative, not as a promise of more speed: the two have not been
-measured against each other on this project's hardware, and published
-comparisons disagree with each other.
+catalog, it already manages its own lifecycle, and it ships the CUDA backend
+while the llama.cpp release for Linux is Vulkan. A direct llama-server is
+offered as an alternative, not as a promise of more speed: measured against each
+other on this project's hardware on 2026-08-21, same GGUF and same context with
+the orders swapped, Ollama did 39.36 tok/s against llama-server's 37.34, and
+llama-server's own spread between two rounds was 2.81. That is inside the
+machine's noise, so neither is presented as faster.
 
 Two things measured here in August 2026 are worth knowing before you pick a
-model for this path. A 3B coder model reached 36.2 tok/s at Q4_K_M on a GTX 1650
-through llama.cpp's Vulkan backend, and it did not emit native tool calls at
+model for this path. A 3B coder model reached 36.9 tok/s at Q4_K_M on a GTX 1650
+through llama.cpp's Vulkan backend, the figure in `docs/benchmarks/`, and it did
+not emit native tool calls at
 all: it returned them as a fenced JSON block, so the harness had nothing to
 execute. Speculative decoding on the same setup gave no gain with n-gram
 drafting and was 45% slower with a 0.5B draft model. Both numbers belong to that

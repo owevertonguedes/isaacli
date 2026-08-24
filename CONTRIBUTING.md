@@ -31,8 +31,10 @@ hardware reproductions are welcome.
 
 ## Development setup
 
-Requires [Ollama](https://ollama.com), Python 3.10+, and `bwrap`
-(`bubblewrap`) for the sandbox.
+Requires Python 3.10+ and `bwrap` (`bubblewrap`) for the sandbox. An engine is
+optional for most of the suite: fourteen checks run with no model at all.
+`tests/check_commit_workflow.py` is the one that needs [Ollama](https://ollama.com)
+installed, because it calls a real model through isaacli.
 
 ```bash
 git clone https://github.com/owevertonguedes/isaacli.git
