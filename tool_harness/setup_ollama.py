@@ -217,14 +217,6 @@ def _model_item(model, recommended=False, catalog=None):
     return item
 
 
-def _recommended_catalog(task=None):
-    ordered = model_discovery.order_for_task(LOCAL_CATALOG, task)
-    return [
-        _model_item(item["reference"], recommended=True, catalog=item)
-        for item in ordered
-    ]
-
-
 def _installed_models(installed):
     return [_model_item(model) for model in sorted(installed, key=str.casefold)]
 

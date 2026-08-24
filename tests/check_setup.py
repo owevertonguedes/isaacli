@@ -128,7 +128,17 @@ try:
     check(qwen_profile["model"] == qwen36,
           "the context lives in the profile without creating a derived model copy")
     check(not downloads, "an installed model is not downloaded again")
-    recommended_menu = setup_ollama._recommended_catalog()
+    # Through the function the screen runs, with the live resolution stubbed
+    # out so it works offline. The orphan it used to call built the same list
+    # from the same catalog and was reached by no user path at all, which is
+    # how a check ends up proving something nobody runs.
+    live = setup_ollama._resolve_live
+    setup_ollama._resolve_live = lambda *_a, **_k: None
+    try:
+        recommended_menu = setup_ollama._resolved_local_catalog(
+            None, {"gpus": []}, pt)
+    finally:
+        setup_ollama._resolve_live = live
     local_menu = setup_ollama._installed_models(client.installed)
     check([item["base_model"] for item in recommended_menu] == setup_ollama.RECOMMENDED,
           "the recommendations section preserves the curation and its order")
@@ -356,10 +366,10 @@ try:
                          "name": "NVIDIA GeForce GTX 1650"}]}
     for language in ("en", "pt-BR"):
         speak = setup_ollama.Translator(language)
-        # `_resolved_local_catalog` and not `_recommended_catalog`: the second
-        # is what the screen actually calls, and testing the first is how a
-        # check ends up proving something no user path runs. `_resolve_live` is
-        # stubbed out so this exercises the screen's code offline.
+        # `_resolved_local_catalog` is what the screen actually calls, which is
+        # the whole point: entering anywhere else is how a check ends up
+        # proving something no user path runs. `_resolve_live` is stubbed out
+        # so this exercises the screen's code offline.
         live = setup_ollama._resolve_live
         setup_ollama._resolve_live = lambda *_a, **_k: None
         try:

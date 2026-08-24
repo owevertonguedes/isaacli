@@ -265,7 +265,7 @@ finally:
     setup_ollama.terminal_ui.select = original_ui_select
 
 check(result is None and "network disabled by test" in offline_title
-      and len(setup_ollama._recommended_catalog()) == 5,
+      and len(setup_ollama.LOCAL_CATALOG) == 5,
       "discovery that returned nothing puts the cause on the screen, not behind it")
 check("Q4_K_M" not in screens[-1][0] and "Q4_K_M" not in quiet_out.getvalue()
       and len(screens[-1][1]) == 3,
