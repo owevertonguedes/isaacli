@@ -1758,6 +1758,38 @@ check(captured_temperature[:1] == [0.7],
 check(captured_temperature[1:2] == ["__absent__"],
       "a profile without temperature leaves the agent default untouched")
 
+# Which of those settings a profile actually applies used to depend on which
+# screen chose it: the five fields were assigned one by one in four places, so
+# forgetting one meant a setting the user chose and the program ignores. There
+# is one place now, and these two say so from both ends.
+switching = app.IsaacCLI("m", ".", 4, thinking="high", num_ctx=8192,
+                         temperature=0.7)
+switching.apply_profile({"model": "other-model"})
+check((switching.model, switching.thinking, switching.num_ctx,
+       switching.temperature, switching.provider)
+      == ("other-model", None, None, None, {"provider": "ollama"}),
+      "a profile that chose nothing clears what the last one chose, "
+      "rather than leaving a setting behind that belongs to a different model")
+switching.apply_profile({"model": "third", "thinking": "low", "num_ctx": 4096,
+                         "temperature": 0.1})
+check((switching.model, switching.thinking, switching.num_ctx,
+       switching.temperature) == ("third", "low", 4096, 0.1),
+      "and every field a profile does choose is carried, not only the model")
+
+profile_fields = []
+for module in ("cli_commands.py", "cli_providers.py", "cli.py"):
+    body = (HERE.parent / "tool_harness" / module).read_text(encoding="utf-8")
+    if module == "cli_providers.py":
+        # Everything after the one function that is allowed to do this.
+        body = body.split("def apply_profile", 1)[1].split("\n    def ", 1)[1]
+    for number, line in enumerate(body.splitlines(), 1):
+        if re.search(r"self\.(model|thinking|num_ctx|temperature|provider)"
+                     r"\s*=.*\bitem\b", line):
+            profile_fields.append(f"{module}:{line.strip()}")
+check(not profile_fields,
+      "no screen unpacks a profile itself: " + (
+          "; ".join(profile_fields) or "none does"))
+
 # `/help` lists the commands in a single catalogue string, which is a copy of
 # COMMANDS kept by hand, so a new command is invisible in it until somebody
 # remembers. /config was, until this check existed. Both languages, because the

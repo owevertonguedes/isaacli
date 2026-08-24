@@ -161,11 +161,7 @@ class CommandsMixin:
                     self.redraw_session(t("cli.setup.reread_failed", error=e))
                     return True
                 if item:
-                    self.model = item["model"]
-                    self.thinking = item.get("thinking")
-                    self.num_ctx = item.get("num_ctx")
-                    self.temperature = item.get("temperature")
-                    self.provider = self._provider_from_profile(item)
+                    self.apply_profile(item)
                     self._log("meta", event="setup", profile=name,
                               model=self.model, thinking=self.thinking)
                     self.redraw_session(
@@ -224,11 +220,7 @@ class CommandsMixin:
                     data = config.empty_config()
                 item = (data.get("profiles") or {}).get(arg)
                 if item:
-                    self.model = item["model"]
-                    self.thinking = item.get("thinking")
-                    self.num_ctx = item.get("num_ctx")
-                    self.temperature = item.get("temperature")
-                    self.provider = self._provider_from_profile(item)
+                    self.apply_profile(item)
                     source = t("cli.model.source.profile", name=arg)
                 else:
                     self.model = arg
@@ -252,11 +244,7 @@ class CommandsMixin:
                     self.redraw_session(t("cli.setup.reread_failed", error=e))
                     return True
                 if item:
-                    self.model = item["model"]
-                    self.thinking = item.get("thinking")
-                    self.num_ctx = item.get("num_ctx")
-                    self.temperature = item.get("temperature")
-                    self.provider = self._provider_from_profile(item)
+                    self.apply_profile(item)
                     # A kernel started from inside the session is this run's to
                     # end, exactly like one opened from the command line.
                     import cli_kaggle

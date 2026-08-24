@@ -32,6 +32,25 @@ class ProvidersMixin:
             provider["autostart"] = autostart
         return provider
 
+    def apply_profile(self, item):
+        """Everything a chosen profile decides about the next request.
+
+        The five move together or not at all. They were assigned one by one in
+        four places (`/model`, `/model <name>`, `/setup`, `/kaggle`), which is
+        four chances to forget one: a profile that carries a temperature and a
+        path that does not read it is a setting the user chose and the program
+        silently ignores.
+
+        Absent is a decision here, not a missing value. `None` means the
+        profile did not choose, and the agent's own default holds; that is why
+        this reads every field rather than updating only the ones present.
+        """
+        self.model = item["model"]
+        self.thinking = item.get("thinking")
+        self.num_ctx = item.get("num_ctx")
+        self.temperature = item.get("temperature")
+        self.provider = self._provider_from_profile(item)
+
     def _persist_adjusted_thinking(self):
         """Write thinking=None to the active profile after the provider rejected
         the configured reasoning effort, so the error (and the extra round trip
@@ -71,11 +90,7 @@ class ProvidersMixin:
         if not item:
             print(t("cli.model.profile_missing"))
             return
-        self.model = item["model"]
-        self.thinking = item.get("thinking")
-        self.num_ctx = item.get("num_ctx")
-        self.temperature = item.get("temperature")
-        self.provider = self._provider_from_profile(item)
+        self.apply_profile(item)
         self._log("meta", event="model", profile=name, model=self.model,
                   thinking=self.thinking, num_ctx=self.num_ctx)
         context = (t("cli.model.context_suffix", context=_short_context(self.num_ctx))
