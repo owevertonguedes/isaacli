@@ -961,6 +961,16 @@ def main(argv=None):
         arguments = [argument for argument in arguments if argument != "--debug"]
     debug.enable(debug_requested or debug.enabled_from_environment())
 
+    # The language has to be known before the first line reaches the screen.
+    # Usage, --help and the argparse error epilog all run before the old load
+    # site, which is how a Portuguese session got its usage message in English.
+    try:
+        config_data = config.load()
+    except ValueError as e:
+        print(t("cli.config.warning", error=e))
+        config_data = config.empty_config()
+    set_language(config_data.get("language"))
+
     setup_requested = bool(arguments and arguments[0] == "setup")
     install_requested = bool(arguments and arguments[0] == "install")
     uninstall_requested = bool(arguments and arguments[0] == "uninstall")
@@ -1043,12 +1053,6 @@ def main(argv=None):
             print(t("cli.error.generic", error=e))
             return 2
 
-    try:
-        config_data = config.load()
-    except ValueError as e:
-        print(t("cli.config.warning", error=e))
-        config_data = config.empty_config()
-    set_language(config_data.get("language"))
     if install_requested:
         return _install_launcher()
     if kaggle_requested:
