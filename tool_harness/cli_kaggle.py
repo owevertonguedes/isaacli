@@ -1420,7 +1420,7 @@ def _prepare_assets(executable, username, model, available, input_fn,
         available["binary"] = expected["binary"]
     if "model" not in available:
         print(t("cli.kaggle.prepare.weight",
-                size=units.gib_short(model["model_bytes"]), name=model["name"]))
+                size=units.gib(model["model_bytes"]), name=model["name"]))
         if input_fn(t("cli.kaggle.prepare.weight_confirm")).strip().lower() == t(
                 "cli.kaggle.confirm_yes"):
             _require_space(scratch, model["model_bytes"])
@@ -1930,7 +1930,7 @@ def run_prepare_assets(input_fn=None, run_fn=subprocess.run, config_file=None,
         print(t("cli.kaggle.prepare.plan_binary", arch=model["cuda_arch"]))
     if "model" in missing:
         print(t("cli.kaggle.prepare.plan_model",
-                size=units.gib_short(model["model_bytes"])))
+                size=units.gib(model["model_bytes"])))
     if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() != t(
             "cli.kaggle.confirm_yes"):
         print(t("cli.kaggle.cancelled"))
@@ -2625,7 +2625,7 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 print(t("cli.kaggle.assets.cost_build"))
             if "model" in missing:
                 print(t("cli.kaggle.assets.cost_download",
-                        size=units.gib_short(model["model_bytes"])))
+                        size=units.gib(model["model_bytes"])))
             if input_fn(t("cli.kaggle.prepare.confirm")).strip().lower() == t(
                     "cli.kaggle.confirm_yes"):
                 try:

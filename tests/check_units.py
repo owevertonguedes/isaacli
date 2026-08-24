@@ -62,6 +62,21 @@ check(not handwritten,
       "no module turns bytes into GiB by hand: " + (
           ", ".join(handwritten) or "none does"))
 
+# Which of the two a place gets is the rule, so it is checked and not trusted:
+# the short form belongs to a table cell, and every screen draws its cells
+# through one function.
+short_callers = []
+for source in sorted((HERE.parent / "tool_harness").glob("*.py")):
+    if source.name == "units.py":
+        continue
+    for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), 1):
+        if "gib_short(" in line:
+            short_callers.append(f"{source.name}:{number}")
+check(len(short_callers) == 1 and short_callers[0].startswith("model_discovery.py:"),
+      "the one-decimal form is only used where a table cell is built: "
+      + (", ".join(short_callers) or "nowhere at all"))
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

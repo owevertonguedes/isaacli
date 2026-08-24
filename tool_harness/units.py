@@ -39,5 +39,10 @@ def gib_short(value):
     One decimal. The suggestion table lands at 79 columns in English and 80 in
     Portuguese, so the second decimal is a column the table does not have; and
     a cell is read against the fit cell beside it, not against the cell above.
+
+    One caller, and that is the point rather than a reason to inline it: every
+    screen that draws a model row goes through `model_discovery.model_row`, so
+    there is exactly one place a cell is built. Inlining the format there is
+    how the ten hand-written copies started.
     """
     return f"{(value or 0) / BYTES_PER_GIB:.1f}"
