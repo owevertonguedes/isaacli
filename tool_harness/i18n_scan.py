@@ -162,9 +162,17 @@ def interface_literals(filename, source):
     ]
 
 
-# The calls that turn a key into a sentence. Named rather than guessed, because
-# the whole point below is to read their first argument.
-_TRANSLATORS = ("t", "_t", "tr.t", "translate", "text", "speak")
+# The calls that turn a key into a sentence, matched on the last segment of the
+# name so that a translator reached through its module counts. Named rather than
+# guessed, because the whole point below is to read their first argument.
+#
+# The last segment and not the whole name, because writing out the whole one is
+# how this was first written and it missed `model_discovery.text`, which builds
+# a key from a prefix. That miss was harmless only because a second call site
+# builds the same prefix in a recognised shape; had it not, three live keys
+# would have been reported as orphans, and the obvious way to make the check
+# pass again is to delete them.
+_TRANSLATORS = ("t", "_t", "translate", "text", "speak")
 
 
 def _translated_key(call):
@@ -177,7 +185,7 @@ def _translated_key(call):
     out in full.
     """
     name = _dotted(call.func)
-    if name not in _TRANSLATORS and not (name or "").endswith(".t"):
+    if not name or name.rsplit(".", 1)[-1] not in _TRANSLATORS:
         return None, None
     argument = call.args[0] if call.args else None
     if isinstance(argument, ast.Constant) and isinstance(argument.value, str):

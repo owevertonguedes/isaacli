@@ -2168,18 +2168,29 @@ check(not orphans,
 # indistinguishable from one that reports everything. The planted pair is the
 # shape that actually occurs: one key written out in full and one assembled
 # from a prefix, each with a sibling that no source can produce.
+# The third source is the one a module-qualified translator is written in, and
+# it is here because writing the translator names out in full was how this was
+# first built: `model_discovery.text` was not recognised, so the prefix it
+# builds was not collected, and only a second call site elsewhere kept three
+# live keys from being reported as removable.
 planted_sources = {
     "planted.py": 'def draw(t, kind):\n'
                   '    print(t("planted.title"))\n'
                   '    print(t(f"planted.kind.{kind}"))\n'
                   '    return "known"\n',
+    "planted_module.py": 'import elsewhere\n\n\n'
+                         'def draw(origin):\n'
+                         '    print(elsewhere.text("planted.origin." + origin))\n'
+                         '    return "curated"\n',
 }
 planted_catalogue = ["planted.title", "planted.kind.known",
-                     "planted.kind.vanished", "planted.gone"]
+                     "planted.kind.vanished", "planted.gone",
+                     "planted.origin.curated", "planted.origin.retired"]
 check(i18n_scan.orphan_keys(planted_catalogue, planted_sources)
-      == ["planted.gone", "planted.kind.vanished"],
+      == ["planted.gone", "planted.kind.vanished", "planted.origin.retired"],
       "the sweep resolves an assembled key to its suffix instead of exempting "
-      "the whole prefix, and still sees a plain key nobody asks for")
+      "the whole prefix, reaches a translator called through its module, and "
+      "still sees a plain key nobody asks for")
 
 # ----------------------------------------------------------------------
 # A sentence that never entered a catalogue at all has no pair to be missing,
