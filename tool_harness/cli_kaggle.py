@@ -1214,7 +1214,10 @@ def _choose_session_ceiling(input_fn, remaining_hours=None):
     hours = [hour for hour in SESSION_CEILING_HOURS
              if hour * 3600 <= SESSION_TIMEOUT_SECONDS]
     options = [t("cli.kaggle.ceiling.option", hours=hour) for hour in hours]
-    explanation = t("cli.kaggle.ceiling.explain")
+    # The silence the screen promises is the one the kernel is actually given,
+    # read from the constant that is written into it, so the two cannot drift.
+    explanation = t("cli.kaggle.ceiling.explain",
+                    minutes=SESSION_IDLE_SECONDS // 60)
     if remaining_hours is not None:
         explanation += "\n" + t("cli.kaggle.ceiling.remaining",
                                 remaining=f"{remaining_hours:.2f}")

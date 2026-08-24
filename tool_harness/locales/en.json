@@ -237,7 +237,7 @@
   "cli.kaggle.cpu_only": "FLOW VALIDATION ONLY: this kernel explicitly requests CPU. It proves push, tunnel discovery, reachability and profile persistence, but it does not load or run a model.",
   "cli.kaggle.push.confirm": "Push this kernel now? [y/N]: ",
   "cli.kaggle.ceiling.title": "How long may this kernel live?",
-  "cli.kaggle.ceiling.explain": "A Kaggle kernel spends GPU quota by wall clock until something deletes it, and nothing on your side has to be alive for that to keep happening. The kernel ends itself when this much time has passed, whether or not this window is still open.",
+  "cli.kaggle.ceiling.explain": "A kernel spends GPU quota by wall clock. This window keeps telling it to stay, and it ends itself after {minutes} minutes of silence, so closing the terminal already stops the spending. This ceiling is the second brake, held by the kernel and by Kaggle: it ends when the time is up, with this window open or not.",
   "cli.kaggle.ceiling.remaining": "This account has {remaining} GPU hours left this week.",
   "cli.kaggle.ceiling.option": "{hours} h",
   "cli.kaggle.ceiling.chosen": "The kernel will end itself after {hours} h, and Kaggle holds it to the same limit.",

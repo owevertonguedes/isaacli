@@ -237,7 +237,7 @@
   "cli.kaggle.cpu_only": "SOMENTE VALIDAÇÃO DE FLUXO: este kernel pede CPU explicitamente. Ele prova envio, descoberta do túnel, alcançabilidade e gravação do perfil, mas não carrega nem executa um modelo.",
   "cli.kaggle.push.confirm": "Enviar este kernel agora? [s/N]: ",
   "cli.kaggle.ceiling.title": "Por quanto tempo este kernel pode viver?",
-  "cli.kaggle.ceiling.explain": "Um kernel do Kaggle gasta quota de GPU por relógio de parede até alguém apagá-lo, e nada do seu lado precisa estar vivo para isso continuar. O kernel se encerra sozinho quando esse tempo passar, com esta janela aberta ou não.",
+  "cli.kaggle.ceiling.explain": "Um kernel gasta quota de GPU por relógio de parede. Esta janela fica dizendo a ele que continue, e ele se encerra sozinho depois de {minutes} minutos de silêncio, então fechar o terminal já para o gasto. Este teto é o segundo freio, segurado pelo kernel e pelo Kaggle: ele acaba quando o tempo passar, com esta janela aberta ou não.",
   "cli.kaggle.ceiling.remaining": "Esta conta tem {remaining} horas de GPU restantes nesta semana.",
   "cli.kaggle.ceiling.option": "{hours} h",
   "cli.kaggle.ceiling.chosen": "O kernel vai se encerrar sozinho depois de {hours} h, e o Kaggle segura o mesmo limite.",
