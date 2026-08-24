@@ -704,7 +704,11 @@ check(folders == [served_root],
       f"beside it are offered too ({folders})")
 import local_models
 
-listed, _problems = local_models.available(extra_dirs=folders)
+# The real machine's HOME has no business in this list: the developer's own
+# downloaded weight showed up in it and failed three checks that had nothing
+# to do with it. Everything read here is what this check built.
+listed, _problems = local_models.available(
+    home_dir=root, environ={}, extra_dirs=folders)
 check({item["path"] for item in listed} == {str(weight), str(sibling)},
       "and both of them reach the list the choice is made on")
 
@@ -720,6 +724,7 @@ deep_weight = write_gguf(deep / "deep-model-Q4_K_M.gguf", dense_keys())
 collection = {str(weight), str(sibling), str(deep_weight)}
 
 before, _problems = local_models.available(
+    home_dir=root, environ={},
     extra_dirs=setup_llamacpp.search_dirs(served_config, props))
 check({item["path"] for item in before} == collection,
       f"a collection kept in subfolders is listed whole while the root is the "
@@ -733,6 +738,7 @@ remembered = setup_llamacpp.remember_folder(served_data, chosen)
 served_data["profiles"]["served"] = {"weights": str(deep_weight)}
 config.save(served_data, served_config)
 after, _problems = local_models.available(
+    home_dir=root, environ={},
     extra_dirs=setup_llamacpp.search_dirs(served_config, props))
 check(remembered and config.load(served_config)["model_dirs"] == [str(served_root)],
       f"choosing one out of it writes down the folder that was searched, not "
