@@ -503,10 +503,13 @@ _SNAPSHOT_NOTE_SHOWN = False
 
 
 def reset_path_snapshot():
-    """Forget the session's snapshot. For tests, and for a language/config switch.
+    """Forget the session's snapshot, so the next command resolves PATH again.
 
     Exists because the snapshot is deliberately session-wide: without a way to
-    drop it, a check could only ever measure the first environment it saw.
+    drop it, a check could only ever measure the first environment it saw. The
+    checks are its only callers, and that is the whole of it: nothing in the
+    program drops the snapshot, because nothing in a session changes the login
+    shell it was read from.
     """
     global _PATH_SNAPSHOT, _SNAPSHOT_NOTE_SHOWN
     _PATH_SNAPSHOT = None

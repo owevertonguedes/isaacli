@@ -49,17 +49,15 @@ from cli_permissions import (
     _command_rule, _destructive_command, _safe_read_command,
 )
 from cli_presentation import (
-    APP_VERSION, WORDMARK_ISAAC, _color, _colored_prompt,
-    _format_markdown_terminal, _print_welcome, _terminal_safe_text,
-    _visual_width, _welcome_lines, say,
+    APP_VERSION, _color, _colored_prompt, _format_markdown_terminal,
+    _print_welcome, _terminal_safe_text, say,
 )
 from cli_sessions import (
-    FEEDBACK_DIR, SESSION_ID_UUID, SESSIONS_DIR, SessionsMixin, _build_history,
-    _load_session, _new_session_id, _resume_command, _workspace_transition,
+    FEEDBACK_DIR, SESSIONS_DIR, SessionsMixin, _build_history, _load_session,
+    _new_session_id, _resume_command, _workspace_transition,
 )
 from cli_commands import (
-    COMMANDS, SLASH_COMMANDS, CommandsMixin, _CommandCompleter,
-    _filter_commands, _install_autocomplete,
+    COMMANDS, CommandsMixin, _CommandCompleter, _install_autocomplete,
 )
 from cli_ollama import (
     OllamaMixin, _close_without_interruption, _install_signals,
@@ -67,7 +65,6 @@ from cli_ollama import (
 )
 from cli_kaggle import (
     ensure_profile_session as _kaggle_ensure_session,
-    run_kaggle as _run_kaggle,
     stop_profile_session as _kaggle_stop_session,
     uninstall_managed_kaggle as _uninstall_managed_kaggle,
 )

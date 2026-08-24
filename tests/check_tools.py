@@ -226,8 +226,6 @@ with tempfile.TemporaryDirectory() as tmp:
     names = {s["function"]["name"] for s in tools.SCHEMA}
     check(names == set(tools.IMPLS),
           f"the schema and the implementations describe the same tools ({names})")
-    check([s["function"]["name"] for s in tools.filtered_schema(["read_file"])] == ["read_file"],
-          "filtered_schema returns only what was asked for")
 
 # The boundary is tested by effect, not by the refusal it prints. A test that
 # reads "path outside the sandbox" passes just as well against a version that

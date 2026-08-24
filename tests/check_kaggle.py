@@ -895,12 +895,20 @@ try:
     selector_result = setup_ollama._select_configured_api(
         lambda _prompt: "", selector_config, "en", setup_ollama.Translator("en"),
     )
+    # And the other entry, by effect on the same recorder. `isaacli kaggle`
+    # runs setup_ollama.run_kaggle, so patching cli_kaggle.run_kaggle catching
+    # both calls is what proves there is one implementation under them. This
+    # used to compare an alias in cli.py against the function it was imported
+    # from, which no patch can move, so the clause could not fail and the
+    # entry point it named was not the one the command runs.
+    command_result = setup_ollama.run_kaggle(config_file=selector_config)
 finally:
     setup_ollama._select = original_select
     cli_kaggle.run_kaggle = original_run_kaggle
-check(selector_result == 130 and len(kaggle_setup_calls) == 1
+check(selector_result == 130 and command_result == 130
+      and len(kaggle_setup_calls) == 2
       and kaggle_setup_calls[0]["config_file"] == selector_config
-      and cli._run_kaggle is original_run_kaggle,
+      and kaggle_setup_calls[1]["config_file"] == selector_config,
       "/model and isaacli kaggle reach the same configuration implementation")
 
 original_launcher_uninstall = cli._uninstall_launcher

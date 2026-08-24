@@ -33,6 +33,19 @@ CONDITION_TOOLS = {
         if item["function"]["name"] != "replace_between"
     ),
 }
+
+
+def _filtered_schema(names):
+    """The subset of tools one condition offers the model.
+
+    Lives here rather than in `tools`, which is imported by every session: this
+    measurement is the only thing that has ever narrowed the schema, and the
+    program itself always offers all of it.
+    """
+    allowed = set(names)
+    return [item for item in tools.SCHEMA if item["function"]["name"] in allowed]
+
+
 CASES = {
     "write": {
         "prompt": (
@@ -164,7 +177,7 @@ def _run_one(args, run_dir: Path, condition: str, case_name: str,
         response = agent.run(
             case["prompt"], args.model, max_steps=args.max_steps, verbose=False,
             history=_build_history(workspace),
-            tools_schema=tools.filtered_schema(CONDITION_TOOLS[condition]),
+            tools_schema=_filtered_schema(CONDITION_TOOLS[condition]),
             provider={"provider": "openai_compatible", "base_url": args.base_url},
             require_change=True, on_tool_before=before, on_tool=after,
             temperature=args.temperature, seed=seed,

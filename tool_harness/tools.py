@@ -586,12 +586,6 @@ def _attach_command_schema():
 _attach_command_schema()
 
 
-def filtered_schema(names):
-    """Return only the tools needed for the current task."""
-    allowed = set(names)
-    return [s for s in SCHEMA if s["function"]["name"] in allowed]
-
-
 def _function_schema(name):
     for item in SCHEMA:
         if item["function"]["name"] == name:

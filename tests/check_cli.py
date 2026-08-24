@@ -29,8 +29,10 @@ os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
 
 import agent
 import cli as app
+import cli_commands
 import cli_ollama
 import cli_presentation
+import cli_sessions
 import config
 import installation
 import setup_ollama
@@ -249,13 +251,13 @@ app._close_without_interruption(fake_close)
 check(fake_close.attempts == 2,
       "a repeated Ctrl+C neither interrupts nor shows a traceback during cleanup")
 
-filtered = app._filter_commands("/sta")
+filtered = cli_commands._filter_commands("/sta")
 check(filtered and filtered[0][0] == "/status",
       "incremental search prioritises the command prefix")
-check(len(app._filter_commands("/")) == len(app.SLASH_COMMANDS),
+check(len(cli_commands._filter_commands("/")) == len(cli_commands.SLASH_COMMANDS),
       "a lone slash offers every command")
 check(any(command == "/sessions"
-          for command, _description in app._filter_commands("saved")),
+          for command, _description in cli_commands._filter_commands("saved")),
       "command search also matches the description text")
 
 if app.PromptSession is not None:
@@ -272,7 +274,7 @@ sub.mkdir()
 (sub / "AGENTS.md").write_text("project-one-rule", encoding="utf-8")
 
 cli = app.IsaacCLI("isaac-granite", sub, 4, autostart_ollama=False)
-check(bool(app.SESSION_ID_UUID.fullmatch(cli.session_id)),
+check(bool(cli_sessions.SESSION_ID_UUID.fullmatch(cli.session_id)),
       "new sessions use a full UUIDv4")
 check(tools.SANDBOX_ROOT == sub.resolve(), "the initial workspace becomes SANDBOX_ROOT")
 check(str(sub.resolve()) in cli.history[0]["content"],
@@ -897,20 +899,20 @@ check(out.getvalue().startswith("\n" + EN.t("cli.working.waiting")[:8])
       and "\r\033[2Kisaac: Hello" in out.getvalue(),
       "the working indicator is transient and leaves a break before the answer")
 
-panel = app._welcome_lines(
+panel = cli_presentation._welcome_lines(
     "long-model", "Ollama 0.30.10", sub, width=100,
 )
-check(all(app._visual_width(line) == 100 for line in panel)
+check(all(cli_presentation._visual_width(line) == 100 for line in panel)
       and f"Isaac CLI v{app.APP_VERSION}" in panel[0]
       and "Welcome back!" in "\n".join(panel)
       and "┬" in panel[0] and panel[1].count("│") == 3
-      and all(line in "\n".join(panel) for line in app.WORDMARK_ISAAC)
+      and all(line in "\n".join(panel) for line in cli_presentation.WORDMARK_ISAAC)
       and EN.t("cli.welcome.shift_tab") in "\n".join(panel),
       "the welcome panel has the version, neutral greeting and stable alignment")
-compact_panel = app._welcome_lines(
+compact_panel = cli_presentation._welcome_lines(
     "a-very-long-model-name", "engine", sub, width=40,
 )
-check(all(app._visual_width(line) == 40 for line in compact_panel),
+check(all(cli_presentation._visual_width(line) == 40 for line in compact_panel),
       "the welcome panel also fits a narrow terminal")
 
 markdown = app._format_markdown_terminal(
@@ -1717,8 +1719,8 @@ check(refused_preload is False,
 
 # --resume takes the session id, so it belongs on the opening panel, where it
 # can still be copied before the conversation scrolls it away.
-panel = app._welcome_lines("m", "Engine", "/tmp/w", "abc-123", width=100)
-panel_without = app._welcome_lines("m", "Engine", "/tmp/w", width=100)
+panel = cli_presentation._welcome_lines("m", "Engine", "/tmp/w", "abc-123", width=100)
+panel_without = cli_presentation._welcome_lines("m", "Engine", "/tmp/w", width=100)
 check(any("abc-123" in line for line in panel)
       and not any("abc-123" in line for line in panel_without)
       and len(panel) == len(panel_without) + 1,
@@ -1815,7 +1817,7 @@ help_bodies = {
     for name in ("en", "pt-BR")
 }
 undocumented = {
-    name: [command for command in app.SLASH_COMMANDS
+    name: [command for command in cli_commands.SLASH_COMMANDS
            if not re.search(rf"^  {re.escape(command)}(\s|$)", body, re.M)]
     for name, body in help_bodies.items()
 }
@@ -1828,7 +1830,7 @@ check(not any(undocumented.values()),
 strays = {
     name: [line for line in body.splitlines()
            if line.startswith("  /")
-           and line.split()[0] not in app.SLASH_COMMANDS]
+           and line.split()[0] not in cli_commands.SLASH_COMMANDS]
     for name, body in help_bodies.items()
 }
 malformed = {
