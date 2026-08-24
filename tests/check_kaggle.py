@@ -330,10 +330,41 @@ try:
         chosen_model = cli_kaggle._select_model(lambda _prompt: "1")
 finally:
     cli_kaggle.terminal_ui.select = original_select
+import hardware
+import model_discovery
+from cli_i18n import t
+
 check(len(drawn) == 1 and len(drawn[0][1]) == len(cli_kaggle.prepared_models())
       and all("\n" not in option for option in drawn[0][1])
-      and chosen_model["name"] in drawn[0][1][0],
+      and model_discovery.resolved_row_name(chosen_model) in drawn[0][1][0],
       "the Kaggle model screen is drawn by the shared selector, one line per model")
+
+# The card a row is drawn against is the kernel's, never this machine's:
+# quoting a GTX 1650's throughput on a screen choosing what will run on a T4 is
+# worse than quoting nothing. Entered through the same call the screen makes.
+kaggle_table = cli_kaggle.model_table(cli_kaggle.prepared_models())
+kaggle_cells = cli_kaggle.model_rows(cli_kaggle.prepared_models())
+check(drawn[0][1] == kaggle_table["rows"],
+      "and the rows it drew are the ones the shared table produced")
+check(t("cli.kaggle.models.gpu_header") in kaggle_table["header"]
+      and all(cell["fit"] in {"P100", "T4 x2"} for cell in kaggle_cells),
+      f"each row names the accelerator it was assigned ({kaggle_table['header']})")
+for model, cell in zip(cli_kaggle.prepared_models(), kaggle_cells):
+    accelerator = cli_kaggle.ACCELERATORS[model["machine_shape"]]
+    expected = hardware.estimate_tokens_per_second(
+        hardware.bytes_read_per_token(
+            model["model_bytes"], model.get("active_ratio", 1.0)),
+        accelerator["bandwidth_gbs"])
+    check(cell["tps"] == f"{expected:.0f}",
+          f"{cell['name']} states the throughput of the {accelerator['column']} "
+          f"it will run on, not of the card under this desk ({cell['tps']})")
+    check(not cell["tps"].strip("0123456789"),
+          f"and the cell is a bare number ({cell['tps']})")
+check(all(cell["rankings"] == model_discovery.EMPTY_CELL
+          or any(character.isdigit() for character in cell["rankings"])
+          and cell["rankings"].strip("0123456789. ")
+          for cell in kaggle_cells),
+      "no ranking appears without the ruler that owns it")
 check(chosen_model["benchmark_source"] in chosen_output.getvalue()
       and chosen_model["source"] in chosen_output.getvalue(),
       "the evidence behind the chosen model is still shown, without the wall")

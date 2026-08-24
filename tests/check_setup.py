@@ -348,10 +348,12 @@ try:
     # The suggestion list is the screen the choice is made on. A measurement
     # that reaches only the discovery screen and the line printed after the
     # choice is a measurement nobody used, which is what happened the first
-    # time: the numbers landed in `benchmark_cell`, the suggestion row is built
-    # by `_model_label`, and the two never met.
-    import terminal_ui
+    # time: the numbers landed in a cell no suggestion row drew, and the two
+    # never met.
+    import model_discovery
 
+    profile = {"gpus": [{"vram_mb": 4096, "bandwidth_gbs": 128.0,
+                         "name": "NVIDIA GeForce GTX 1650"}]}
     for language in ("en", "pt-BR"):
         speak = setup_ollama.Translator(language)
         # `_resolved_local_catalog` and not `_recommended_catalog`: the second
@@ -361,39 +363,63 @@ try:
         live = setup_ollama._resolve_live
         setup_ollama._resolve_live = lambda *_a, **_k: None
         try:
-            rows = {
-                item["base_model"]: setup_ollama._model_label(item, [], speak)
-                for item in setup_ollama._resolved_local_catalog(
-                    None, {"gpus": [{"vram_mb": 4096}]}, speak)
-            }
+            items = setup_ollama._resolved_local_catalog(None, profile, speak)
         finally:
             setup_ollama._resolve_live = live
+        # Every call below is the call the screen makes, with the same
+        # arguments, so what passes here is what a person sees.
+        row_machine = setup_ollama._row_machine(profile)
+        cells = [setup_ollama._model_cells(item, [], speak, row_machine)
+                 for item in items]
+        table = model_discovery.model_table(
+            cells, row_machine, translate=speak.t,
+            state_header=speak.t("model.table.installed"))
+        drawn = dict(zip([item["base_model"] for item in items], table["rows"]))
+        by_reference = dict(zip([item["base_model"] for item in items], cells))
+        # Offline nothing resolves, so every fit cell is a dash and the column
+        # collapses into the note. The card still names it exactly once, and
+        # trimmed: what must never happen is the card appearing per row.
+        drawn_once = table["header"] + "\n" + table["legend"]
+        check("GTX 1650" in drawn_once and "NVIDIA" not in drawn_once,
+              f"[{language}] the card names its column once, trimmed to the "
+              f"part that names the part ({drawn_once})")
+        check(not any("GTX" in row for row in table["rows"]),
+              f"[{language}] and never once per row ({table['rows']})")
+        widest = max(len(line) for line in [table["header"], *table["rows"]])
+        check(widest <= 80,
+              f"[{language}] the suggestion table fits in 80 columns "
+              f"(widest was {widest})")
         for item in setup_ollama.LOCAL_CATALOG:
             measured = item.get("measured_here")
             if not measured:
                 continue
-            row = rows[item["reference"]]
-            check(measured["humaneval"] in row
-                  and f"{measured['tokens_per_second']:.0f}" in row,
+            cell = by_reference[item["reference"]]
+            check(cell["tps"] == f"{measured['tokens_per_second']:.0f}",
                   f"[{language}] the suggestion row for {item['reference']} "
-                  f"carries what was measured here ({row})")
-            check(speak.t("model.origin.measured") in row
-                  and speak.t("model.origin.curated") not in row,
-                  f"[{language}] a measured row says measured, not reviewed")
-            # Everything after the fit text is the first thing an 80-column
-            # terminal throws away, so the measurement cannot live there.
-            narrow = terminal_ui.fit(row, 77)
-            check(speak.t("model.origin.measured") in narrow
-                  and measured["humaneval"] in narrow,
-                  f"[{language}] the measurement survives an 80-column "
-                  f"terminal ({narrow})")
+                  f"carries the throughput measured here ({cell['tps']})")
+            check(measured["humaneval"] in cell["rankings"],
+                  f"[{language}] and its ranking, with its owner "
+                  f"({cell['rankings']})")
+            check(measured["humaneval"] in drawn[item["reference"]],
+                  f"[{language}] and both survive being drawn into the row "
+                  f"({drawn[item['reference']]})")
+        measured_names = [cell["name"] for cell in cells
+                          if cell.get("measured")]
+        check(measured_names
+              and all(name in table["legend"] for name in measured_names),
+              f"[{language}] the legend names what was measured here, since "
+              f"the cell is a bare number ({table['legend']})")
 
-        unmeasured = [item["reference"] for item in setup_ollama.LOCAL_CATALOG
-                      if not item.get("measured_here")]
-        for reference in unmeasured:
-            check(speak.t("model.origin.measured") not in rows[reference],
-                  f"[{language}] {reference} is not called measured, because "
-                  "nobody measured it")
+        for item in setup_ollama.LOCAL_CATALOG:
+            if item.get("measured_here"):
+                continue
+            cell = by_reference[item["reference"]]
+            # Offline there is no live size, so there is nothing to estimate
+            # from, and an invented number would read like a measured one.
+            check(cell["tps"] == model_discovery.EMPTY_CELL,
+                  f"[{language}] {item['reference']} shows no throughput, "
+                  f"because nobody measured it and nothing was resolved "
+                  f"({cell['tps']})")
     check(
         setup_ollama._normalize_api_url(
             "https://api.groq.com/openai/v1/chat/completions/"
@@ -493,7 +519,7 @@ try:
               "the screen that shows scores also says they are pre-quantization")
         check("NVIDIA GeForce GTX 1650" in screen and "15.4" in screen,
               "the detected machine is stated instead of being assumed")
-        check(f"{QWEN_BYTES / 1024 ** 3:.2f}" in screen
+        check(pt.t("model.row.size", size=f"{QWEN_BYTES / 1024 ** 3:.1f}") in screen
               and any(QWEN_FILE in url for url in hf_requests),
               "the recommended list reports the size the seam returned, not a guess")
         check(all("huggingface.co" in url for url in hf_requests),
@@ -501,9 +527,9 @@ try:
 
         # An entry the fake index refuses stands for a model whose size nothing
         # records. Saying "does not fit" there would be inventing the number
-        # that decides it.
-        check(pt.t("model.fit.unknown") in screen,
-              "a model whose size cannot be resolved says so instead of guessing")
+        # that decides it, and so would printing it as 0.0 GiB.
+        check(pt.t("model.row.size", size="0.0") not in screen,
+              "a model whose size cannot be resolved is never drawn as empty")
 
         setup_ollama._LOCAL_RESOLUTION_CACHE.clear()
         skip_config = root / "skip-config.json"
@@ -556,9 +582,20 @@ try:
         check(code == 0 and pt.t("hardware.local.no_gpu", ram="15.4", cores=12)
               in headless,
               "a machine with no GPU is reported as such, not as a failure")
-        check(pt.t("model.fit.no_gpu_sized", weights=f"{QWEN_BYTES / 1024 ** 3:.2f}")
-              in headless and pt.t("model.fit.does_not_fit") not in headless,
-              "with no GPU the screen says it runs on the CPU instead of does not fit")
+        # Through the function the screen runs, because what the rows say is
+        # decided there and a screen-wide substring cannot tell one row from
+        # another.
+        headless_items = setup_ollama._resolved_local_catalog(
+            None, {"gpus": []}, pt)
+        check(all(item["fit_cell"] == model_discovery.EMPTY_CELL
+                  for item in headless_items)
+              and pt.t("model.table.no_gpu") in headless,
+              "with no GPU no row claims a fit, and the column says CPU")
+        check(all(pt.t("model.fit.no_gpu") in item["fit_label"]
+                  or pt.t("model.fit.no_gpu_sized", weights="0.00")[:40]
+                  in item["fit_label"]
+                  for item in headless_items),
+              "and the sentence that says why stays reachable behind --debug")
 
         # Detection that blows up must not take the setup with it.
         def exploding_detect():

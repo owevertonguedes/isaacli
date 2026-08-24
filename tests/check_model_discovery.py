@@ -321,9 +321,9 @@ try:
     ruler = model_discovery.text("onboarding.task.ruler.fix_bug")
     # Every row on this screen reads T4 x2, because that is what it assigns, so
     # the explanation above them must not promise a smaller accelerator.
-    check(all(cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["label"] in option
-              for option in drawn[0][1][:-1])
-          and "P100" not in drawn[0][0],
+    check(cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["column"] in drawn[0][0]
+          and "P100" not in drawn[0][0]
+          and not any("P100" in option for option in drawn[0][1]),
           "the screen describes the accelerator it actually requests")
     check(all("\n" not in option for option in drawn[0][1])
           and drawn[0][1][-1] == model_discovery.text("model.discovery.exact"),
@@ -553,23 +553,43 @@ check(gated_error and "org/Gated-GGUF" in gated_error,
 # The local discovery screen answers "what can I run", so it is drawn against
 # this machine and the ones that fit come first.
 fit_screens = []
-original_local_vram = model_discovery.local_vram
+original_detect = setup_ollama.hardware.detect
 original_ui = setup_ollama.terminal_ui.select
 try:
-    model_discovery.local_vram = lambda: (16384, 1)
+    setup_ollama.hardware.detect = lambda: {
+        "gpus": [{"name": "NVIDIA GeForce GTX 1650", "vram_mb": 16384,
+                  "bandwidth_gbs": 128.0}],
+        "ram_mb": 15813, "cpu_cores": 12,
+    }
     setup_ollama.terminal_ui.select = lambda title, options, **kwargs: (
-        fit_screens.append(options) or len(options) - 1)
+        fit_screens.append((title, options)) or len(options) - 1)
     with redirect_stdout(io.StringIO()):
         setup_ollama._choose_other_ollama(
             lambda _prompt="": "", setup_ollama.Translator("en"), catalog,
             fake_urlopen)
 finally:
-    model_discovery.local_vram = original_local_vram
+    setup_ollama.hardware.detect = original_detect
     setup_ollama.terminal_ui.select = original_ui
-rows = fit_screens[-1][:-2]
-check(len(rows) == 2 and "Fits" in rows[0] and "Does not fit" in rows[1]
-      and "found live" in rows[0],
-      "the discovery screen says what fits this machine, fitting models first")
+title, options = fit_screens[-1]
+rows = options[:-2]
+speak = setup_ollama.Translator("en")
+yes, no = speak.t("model.fit.yes_cell"), speak.t("model.fit.no_cell")
+check(model_discovery.EMPTY_CELL in rows[1].split()[-2:],
+      f"a discovered model this card cannot hold claims no throughput ({rows[1]})")
+check(len(rows) == 2 and yes in rows[0].split() and no in rows[1].split(),
+      f"the discovery screen says what fits this machine, fitting models first "
+      f"({rows})")
+# The card names the column once, at the top, instead of once per row, and the
+# throughput it heads is the throughput of that card.
+check("GTX 1650" in title and "NVIDIA" not in title
+      and not any("GTX" in row for row in rows),
+      f"and the card heads the fit column once, above the list ({title})")
+check(all(row.split()[-2].isdigit() or row.split()[-2] == model_discovery.EMPTY_CELL
+          for row in rows)
+      or all(character.isdigit() or character in ". -"
+             for row in rows for character in row.split()[-1]),
+      f"with a throughput column that is a number or a dash, never a word "
+      f"({rows})")
 
 # Filling the accelerator is the point of borrowing it: the hour costs the same
 # whether two thirds of the card sit idle or not. The heaviest that still leaves
@@ -705,13 +725,18 @@ check(unknown_pick["file"] == "Model-Q4_K_M.gguf" and unknown_cursor == 3
 # nobody had scored. That is the same error as inheriting a score for a
 # derivative build, and the rule against it does not care which direction the
 # inheritance runs.
-scored_row = model_discovery.benchmark_cell({"benchmark": "SWE-bench Verified 73.4"})
-unscored_row = model_discovery.benchmark_cell({"benchmark": ""})
-check("73.4" in scored_row and scored_row != "SWE-bench Verified 73.4",
-      "a score on a row never appears without saying whose score it is")
-check(unscored_row == model_discovery.no_public_score()
-      and "(" not in unscored_row,
-      "a model with no score is not given an owner it does not have")
+scored_row = model_discovery.ranking_cell({"scores": {"swebench_verified": 73.4}})
+unscored_row = model_discovery.ranking_cell({"scores": {}})
+check("73.4" in scored_row and scored_row.strip("0123456789. "),
+      f"a score on a row never appears without the ruler that owns it "
+      f"({scored_row})")
+check(unscored_row == "",
+      f"a model with no score is not given one ({unscored_row})")
+# An unknown ruler keeps its key rather than being renamed to a benchmark
+# nobody published.
+check(model_discovery.ranking_cell({"scores": {"some_new_ruler": 12.0}})
+      .startswith("some_new_ruler"),
+      "a ruler this program does not know is quoted, not invented")
 
 catalogue = json.loads(
     (HERE.parent / "tool_harness" / "model_catalog.json").read_text(encoding="utf-8"))
@@ -803,28 +828,36 @@ check(model_discovery.carried_measurement({"name": "x"}, "any.gguf") is None,
 # rule here is about what the row says, not about which language says it.
 for language in ("en", "pt-BR"):
     speak = setup_ollama.Translator(language).t
-    measured_cell = model_discovery.benchmark_cell(measured_rows[0], speak)
-    check(sample["gpu"] in measured_cell and sample["date"] in measured_cell,
-          f"[{language}] a measured row names the card and the date on the row "
-          f"({measured_cell})")
-    check(f"{sample['tokens_per_second']:.1f}" in measured_cell
-          and sample["humaneval"] in measured_cell,
+    # The card and the date are what a throughput means nothing without, and
+    # the cell is a bare number, so they are said once under the table. Built
+    # through model_table, which is what every screen draws.
+    card = model_discovery.machine(vram_mb=4096, gpu_count=1,
+                                   bandwidth_gbs=128.0, name=sample["gpu"])
+    measured_row = model_discovery.model_row(
+        measured_rows[0], card, translate=speak)
+    measured_table = model_discovery.model_table(
+        [measured_row], card, translate=speak)
+    check(measured_row["tps"] == f"{sample['tokens_per_second']:.0f}"
+          and sample["humaneval"] in measured_row["rankings"],
           f"[{language}] the throughput and the pass count measured here reach "
-          f"the row ({measured_cell})")
+          f"the row ({measured_row})")
+    check(measured_row["name"] in measured_table["legend"]
+          and speak("model.origin.measured") in measured_table["legend"],
+          f"[{language}] and the legend names which rows were measured here "
+          f"({measured_table['legend']})")
 
-    # Both numbers on one row must each keep their owner: the local one says
-    # which machine, the public one says it is about the original weights.
-    both = model_discovery.benchmark_cell(
-        {"benchmark": "SWE-bench Verified 73.4 (SWE-agent harness)",
-         "measured_here": sample}, speak)
-    check("73.4" in both and sample["gpu"] in both
-          and both != "SWE-bench Verified 73.4 (SWE-agent harness)",
-          f"[{language}] a row with both numbers keeps an owner on each ({both})")
+    # A row that has both a local measurement and a public score shows the one
+    # anybody can re-run, and the public one keeps its ruler.
+    both = model_discovery.ranking_cell(
+        {"scores": {"swebench_verified": 73.4}, "measured_here": sample}, speak)
+    check(sample["humaneval"] in both,
+          f"[{language}] a measurement of this exact file outranks a score "
+          f"taken on the original weights ({both})")
 
     # "Verified" is reserved for a number produced here. Nothing may put it
     # next to a score that came out of somebody else's run.
-    public_only = model_discovery.benchmark_cell(
-        {"benchmark": "SWE-bench Pro 61.7"}, speak)
+    public_only = model_discovery.ranking_cell(
+        {"scores": {"swebench_pro": 61.7}}, speak)
     check("verified" not in public_only.casefold()
           and "verificado" not in public_only.casefold(),
           f"[{language}] a public score is never called verified ({public_only})")

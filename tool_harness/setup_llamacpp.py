@@ -193,9 +193,15 @@ def _row(item, tr, vram_mb, overhead_mb, gpu_count, machine=None):
     """
     machine = machine or model_discovery.machine(
         vram_mb=vram_mb, gpu_count=gpu_count)
+    fit = _fit_label(item, tr, vram_mb, overhead_mb, gpu_count)
     return model_discovery.model_row(
         item, machine, translate=tr.t,
-        fit=_fit_label(item, tr, vram_mb, overhead_mb, gpu_count),
+        fit=fit,
+        # A card that holds no context of this model holds no weights of it
+        # either, so it will not decode at this card's bandwidth and there is
+        # nothing to estimate. Unknown geometry is unknown, not a no.
+        fits=(None if not gpu_count or item.get("geometry_missing")
+              else bool(item.get("context_ceiling"))),
         # The last column answers where the weights are, which on this screen
         # is the same question as "is it installed" and additionally says whose
         # copy it is: choosing an Ollama one is what creates the link.

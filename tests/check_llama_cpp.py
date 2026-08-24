@@ -531,6 +531,11 @@ check("tight" in tight["fit"] and "0K" not in tight["fit"],
 _item, huge = cells_for(model_bytes=40_000_000_000)
 check(huge["fit"].lower().startswith("does not fit"),
       f"a model with no room at all still appears, saying it does not fit ({huge['fit']})")
+# The estimate is bytes per token over the bus of the card that holds the
+# weights, so it says nothing about a model this card does not hold. A row
+# reading "does not fit" beside a confident throughput was on screen.
+check(huge["tps"] == model_discovery.EMPTY_CELL,
+      f"and it claims no throughput on a card that cannot hold it ({huge['tps']})")
 _item, blind = cells_for(geometry_missing=["n_layers"])
 check(blind["fit"] == tr.t("model.fit.unknown"),
       "a model whose geometry could not be read claims no context it cannot compute")

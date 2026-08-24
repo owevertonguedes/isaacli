@@ -64,6 +64,14 @@ ACCELERATORS = {
         "label": "P100 16 GB", "vram_mb": 16384,
         "overhead_mb": hardware.DEFAULT_OVERHEAD_MB, "cuda_arch": "60",
         "gpu_count": 1,
+        # What heads a column: short enough to sit above it, specific enough to
+        # say which card the row was drawn against.
+        "column": "P100",
+        # Per card, never the pair added together: llama.cpp splits layers
+        # across cards and decodes through them in turn, so a token still
+        # crosses one bus at a time. The figure is the vendor's, which is what
+        # makes the throughput column an estimate and says so in the legend.
+        "bandwidth_gbs": hardware.gpu_bandwidth("Tesla P100"),
     },
     # 30720, not the 32768 two 16 GB cards suggest. Read inside a session on
     # 2026-08-22 with nvidia-smi: each T4 reports 15360 MiB total, so the pair
@@ -78,6 +86,8 @@ ACCELERATORS = {
         "label": "T4 x2, 2 x 16 GB", "vram_mb": 30720,
         "overhead_mb": hardware.DEFAULT_OVERHEAD_MB * 2, "cuda_arch": "75",
         "gpu_count": 2,
+        "column": "T4 x2",
+        "bandwidth_gbs": hardware.gpu_bandwidth("Tesla T4"),
     },
 }
 ACCELERATOR_PREFERENCE = ("NvidiaTeslaP100", "NvidiaTeslaT4")
@@ -821,23 +831,69 @@ def recommended_models(catalog_path=MODEL_CATALOG_PATH):
     return selected
 
 
-def model_entry(model, no_score=None):
-    """One model on one line, because a selection screen draws one line each.
+def accelerator_machine(machine_shape):
+    """The hardware a Kaggle row is drawn against: the kernel's card, not ours.
 
-    Three printed lines per model turned six candidates into a wall the user
-    could not read. The evidence behind the chosen row is not dropped, it is
-    printed once for the row that was actually chosen.
+    Quoting the throughput of the GTX 1650 under this desk on a screen that
+    chooses what will run on a borrowed T4 is worse than quoting nothing, so
+    the card is passed in explicitly and comes from the accelerator the row was
+    assigned to.
     """
     import model_discovery
 
-    return t(
-        "cli.kaggle.models.entry", name=model["name"],
-        size=f"{model['model_bytes'] / 1024 ** 3:.2f}",
-        machine=model.get("machine_label", ""),
-        origin=model_discovery.origin_label(model, t),
-        benchmark=(model_discovery.benchmark_cell(model, t)
-                   if model.get("benchmark") or no_score is None
-                   else no_score),
+    accelerator = ACCELERATORS[machine_shape]
+    return model_discovery.machine(
+        vram_mb=accelerator["vram_mb"], gpu_count=accelerator["gpu_count"],
+        bandwidth_gbs=accelerator["bandwidth_gbs"],
+        name=accelerator["column"],
+    )
+
+
+def model_rows(models, fit=None):
+    """The cells for each candidate, each against the card it was assigned.
+
+    One line per model, because a selection screen draws one line each: three
+    printed lines per model turned six candidates into a wall the user could
+    not read. The evidence behind the chosen row is not dropped, it is printed
+    once for the row that was actually chosen.
+
+    `fit` is given by a screen whose rows all share one accelerator: there the
+    card heads the column, so the cell answers whether the model fits it rather
+    than naming the same card on every line.
+    """
+    import model_discovery
+
+    return [
+        model_discovery.model_row(
+            dict(model, name=model_discovery.resolved_row_name(model)),
+            accelerator_machine(model["machine_shape"]), translate=t,
+            fit=fit or ACCELERATORS[model["machine_shape"]]["column"],
+            # Everything on these screens was selected for fitting the
+            # accelerator it was assigned, which is what makes the estimate
+            # about a model that card actually holds.
+            fits=True,
+            # Nothing here is installed anywhere, so the last column answers
+            # the question this screen does raise: what stands behind the row.
+            state=model_discovery.origin_label(model, t),
+        )
+        for model in models
+    ]
+
+
+def model_table(models):
+    """Header and rows for a catalogue whose rows do not share one card.
+
+    Every model here is assigned to the smallest accelerator that holds it, so
+    the card is a property of the row and heads no column: it becomes the cell
+    under GPU, and the legend says once where the throughput came from.
+    """
+    import model_discovery
+
+    return model_discovery.model_table(
+        model_rows(models), translate=t,
+        state_header=t("model.table.origin"),
+        fit_header=t("cli.kaggle.models.gpu_header"),
+        legend=t("model.table.legend.per_accelerator"),
     )
 
 
@@ -875,9 +931,11 @@ def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH, prepared_fn=None):
     models = prepared_models(catalog_path)
     if not models:
         raise RuntimeError(t("cli.kaggle.models.none"))
+    table = model_table(models)
     index = _choose(
-        "\n\n".join((t("cli.kaggle.models.section"), t("cli.kaggle.models.title"))),
-        [model_entry(model) for model in models], input_fn)
+        "\n\n".join((t("cli.kaggle.models.section"), t("cli.kaggle.models.title"),
+                     table["header"], table["legend"])),
+        table["rows"], input_fn)
     model = models[index]
     print_model_evidence(model)
     return model

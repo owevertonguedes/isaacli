@@ -549,61 +549,6 @@ def benchmark_line(model):
     return "\n".join(lines)
 
 
-def measured_cell(model, translate=None):
-    """What this exact file did on this machine, or nothing at all.
-
-    This is the only number in the whole program that was produced here, and
-    the only one entitled to name a machine. It comes from a report written by
-    `scripts/bench_local.py` and carries the card, the date and the file, for
-    the reason the report itself carries them: a throughput without a GPU next
-    to it is a claim about the reader's hardware.
-
-    It attaches to a catalogue row and never to a resolved model, because the
-    row names one file and the measurement is of that one file. A resolved
-    sibling quantization of the same repository is a different artifact and
-    inherits nothing.
-    """
-    translate = translate or text
-    measured = model.get("measured_here")
-    if not measured:
-        return None
-    return translate(
-        "model.score.measured",
-        humaneval=measured["humaneval"],
-        tps=f"{measured['tokens_per_second']:.1f}",
-        gpu=measured["gpu"],
-        date=measured["date"],
-        tools=translate("model.score.measured_tools_yes"
-                        if measured.get("native_tool_call")
-                        else "model.score.measured_tools_no"),
-    )
-
-
-def measured_summary(model, translate=None):
-    """The measurement short enough to sit on a row of the suggestion list.
-
-    `measured_cell` is the full form and fits the discovery screen, which draws
-    one wide column. The suggestion list already spends its width on the name,
-    the install state, the origin and the fit, so the same sentence there would
-    wrap and take the row with it. This keeps the two numbers that decide, the
-    pass count and the throughput, plus whether the model drives tools at all,
-    which for an agent decides more than either.
-    """
-    translate = translate or text
-    measured = model.get("measured_here") or (
-        model.get("catalog") or {}).get("measured_here")
-    if not measured:
-        return ""
-    return translate(
-        "model.score.measured_short",
-        humaneval=measured["humaneval"],
-        tps=f"{measured['tokens_per_second']:.0f}",
-        tools=translate("model.score.measured_short_tools_yes"
-                        if measured.get("native_tool_call")
-                        else "model.score.measured_short_tools_no"),
-    )
-
-
 def carried_measurement(catalog, resolved_file):
     """The catalogue's local measurement, but only for the file it measured.
 
@@ -621,32 +566,6 @@ def carried_measurement(catalog, resolved_file):
     if resolved_file and measured.get("file") != resolved_file:
         return None
     return measured
-
-
-def benchmark_cell(model, translate=None):
-    """The score as it may appear on a row of a list, never without its owner.
-
-    Every scored row in the catalogue is a quantized GGUF whose number was
-    measured on the original weights at full precision: the `benchmark_source`
-    of all six of them is the upstream model page. `benchmark_line` says so, but
-    it is only printed after the choice has been made, and the choice is made on
-    the list. A number sitting on the row of a file nobody scored is the same
-    error as inheriting a score for a derivative build, so the row carries the
-    owner with it or it carries no number.
-
-    A measurement taken here comes first when there is one. It is about this
-    file rather than about the weights it was quantized from, and it is the
-    only evidence on the row that anybody can re-run.
-    """
-    translate = translate or text
-    score = model.get("benchmark")
-    measured = measured_cell(model, translate)
-    if not score:
-        return measured or no_public_score(translate)
-    upstream = translate("model.score.upstream", score=score)
-    if not measured:
-        return upstream
-    return translate("model.score.both", measured=measured, upstream=upstream)
 
 
 def machine(vram_mb=None, gpu_count=None, bandwidth_gbs=None, name=None):
@@ -675,7 +594,7 @@ def local_measurement(model):
         model.get("catalog") or {}).get("measured_here")
 
 
-def throughput_cell(model, machine_profile, translate=None):
+def throughput_cell(model, machine_profile, translate=None, fits=None):
     """Tokens per second as a bare number, or a dash.
 
     No word inside the cell. A column of numbers each carrying "measured" or
@@ -685,12 +604,19 @@ def throughput_cell(model, machine_profile, translate=None):
     The dash is not a formatting choice: when `gpu_bandwidth` has no figure for
     this card there is nothing to compute from, and a plausible invented number
     reads on screen exactly like a measured one.
+
+    `fits=False` is the same refusal for a different reason. The estimate is
+    bytes per token over the bus of the card that holds the weights, so it only
+    describes a model the card holds: a 9.4 GiB model on a 4 GiB card was
+    reading 243 tok/s on this screen, next to a cell saying it does not fit.
+    What it would really do depends on how much spills to system RAM, which
+    nothing here knows.
     """
     measured = local_measurement(model)
     if measured:
         return f"{measured['tokens_per_second']:.0f}"
     bandwidth = (machine_profile or {}).get("bandwidth_gbs")
-    if not bandwidth or not model.get("model_bytes"):
+    if fits is False or not bandwidth or not model.get("model_bytes"):
         return EMPTY_CELL
     estimate = hardware.estimate_tokens_per_second(
         hardware.bytes_read_per_token(
@@ -698,6 +624,23 @@ def throughput_cell(model, machine_profile, translate=None):
         bandwidth,
     )
     return f"{estimate:.0f}" if estimate else EMPTY_CELL
+
+
+# What a benchmark is called, as against the key this program files it under.
+# `swebench_verified` is a field name; on a row it costs seventeen columns to
+# say what "SWE-bench" says. Verified is the plain name because it is the main
+# set; Lite and Pro keep their qualifier, because the three do not share a
+# scale and a row that dropped it would compare numbers that cannot be
+# compared. A ruler with no entry here keeps its key, which is ugly and honest,
+# rather than being renamed to something nobody published.
+RULER_LABELS = {
+    "swebench_verified": "SWE-bench",
+    "swebench_lite": "SWE-bench Lite",
+    "swebench_pro": "SWE-bench Pro",
+    "aider_polyglot": "Aider",
+    "livecodebench_v6": "LiveCodeBench",
+    "gpqa_diamond": "GPQA",
+}
 
 
 def ranking_cell(model, translate=None):
@@ -716,7 +659,8 @@ def ranking_cell(model, translate=None):
     if not scores:
         return ""
     ruler, value = next(iter(scores.items()))
-    return translate("model.row.rank.public", ruler=ruler, score=value)
+    return translate("model.row.rank.public",
+                     ruler=RULER_LABELS.get(ruler, ruler), score=value)
 
 
 def _row_name(model):
@@ -740,12 +684,31 @@ def _row_name(model):
     return name
 
 
+def resolved_row_name(model):
+    """A resolved GGUF named the way a person names it, not the way it is got.
+
+    `name` on a resolved model is "org/repo-GGUF, file-stem", which is the path
+    it is downloaded by. On a row that spends forty columns repeating the
+    organisation, the word GGUF and the precision that already has its own
+    column, and it pushes every other field off the screen.
+    """
+    repo = str(model.get("repo") or "")
+    leaf = re.sub(r"[-_.]?gguf$", "", repo.split("/")[-1], flags=re.I)
+    if not leaf:
+        return _row_name(model)
+    return _row_name({
+        "name": leaf,
+        "quantization": quantization_label(model.get("file") or ""),
+    })
+
+
 # The columns, in order, and the only order any screen draws them in.
 MODEL_COLUMNS = ("name", "size", "fit", "tps", "rankings", "state")
 EMPTY_CELL = "-"
 
 
-def model_row(model, machine_profile=None, translate=None, fit=None, state=None):
+def model_row(model, machine_profile=None, translate=None, fit=None, state=None,
+              fits=None):
     """One model as its cells, never as a finished line.
 
     Returning fields rather than text is what lets the header be written once
@@ -760,11 +723,17 @@ def model_row(model, machine_profile=None, translate=None, fit=None, state=None)
     machine_profile = machine_profile or machine()
     return {
         "name": _row_name(model),
+        # A model whose size nobody resolved has no size, and "0.0 GiB" is not
+        # a smaller way of saying that: it is a number, and it reads like one.
         "size": translate(
             "model.row.size",
-            size=f"{(model.get('model_bytes') or 0) / 1024 ** 3:.1f}"),
+            size=f"{model['model_bytes'] / 1024 ** 3:.1f}",
+        ) if model.get("model_bytes") else EMPTY_CELL,
         "fit": fit or EMPTY_CELL,
-        "tps": throughput_cell(model, machine_profile, translate),
+        # `fits` is the yes/no behind the fit cell, which is text a screen chose
+        # and cannot be read back. The throughput needs the answer, not the
+        # wording: an estimate is only about a model the card actually holds.
+        "tps": throughput_cell(model, machine_profile, translate, fits),
         "rankings": ranking_cell(model, translate) or EMPTY_CELL,
         "state": EMPTY_CELL if state is None else state,
         # Read by model_table for the legend, never drawn as a column.
@@ -797,7 +766,7 @@ def machine_label(machine_profile, translate=None):
 
 
 def model_table(rows, machine_profile=None, translate=None, state_header=None,
-                columns=MODEL_COLUMNS):
+                columns=MODEL_COLUMNS, fit_header=None, legend=None):
     """Header and rows as aligned text, with widths taken from the whole list.
 
     The header is drawn here, by the same code and from the same widths as the
@@ -808,13 +777,20 @@ def model_table(rows, machine_profile=None, translate=None, state_header=None,
     the origin of the throughput column lives, because the cell itself is a
     bare number: a "measured" or "estimated" word repeated down a column is the
     prose this table exists to remove.
+
+    `fit_header` and `legend` exist for the one list that is not drawn against a
+    single card: the Kaggle catalogue assigns each model to the smallest
+    accelerator that holds it, so the card is a property of the row and cannot
+    head the column. Each row is still built against its own accelerator, which
+    is what keeps a P100's throughput off a row that will run on a T4.
     """
     translate = translate or text
-    machine_profile = machine_profile or machine()
+    if fit_header is None or legend is None:
+        machine_profile = machine_profile or machine()
     headings = {
         "name": translate("model.table.name"),
         "size": translate("model.table.size"),
-        "fit": machine_label(machine_profile, translate),
+        "fit": fit_header or machine_label(machine_profile, translate),
         "tps": translate("model.table.tps"),
         "rankings": translate("model.table.rankings"),
         "state": state_header or translate("model.table.state"),
@@ -849,19 +825,20 @@ def model_table(rows, machine_profile=None, translate=None, state_header=None,
         cells.append(str(values.get(columns[-1], "")))
         return "  ".join(cells).rstrip()
 
-    measured = [row["name"] for row in rows if row.get("measured")]
-    if measured:
-        legend = translate("model.table.legend.measured",
-                           models=", ".join(measured),
-                           gpu=machine_label(machine_profile, translate))
-    elif (machine_profile or {}).get("bandwidth_gbs"):
-        legend = translate("model.table.legend.estimated",
-                           gpu=machine_label(machine_profile, translate))
-    else:
-        # No published bandwidth for this card, so every cell in the column is
-        # a dash. Saying why beats a column of dashes nobody can explain.
-        legend = translate("model.table.legend.none",
-                           gpu=machine_label(machine_profile, translate))
+    if legend is None:
+        measured = [row["name"] for row in rows if row.get("measured")]
+        if measured:
+            legend = translate("model.table.legend.measured",
+                               models=", ".join(measured),
+                               gpu=machine_label(machine_profile, translate))
+        elif (machine_profile or {}).get("bandwidth_gbs"):
+            legend = translate("model.table.legend.estimated",
+                               gpu=machine_label(machine_profile, translate))
+        else:
+            # No published bandwidth for this card, so every cell in the column
+            # is a dash. Saying why beats a column of dashes nobody explains.
+            legend = translate("model.table.legend.none",
+                               gpu=machine_label(machine_profile, translate))
     if uniform:
         legend = "\n".join([
             translate("model.table.uniform",

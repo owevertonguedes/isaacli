@@ -233,18 +233,23 @@ def _is_installed(model, installed):
     return any(item.removesuffix(":latest").casefold() == wanted for item in installed)
 
 
-def _model_label(item, installed, tr):
+def _model_cells(item, installed, tr, row_machine=None):
+    """The cells for one suggested model, from the one piece every screen uses.
+
+    The suggestion list is the screen the choice is made on, so evidence that
+    only appears after the choice is evidence nobody used: the row carries the
+    size, whether it fits, the throughput and the ranking with its owner, and
+    the table above it writes each of those headings once.
+    """
     base = item["base_model"]
-    state = ("model.installed" if _is_installed(base, installed)
-              else "model.not_installed")
-    fit = item.get("fit_label") or tr.t("model.fit.unknown")
-    # The suggestion list is the screen the choice is made on, so evidence that
-    # only appears after the choice is evidence nobody used. This row carried
-    # the origin label and nothing else, which said a human picked the model
-    # and never said what anyone measured.
-    return tr.t("model.option", model=base, state=tr.t(state),
-                origin=_origin_label(item, tr), fit=fit,
-                measured=model_discovery.measured_summary(item, tr.t))
+    return model_discovery.model_row(
+        item.get("row_model") or item, row_machine, translate=tr.t,
+        fit=item.get("fit_cell") or model_discovery.EMPTY_CELL,
+        fits=(item.get("fit_report") or {}).get("fits"),
+        state=tr.t("model.table.installed_yes"
+                   if _is_installed(base, installed)
+                   else "model.table.installed_no"),
+    )
 
 
 def _origin_label(item, tr):
@@ -355,6 +360,10 @@ def _machine_profile(tr):
             gpus.append({
                 "name": raw.get("name") or tr.t("hardware.unknown"),
                 "vram_mb": vram_mb,
+                # Carried because the model table draws a throughput column
+                # against this card, and dropping it here turned every cell in
+                # that column into a dash on a card whose bandwidth is known.
+                "bandwidth_gbs": raw.get("bandwidth_gbs"),
             })
     except Exception:
         debug.swallowed("setup_ollama._machine_profile")
@@ -377,6 +386,38 @@ def _machine_profile(tr):
             "hardware.local.summary", gpus=gpu_labels, ram=f"{ram_gib:.1f}", cores=cores,
         )
     return profile, line
+
+
+def _row_machine(profile):
+    """The card the suggestion rows are drawn against: this machine's.
+
+    One profile for the whole list, because the column heading names the card
+    once. Bandwidth is only carried when there is exactly one card: two cards
+    do not add their buses together for a single decode loop, and summing them
+    would inflate every number in the column.
+    """
+    gpus = [item for item in profile.get("gpus") or [] if isinstance(item, dict)]
+    return model_discovery.machine(
+        vram_mb=sum(int(item.get("vram_mb") or 0) for item in gpus),
+        gpu_count=len(gpus),
+        bandwidth_gbs=gpus[0].get("bandwidth_gbs") if len(gpus) == 1 else None,
+        name=gpus[0].get("name") if gpus else None,
+    )
+
+
+def _catalog_row_name(reference):
+    """The model's own name, without the path it happens to be fetched by.
+
+    A curated entry is named by its reference, `hf.co/org/Model-GGUF:Q4_K_M`,
+    which is forty-two columns of which the organisation, the word GGUF and the
+    hosting prefix identify nothing to the person reading the row.
+    """
+    if not reference.startswith("hf.co/"):
+        # An Ollama reference is already the model's name: `gpt-oss:20b`.
+        return reference
+    repo, _separator, selector = reference[len("hf.co/"):].partition(":")
+    name = re.sub(r"[-_.]?gguf$", "", repo.split("/")[-1], flags=re.I)
+    return f"{name} {selector}".strip() if selector else name
 
 
 def _resolve_live(reference):
@@ -448,6 +489,11 @@ def _resolved_local_catalog(task, profile, tr):
             for key in ("model_bytes", "n_layers", "n_kv_heads", "head_dim")
         )
         item = _model_item(reference, recommended=True, catalog=catalog)
+        # What the row is drawn from: the live size, geometry and evidence, under
+        # the name a person recognises. The reference stays in `base_model`,
+        # which is what Ollama is asked to pull.
+        item["row_model"] = dict(resolved, name=_catalog_row_name(reference))
+        item["row_model"].pop("quantization", None)
         if not gpu_count:
             # Without a GPU there is no VRAM to fit into, so "does not fit" would
             # be answering a question nobody asked. What the user needs to know
@@ -457,6 +503,11 @@ def _resolved_local_catalog(task, profile, tr):
                      weights=f"{resolved['model_bytes'] / 1024 ** 3:.2f}")
                 if complete else tr.t("model.fit.no_gpu")
             )
+            # Nothing was computed against a card, because there is no card.
+            # The column heading already says CPU, and the explanation above
+            # the table says what that costs; inventing a yes here would be
+            # claiming this machine's RAM holds the model, which nobody asked.
+            item["fit_cell"] = model_discovery.EMPTY_CELL
         elif complete:
             report = model_discovery.fit_report(
                 resolved, vram_mb, overhead_mb=overhead_mb,
@@ -466,8 +517,22 @@ def _resolved_local_catalog(task, profile, tr):
                 report, tr.t, state_key="model.fit.report",
                 fit_yes_key="model.fit.fits", fit_no_key="model.fit.does_not_fit",
             )
+            # The column is headed by the card, so the cell answers the card's
+            # question and nothing else. The arithmetic behind it, weights
+            # against cache against what the card has left, is what --debug is
+            # for: on the row it cost a hundred and twenty columns per model.
+            item["fit_cell"] = tr.t("model.fit.yes_cell" if report["fits"]
+                                    else "model.fit.no_cell")
         else:
             item["fit_label"] = tr.t("model.fit.unknown")
+            # Nothing resolved, so the size cell is a dash too and the pair
+            # reads as what it is: this row could not be sized, so it cannot be
+            # placed in a card either.
+            item["fit_cell"] = model_discovery.EMPTY_CELL
+        # The sentence the row no longer has room for stays reachable, for
+        # every row and not only the ones that resolved.
+        debug.note(f"setup_ollama._resolved_local_catalog {reference}",
+                   item["fit_label"])
         items.append(item)
     return items
 
@@ -640,39 +705,66 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     # their machine, the way the curated screen already is. A model that does
     # not fit still appears, saying so: hiding it would make the list look like
     # the whole of Hugging Face fits in this GPU.
-    vram_mb, gpu_count = model_discovery.local_vram()
+    local_gpus = hardware.detect().get("gpus") or []
+    vram_mb = sum(item.get("vram_mb", 0) for item in local_gpus)
+    gpu_count = len(local_gpus)
     overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
     ranked = []
     for item in discovered:
         complete = all(key in item for key in
                        ("model_bytes", "n_layers", "n_kv_heads", "head_dim"))
         if not complete:
-            ranked.append((dict(item, fits=False), tr.t("model.fit.unknown")))
+            # Nothing to compute a fit from, so there is no answer to carry
+            # into the throughput either.
+            ranked.append(
+                (dict(item, fits=False), model_discovery.EMPTY_CELL, None))
             continue
         report = model_discovery.fit_report(item, vram_mb, overhead_mb=overhead_mb)
         if not gpu_count:
-            label = tr.t("model.fit.no_gpu_sized",
-                         weights=f"{item['model_bytes'] / 1024 ** 3:.2f}")
-        else:
-            label = tr.t("model.fit.fits") if report["fits"] else tr.t(
-                "model.fit.does_not_fit")
-        ranked.append((report, label))
+            # No card, so nothing was computed against one. The column heading
+            # says CPU already, and a yes here would be a claim about this
+            # machine's RAM that nobody made.
+            ranked.append((report, model_discovery.EMPTY_CELL, None))
+            continue
+        ranked.append((report, tr.t("model.fit.yes_cell" if report["fits"]
+                                    else "model.fit.no_cell"), report["fits"]))
     ranked.sort(key=lambda entry: not entry[0]["fits"])
-    discovered = [report for report, _label in ranked]
+    discovered = [report for report, _label, _fits in ranked]
+    row_machine = model_discovery.machine(
+        vram_mb=vram_mb, gpu_count=gpu_count,
+        # One card, one bus. Two cards do not add their buses together for a
+        # single decode loop, so there is no honest figure to divide by.
+        bandwidth_gbs=(local_gpus[0].get("bandwidth_gbs")
+                       if len(local_gpus) == 1 else None),
+        name=local_gpus[0].get("name") if local_gpus else None,
+    )
+    table = model_discovery.model_table(
+        [model_discovery.model_row(
+            dict(report, name=model_discovery.resolved_row_name(report)),
+            row_machine, translate=tr.t, fit=label,
+            # A model the card does not hold is not decoding at the card's
+            # bandwidth, so there is no estimate to print for it.
+            fits=fits,
+            # What stands behind a live search result is the question this
+            # screen exists to answer, so it takes the last column here, where
+            # nothing is installed and "installed" would say nothing.
+            state=model_discovery.origin_label(report, tr.t))
+         for report, label, fits in ranked],
+        row_machine, translate=tr.t,
+        state_header=tr.t("model.table.origin"))
     entries = [*discovered, "__exact__", "__back__"]
     options = [
-        *[
-            tr.t(
-                "model.discovery.entry", name=report["name"],
-                size=f"{report['model_bytes'] / 1024 ** 3:.2f}",
-                origin=model_discovery.origin_label(report, tr.t),
-                benchmark=model_discovery.benchmark_cell(report, tr.t),
-                fit=label)
-            for report, label in ranked
-        ],
+        *table["rows"],
         model_discovery.text("model.discovery.exact"),
         model_discovery.text("model.discovery.back"),
     ]
+    # The header and the legend are written once, above the list, and never as
+    # a selectable row.
+    explanation = "\n".join(filter(None, [
+        explanation,
+        table["header"] if ranked else "",
+        table["legend"] if ranked else "",
+    ])) or None
     index = _select(
         tr, model_discovery.text("model.discovery.section"), options, input_fn,
         explanation,
@@ -1003,13 +1095,19 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     if onboarding_task:
         explanation.append(model_discovery.text(
             f"onboarding.task.ruler.{onboarding_task}"))
+    # Every row on this screen runs on the same pair of T4s, so the card heads
+    # the column once instead of being repeated down it.
+    row_machine = cli_kaggle.accelerator_machine("NvidiaTeslaT4")
+    table = model_discovery.model_table(
+        cli_kaggle.model_rows(
+            models, fit=model_discovery.text("model.fit.yes_cell")),
+        row_machine, state_header=model_discovery.text("model.table.origin"))
     selected = cli_kaggle._choose(
         "\n\n".join([
-            model_discovery.text("cli.kaggle.models.section"), *explanation]),
+            model_discovery.text("cli.kaggle.models.section"), *explanation,
+            "\n".join([table["header"], table["legend"]])]),
         [
-            *[cli_kaggle.model_entry(
-                  item, model_discovery.no_public_score(model_discovery.text))
-              for item in models],
+            *table["rows"],
             model_discovery.text("model.discovery.exact"),
         ],
         input_fn,
@@ -1191,6 +1289,7 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         installed = {m.get("name", "").removesuffix(":latest") for m in client.models()}
         current_config = config.load(config_file)
         machine, machine_line = _machine_profile(tr)
+        row_machine = _row_machine(machine)
         # /model does not ask the task again, but it must not contradict the
         # answer either: reordering the same list differently in the two screens
         # would read as the recommendation having changed.
@@ -1218,19 +1317,29 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                 and item["base_model"].removesuffix(":latest").casefold()
                 not in configured_derivatives
             ]
+            table = model_discovery.model_table(
+                [_model_cells(item, installed, tr, row_machine)
+                 for item in recommended_items],
+                row_machine, translate=tr.t,
+                state_header=tr.t("model.table.installed"))
+            # The column headings sit immediately above the rows they name,
+            # rather than in the explanation, because a second section follows
+            # and a heading five lines away heads nothing. It is a disabled
+            # line: a row nobody can land on by mistake.
             entries = [
-                None, *recommended_items, None, *local_items,
+                None, None, *recommended_items, None, *local_items,
                 "__back__", "__other__",
             ]
             options = [
                 tr.t("model.section.recommended"),
-                *[_model_label(item, installed, tr) for item in recommended_items],
+                table["header"],
+                *table["rows"],
                 tr.t("model.section.installed", count=len(local_items)),
                 *[item["base_model"] for item in local_items],
                 tr.t("navigation.back"),
                 model_discovery.text("model.discovery.other"),
             ]
-            headers = {0, len(recommended_items) + 1}
+            headers = {0, 1, len(recommended_items) + 2}
             _current_profile, current_item = config.profile(current_config)
             modelo_atual = (
                 (current_item.get("base_model") or current_item.get("model", ""))
@@ -1252,6 +1361,7 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
                         machine_line,
                         ruler_line,
                         tr.t("model.benchmark.scope"),
+                        table["legend"],
                     ])), input_fn,
                 ),
                 initial=initial,
