@@ -245,19 +245,6 @@ def _model_cells(item, installed, tr, row_machine=None):
     )
 
 
-def _origin_label(item, tr):
-    """What stands behind this row: curation, a public score, or nothing.
-
-    A model already installed is neither suggested nor discovered: the user put
-    it there, and saying "found live, no evidence" about their own model would
-    be describing this program's search instead of their machine.
-    """
-    evidence = item.get("catalog") or item.get("resolved")
-    if evidence is None:
-        return tr.t("model.origin.installed")
-    return model_discovery.origin_label(evidence, tr.t)
-
-
 def _detect_engines(tr, which_fn=None):
     """Offer what this machine has, in place of a fixed menu of everything.
 

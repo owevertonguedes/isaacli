@@ -2122,13 +2122,26 @@ check(not mismatched,
 # it here would have put it back in the sources this check reads.
 #
 # Some keys are assembled at the call site (`t(f"model.origin.{name}")`), and a
-# literal search cannot see those. Every such call in this repository builds the
-# key from a literal prefix, so the prefixes are collected from the sources
-# themselves rather than listed here, where the list would drift.
+# literal search cannot see those. Exempting the whole prefix, which is what
+# this did until 2026-08-24, hides the orphan that costs most: a suffix that no
+# code can produce any more keeps reading as used because a sibling of it is.
+# `i18n_scan.orphan_keys` resolves the suffix instead, and it found two live
+# orphans the day it was written, both left behind by the commit that redrew
+# the model list. Neither is named here, and that is the point: a key written
+# into this file is a key this check then reads as used, which is how the
+# previous sweep's own note would have resurrected the orphan it described.
+#
+# Anything under a dot-directory is skipped, and that is load-bearing rather
+# than tidiness: a git worktree lives in `.claude/worktrees/` and holds a whole
+# second copy of this repository, so without the skip a key deleted here is
+# still "asked for" by a checkout from last week, and every removal this check
+# is supposed to catch passes.
 # ----------------------------------------------------------------------
 sources = {}
 for path in sorted((HERE.parent).rglob("*")):
-    if not path.is_file() or "locales" in path.parts or ".git" in path.parts:
+    if not path.is_file() or "locales" in path.parts:
+        continue
+    if any(part.startswith(".") for part in path.relative_to(HERE.parent).parts):
         continue
     if path.suffix not in (".py", ".tmpl", ".sh") and path.name != "isaacli":
         continue
@@ -2138,17 +2151,29 @@ for path in sorted((HERE.parent).rglob("*")):
         sources[path] = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         continue
-source_blob = "\n".join(sources.values())
-dynamic_prefixes = tuple(
-    prefix for prefix in
-    set(re.findall(r"""t\(\s*f["']([a-z0-9_.]+\.)\{""", source_blob))
-)
-orphan_keys = sorted(
-    key for key in english
-    if key not in source_blob and not key.startswith(dynamic_prefixes)
-)
-check(not orphan_keys,
-      f"every catalogue key is asked for by some screen ({orphan_keys or 'all used'})")
+
+import i18n_scan
+
+orphans = i18n_scan.orphan_keys(english, sources)
+check(not orphans,
+      f"every catalogue key is asked for by some screen ({orphans or 'all used'})")
+
+# Proven by effect in both directions, because a sweep that never reports is
+# indistinguishable from one that reports everything. The planted pair is the
+# shape that actually occurs: one key written out in full and one assembled
+# from a prefix, each with a sibling that no source can produce.
+planted_sources = {
+    "planted.py": 'def draw(t, kind):\n'
+                  '    print(t("planted.title"))\n'
+                  '    print(t(f"planted.kind.{kind}"))\n'
+                  '    return "known"\n',
+}
+planted_catalogue = ["planted.title", "planted.kind.known",
+                     "planted.kind.vanished", "planted.gone"]
+check(i18n_scan.orphan_keys(planted_catalogue, planted_sources)
+      == ["planted.gone", "planted.kind.vanished"],
+      "the sweep resolves an assembled key to its suffix instead of exempting "
+      "the whole prefix, and still sees a plain key nobody asks for")
 
 # ----------------------------------------------------------------------
 # A sentence that never entered a catalogue at all has no pair to be missing,

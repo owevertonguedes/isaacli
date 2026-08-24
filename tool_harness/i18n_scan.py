@@ -160,3 +160,102 @@ def interface_literals(filename, source):
         for line, sink, text in screen_literals(filename, source)
         if text not in allowed
     ]
+
+
+# The calls that turn a key into a sentence. Named rather than guessed, because
+# the whole point below is to read their first argument.
+_TRANSLATORS = ("t", "_t", "tr.t", "translate", "text", "speak")
+
+
+def _translated_key(call):
+    """The first argument of a translating call, as (prefix, whole_key).
+
+    `prefix` is set only when the key is assembled at runtime, and it is the
+    literal half that always precedes the part chosen at the call:
+    `t(f"model.origin.{name}")` and `translate("model.origin." + origin(model))`
+    both give `model.origin.`. `whole_key` is set only when the key is written
+    out in full.
+    """
+    name = _dotted(call.func)
+    if name not in _TRANSLATORS and not (name or "").endswith(".t"):
+        return None, None
+    argument = call.args[0] if call.args else None
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return None, argument.value
+    if isinstance(argument, ast.JoinedStr) and argument.values:
+        head = argument.values[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str) \
+                and head.value.endswith("."):
+            return head.value, None
+    if isinstance(argument, ast.BinOp) and isinstance(argument.op, ast.Add) \
+            and isinstance(argument.left, ast.Constant) \
+            and isinstance(argument.left.value, str) \
+            and argument.left.value.endswith("."):
+        return argument.left.value, None
+    return None, None
+
+
+def _assembled(sources):
+    """(prefixes built at a translating call, every string literal in sight)."""
+    prefixes, literals = set(), set()
+    for filename, source in sources.items():
+        if not str(filename).endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source, filename=str(filename))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                literals.add(node.value)
+            elif isinstance(node, ast.Call):
+                prefix, _whole = _translated_key(node)
+                if prefix:
+                    prefixes.add(prefix)
+    return prefixes, literals
+
+
+def orphan_keys(catalog, sources):
+    """Catalog keys that no screen can ever ask for.
+
+    A key nobody asks for is translated text no screen can show, and it stays
+    perfectly aligned in both catalogs, so the comparison between them reads it
+    as supported wording. One lived that way from the commit that introduced it
+    until a repository-wide sweep found it.
+
+    The hard half is the key assembled at the call site. Exempting its whole
+    prefix, which is what this used to do, hides exactly the orphan that costs
+    most: a suffix no code can produce any more goes on reading as used because
+    a sibling of it is. So the suffix is resolved instead: a runtime key counts
+    as reachable when the part after the prefix is written somewhere as a
+    literal, which is where every such value in this repository comes from
+    (`TASK_VALUES`, the returns of `model_discovery.origin`, an exception's
+    `reason`).
+
+    No orphan is ever named in prose, here or in the check that calls this.
+    Every file this reads is a file it searches, so writing the key down is
+    what makes it look asked-for, and a note explaining a removal would undo
+    the removal. Both halves of this sweep were written naming their find, and
+    both passed until the name came out.
+
+    Erring towards keeping: a suffix that merely looks like the right word
+    passes. What it will not do any more is pass a whole family unread.
+
+    `sources` maps a filename to its text; only the `.py` ones are parsed for
+    literals, and every one of them is searched for the key written in full.
+    """
+    prefixes, literals = _assembled(sources)
+    blob = "\n".join(sources.values())
+    orphans = []
+    for key in catalog:
+        if key in blob:
+            continue
+        # Every matching prefix is tried, not the first one found. Two of them
+        # nest here (`onboarding.task.` and `onboarding.task.ruler.`), and
+        # asking only one of them turns a key the other assembles into an
+        # orphan.
+        if any(key.startswith(prefix) and key[len(prefix):] in literals
+               for prefix in prefixes):
+            continue
+        orphans.append(key)
+    return sorted(orphans)
