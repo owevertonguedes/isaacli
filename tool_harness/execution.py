@@ -1078,11 +1078,17 @@ def build_bwrap(argv, root, network=False, seccomp_fd=None):
         if gh_exe:
             line += ["--ro-bind", gh_exe, gh_exe]
             path_env = f"{Path(gh_exe).parent}:{path_env}"
-    if GRAPHIFY_TOOL_ROOT.exists():
-        line += ["--ro-bind", str(GRAPHIFY_TOOL_ROOT), str(GRAPHIFY_TOOL_ROOT)]
-        path_env = f"{GRAPHIFY_TOOL_ROOT / 'bin'}:{path_env}"
-    if GRAPHIFY_PYTHON_ROOT.exists():
-        line += ["--ro-bind", str(GRAPHIFY_PYTHON_ROOT), str(GRAPHIFY_PYTHON_ROOT)]
+    # Only for the command that needs them, like `gh` above. Ungated, these two
+    # went into the jail of every command a model ran, so `ls` was handed an
+    # interpreter tree it has no use for, on a machine where the tool they exist
+    # for is not even installed. The jail carries what the command needs and
+    # nothing else, and this is the mount that has to prove it.
+    if argv and argv[0] == "graphify":
+        if GRAPHIFY_TOOL_ROOT.exists():
+            line += ["--ro-bind", str(GRAPHIFY_TOOL_ROOT), str(GRAPHIFY_TOOL_ROOT)]
+            path_env = f"{GRAPHIFY_TOOL_ROOT / 'bin'}:{path_env}"
+        if GRAPHIFY_PYTHON_ROOT.exists():
+            line += ["--ro-bind", str(GRAPHIFY_PYTHON_ROOT), str(GRAPHIFY_PYTHON_ROOT)]
     # The user's own toolchain, read-only. AFTER the tmpfs over /tmp, so a mount
     # is never wiped by it, and BEFORE the workspace bind, which must stay the
     # one writable thing. `--ro-bind-try` and not `--ro-bind`: a directory that
