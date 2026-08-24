@@ -105,6 +105,30 @@ check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096, overhead_mb=0) is True,
 check(hardware.fits(1, 0, 100) is False,
       "a card smaller than the overhead fits nothing instead of going negative")
 
+check(hardware.overhead_mb(1) == hardware.DEFAULT_OVERHEAD_MB
+      and hardware.overhead_mb(2) == 2 * hardware.DEFAULT_OVERHEAD_MB,
+      "the reserve multiplies by the number of cards, because each card has one")
+check(hardware.overhead_mb(0) == hardware.overhead_mb()
+      == hardware.overhead_mb(None) == hardware.DEFAULT_OVERHEAD_MB,
+      "no card, no count and no argument all keep one card's reserve")
+check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096,
+                    overhead_mb=hardware.overhead_mb(0)) is False,
+      "a machine with no GPU answers no, instead of counting VRAM it lacks")
+
+# The rule above used to be written as `DEFAULT_OVERHEAD_MB * max(1, gpu_count)`
+# in six places across two interface modules, which is a hardware rule living
+# where hardware rules are not read. This refuses the seventh.
+handwritten = []
+for source in sorted((HERE.parent / "tool_harness").glob("*.py")):
+    if source.name == "hardware.py":
+        continue
+    for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        if "DEFAULT_OVERHEAD_MB" in line and "*" in line.split("DEFAULT_OVERHEAD_MB")[1]:
+            handwritten.append(f"{source.name}:{number}")
+check(not handwritten,
+      "no module multiplies the per-card reserve by hand: " + (
+          ", ".join(handwritten) or "none does"))
+
 check(hardware.bytes_read_per_token(16 * GB) == float(16 * GB),
       "a dense model reads its whole file per token")
 check(hardware.bytes_read_per_token(16 * GB, active_ratio=0.5) == float(8 * GB),

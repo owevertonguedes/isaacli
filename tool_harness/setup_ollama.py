@@ -453,7 +453,7 @@ def _resolved_local_catalog(task, profile, tr):
         for item in profile.get("gpus") or [] if isinstance(item, dict)
     )
     gpu_count = len(profile.get("gpus") or [])
-    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    overhead_mb = hardware.overhead_mb(gpu_count)
     ordered = model_discovery.order_for_task(LOCAL_CATALOG, task)
     pending = [
         item["reference"] for item in ordered
@@ -541,9 +541,9 @@ def _confirm_model_fit(model, input_fn, vram_mb=None, overhead_mb=None):
     """Show exact fit inputs and require consent when the model does not fit."""
     if vram_mb is None:
         vram_mb, gpu_count = model_discovery.local_vram()
-        overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+        overhead_mb = hardware.overhead_mb(gpu_count)
     report = model_discovery.fit_report(
-        model, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB,
+        model, vram_mb, overhead_mb=overhead_mb or hardware.overhead_mb(),
     )
     print(model_discovery.format_fit(report))
     print(model_discovery.benchmark_line(model))
@@ -603,7 +603,7 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
         return model
     if vram_mb is None:
         vram_mb, gpu_count = model_discovery.local_vram()
-        overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+        overhead_mb = hardware.overhead_mb(gpu_count)
     # Heaviest first, and the cursor starts on the heaviest that fits. Filling
     # the accelerator is the point: a borrowed GPU costs the same hour whether
     # two thirds of it sit idle or not, and more bits of the same weights is
@@ -614,7 +614,7 @@ def _choose_quantization(model, input_fn, tr, urlopen_fn=urllib.request.urlopen,
     options, entries, initial, tight, ready = [], [], None, None, None
     for item in ranked:
         report = model_discovery.fit_report(
-            item, vram_mb, overhead_mb=overhead_mb or hardware.DEFAULT_OVERHEAD_MB)
+            item, vram_mb, overhead_mb=overhead_mb or hardware.overhead_mb())
         if report["fits"]:
             available = max(0, report["vram_mb"] - report["overhead_mb"]) * 1024 ** 2
             used = report["model_bytes"] + report["kv_bytes"]
@@ -708,7 +708,7 @@ def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
     local_gpus = hardware.detect().get("gpus") or []
     vram_mb = sum(item.get("vram_mb", 0) for item in local_gpus)
     gpu_count = len(local_gpus)
-    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    overhead_mb = hardware.overhead_mb(gpu_count)
     ranked = []
     for item in discovered:
         complete = all(key in item for key in

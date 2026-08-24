@@ -62,7 +62,7 @@ SESSION_IDLE_SECONDS = 10 * HEARTBEAT_SECONDS
 ACCELERATORS = {
     "NvidiaTeslaP100": {
         "label": "P100 16 GB", "vram_mb": 16384,
-        "overhead_mb": hardware.DEFAULT_OVERHEAD_MB, "cuda_arch": "60",
+        "overhead_mb": hardware.overhead_mb(1), "cuda_arch": "60",
         "gpu_count": 1,
         # What heads a column: short enough to sit above it, specific enough to
         # say which card the row was drawn against.
@@ -84,7 +84,7 @@ ACCELERATORS = {
     # for.
     "NvidiaTeslaT4": {
         "label": "T4 x2, 2 x 16 GB", "vram_mb": 30720,
-        "overhead_mb": hardware.DEFAULT_OVERHEAD_MB * 2, "cuda_arch": "75",
+        "overhead_mb": hardware.overhead_mb(2), "cuda_arch": "75",
         "gpu_count": 2,
         "column": "T4 x2",
         "bandwidth_gbs": hardware.gpu_bandwidth("Tesla T4"),

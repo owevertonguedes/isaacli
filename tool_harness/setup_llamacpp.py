@@ -290,7 +290,7 @@ def choose_model(tr, input_fn, config_file=None,
     everything on this disk runs on this card.
     """
     vram_mb, gpu_count = model_discovery.local_vram()
-    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    overhead_mb = hardware.overhead_mb(gpu_count)
     while True:
         models, problems = local_models.available(
             extra_dirs=_configured_dirs(config_file))
@@ -399,7 +399,7 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
     from setup_ollama import _choose_context
 
     vram_mb, gpu_count = model_discovery.local_vram()
-    overhead_mb = hardware.DEFAULT_OVERHEAD_MB * max(1, gpu_count)
+    overhead_mb = hardware.overhead_mb(gpu_count)
     ceiling, reason = llama_cpp.context_ceiling(
         model, vram_mb, overhead_mb=overhead_mb, device_free_mb=device_free_mb)
     # Named one by one rather than built from `reason`. A key assembled by

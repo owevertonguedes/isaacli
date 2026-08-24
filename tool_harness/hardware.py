@@ -28,6 +28,7 @@ GPU_BANDWIDTH = {
 }
 
 # CUDA context plus compute buffers sit next to the weights and the KV cache.
+# The reserve for one card; `overhead_mb` is what a caller with a machine asks.
 DEFAULT_OVERHEAD_MB = 768
 
 # Fraction of theoretical bandwidth a real decode loop achieves. The one
@@ -43,6 +44,23 @@ DEFAULT_OVERHEAD_MB = 768
 # hardware nobody has measured. Widen this with more measurements before the
 # onboarding starts quoting throughput.
 DEFAULT_MBU = 0.595
+
+
+def overhead_mb(gpu_count=1):
+    """The runtime's own reserve on a machine with this many cards.
+
+    Every card carries its own context and its own compute buffers, so the
+    reserve multiplies by the number of cards and not by anything else. This
+    is a fact about hardware, and it used to be written as
+    `DEFAULT_OVERHEAD_MB * max(1, gpu_count)` in six places across two
+    interface modules, which meant changing it required remembering all six.
+
+    The floor of one card is not defensive arithmetic. A machine with no GPU
+    has no VRAM to reserve out of, and `vram_mb - 0` on such a machine reads
+    as free memory that does not exist; keeping one card's reserve makes the
+    fit answer no, which is the true answer.
+    """
+    return DEFAULT_OVERHEAD_MB * max(1, int(gpu_count or 0))
 
 
 def _query_nvidia_smi():
