@@ -41,7 +41,6 @@ DOWNLOAD_TIMEOUT = 60 * 60
 # than "the biggest layer" is what keeps a licence blob from being served as a
 # model.
 OLLAMA_MODEL_MEDIA_TYPE = "application/vnd.ollama.image.model"
-OLLAMA_TEMPLATE_MEDIA_TYPE = "application/vnd.ollama.image.template"
 
 # A digest is the file name in Ollama's blob store, and it is also a path
 # fragment this program builds. Constraining it to the shape of a digest is what
@@ -284,21 +283,16 @@ def ollama_models(root=None, environ=None, home_dir=None):
         except gguf.GGUFError as error:
             problems.append(f"{name}: {error}")
             continue
-        template = next(
-            (layer for layer in layers if isinstance(layer, dict)
-             and layer.get("mediaType") == OLLAMA_TEMPLATE_MEDIA_TYPE), None)
         item["origin"] = "ollama"
         item["ollama_name"] = name
-        # Recorded for --debug only, and deliberately never handed to
-        # llama-server. Ollama's template layer is Go text/template; llama.cpp's
-        # --chat-template-file expects Jinja. Feeding one to the other produces
-        # a server that starts, answers, and formats every conversation wrong,
-        # which is worse than refusing the model. A weight whose own header
-        # carries no chat template is reported unservable instead.
-        item["ollama_template_blob"] = (
-            str(_blob_path(root, (template or {}).get("digest")) or "")
-            or None
-        )
+        # Ollama's template layer is not read, and that is the decision rather
+        # than an omission: it is Go text/template, and llama.cpp's
+        # --chat-template-file expects Jinja, so a server handed one would
+        # start, answer, and format every conversation wrong. What decides
+        # whether a weight can be talked to is the chat template inside the
+        # GGUF, which `describe_cached` already reports and setup_llamacpp
+        # refuses on. The path to that layer used to be recorded here as
+        # "for --debug", and no --debug note or any other line ever read it.
         models.append(item)
     return models, problems
 

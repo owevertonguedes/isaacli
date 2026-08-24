@@ -214,7 +214,7 @@ def write_manifest(namespace, name, tag, layers):
 write_manifest("library", "qwen2.5-coder", "3b", [
     {"mediaType": local_models.OLLAMA_MODEL_MEDIA_TYPE, "digest": digest,
      "size": weights.stat().st_size},
-    {"mediaType": local_models.OLLAMA_TEMPLATE_MEDIA_TYPE, "digest": template_digest},
+    {"mediaType": "application/vnd.ollama.image.template", "digest": template_digest},
 ])
 write_manifest("hf.co", "somebody/custom", "latest", [
     {"mediaType": local_models.OLLAMA_MODEL_MEDIA_TYPE, "digest": digest},
@@ -228,7 +228,7 @@ write_manifest("library", "traversal", "latest", [
      "digest": "sha256:../../../../etc/passwd"},
 ])
 write_manifest("library", "no-weights", "latest", [
-    {"mediaType": local_models.OLLAMA_TEMPLATE_MEDIA_TYPE, "digest": template_digest},
+    {"mediaType": "application/vnd.ollama.image.template", "digest": template_digest},
 ])
 (store / "manifests" / "registry.ollama.ai" / "stray.json").write_text("{}", encoding="utf-8")
 
