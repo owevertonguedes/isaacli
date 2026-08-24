@@ -1008,7 +1008,11 @@ out = io.StringIO()
 with redirect_stdout(out):
     cli._show_working()
     cli._first_token_at = time.monotonic() - 1
-    cli._thinking_token("do not show this reasoning")
+    # Through the callback the session actually hands to `agent.run`. There was
+    # a second one next to it, taking a thought and forwarding it here, that no
+    # run ever passed: `on_progress` already carries the reasoning stream, so
+    # wiring the other would have counted every thought twice.
+    cli._generation_progress("do not show this reasoning")
 check("tok/s" in out.getvalue()
       and "do not show this reasoning" not in out.getvalue(),
       "thinking updates tok/s without revealing the reasoning")

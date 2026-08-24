@@ -50,7 +50,6 @@ def _load_catalog(key, path=MODEL_CATALOG_PATH):
 
 
 LOCAL_CATALOG = _load_catalog("local")
-RECOMMENDED = [item["reference"] for item in LOCAL_CATALOG]
 TASK_VALUES = ("fix_bug", "build_new", "explain_code")
 # How much of the accelerator the suggested precision is allowed to claim. A
 # launch that runs out of memory still spends the hour it was given.
@@ -1114,15 +1113,6 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         "gpu_count": accelerator["gpu_count"],
     })
     return report
-
-
-def _render_dynamic_kaggle_kernel(folder, slug, model, api_key,
-                                  validation_cpu=False):
-    """Render the shared self-contained kernel for a discovered model."""
-    import cli_kaggle
-
-    return cli_kaggle._render_kernel(
-        folder, slug, model, api_key, validation_cpu, dataset_sources=[])
 
 
 def run_kaggle(**kwargs):

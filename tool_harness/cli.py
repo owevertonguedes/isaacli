@@ -466,12 +466,14 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         # We keep the whole step buffered so we do not break Markdown markers
         # (for example ** and ```) that can arrive split across several tokens.
 
-    def _thinking_token(self, chunk):
-        """Count the reasoning stream without revealing its content in the terminal."""
-        self._generation_progress(chunk)
-
     def _generation_progress(self, chunk):
-        """Show an approximate live rate for every kind of generated output."""
+        """Show an approximate live rate for every kind of generated output.
+
+        Every kind includes the reasoning stream: `agent` hands a thought to
+        this same callback before deciding whether it is also visible text, so
+        the rate keeps moving while a thinking model has printed nothing, and
+        nothing here ever writes the chunk itself.
+        """
         if not chunk or not self._working_visible:
             return
         now = time.monotonic()

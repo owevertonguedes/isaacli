@@ -2171,15 +2171,6 @@ def hold_profile_session(profile_name, config_file=None, pid=None):
     return slug
 
 
-def release_profile_session(profile_name, config_file=None, pid=None):
-    """Drop this window from the record, and answer who is still holding it."""
-    pid = os.getpid() if pid is None else int(pid)
-    slug, holders = _update_holders(
-        profile_name, config_file,
-        lambda holders: [n for n in holders if n != pid])
-    return slug, holders
-
-
 _heartbeats = {}
 
 

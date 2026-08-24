@@ -16,6 +16,12 @@ import config
 import model_discovery
 import setup_ollama
 
+# The curated references, in catalog order. Derived here rather than read from
+# a module constant, because the constant this used to read was a list nothing
+# in the program consumed: the screens all draw from LOCAL_CATALOG itself, so
+# the only thing keeping the constant correct was this file asserting on it.
+CURATED_REFERENCES = [item["reference"] for item in setup_ollama.LOCAL_CATALOG]
+
 
 def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
     """The menu position of one engine, resolved by name.
@@ -140,12 +146,12 @@ try:
     finally:
         setup_ollama._resolve_live = live
     local_menu = setup_ollama._installed_models(client.installed)
-    check([item["base_model"] for item in recommended_menu] == setup_ollama.RECOMMENDED,
+    check([item["base_model"] for item in recommended_menu] == CURATED_REFERENCES,
           "the recommendations section preserves the curation and its order")
     check(any(item["base_model"] == "test-model:7b" for item in local_menu),
           "the installed section includes models queried live from Ollama")
     check(any(item["base_model"] == "granite4:micro-h" for item in local_menu)
-          and "granite4:micro-h" not in setup_ollama.RECOMMENDED,
+          and "granite4:micro-h" not in CURATED_REFERENCES,
           "Micro H shows up because it is installed, with no recommendation badge")
     check(pt.t("model.section.recommended") in out.getvalue()
           and pt.t("model.section.installed", count=len(local_menu)).split("(")[0]
@@ -334,7 +340,7 @@ try:
     _, back_profile = config.profile(config.load(back_config))
     check(code == 0 and back_profile["provider"] == "openai_compatible",
           "going back in the model menu returns to the engine without repeating the language")
-    check(setup_ollama.RECOMMENDED[0].endswith(":UD-IQ1_M"),
+    check(CURATED_REFERENCES[0].endswith(":UD-IQ1_M"),
           "Qwen3.6-35B-A3B UD-IQ1_M is the first recommendation")
     # The reference is a repository and a precision rather than an Ollama tag,
     # and that is load-bearing rather than cosmetic. `phi4-mini:latest` names
@@ -342,9 +348,9 @@ try:
     # to it: a report is about one file with one digest. The two rows that now
     # carry a measurement taken on this machine had to become file-exact to
     # carry it.
-    check(len(setup_ollama.RECOMMENDED) == 5
+    check(len(CURATED_REFERENCES) == 5
           and "hf.co/unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M"
-          in setup_ollama.RECOMMENDED,
+          in CURATED_REFERENCES,
           "the official Phi-4 Mini is among the five recommendations, by file")
     floating = [item["reference"] for item in setup_ollama.LOCAL_CATALOG
                 if item.get("measured_here")
@@ -352,7 +358,7 @@ try:
     check(not floating,
           "no measured row is recommended under a tag that can move under it"
           + (f" (found {', '.join(floating)})" if floating else ""))
-    check("qwen3:4b-instruct-2507-q4_K_M" not in setup_ollama.RECOMMENDED,
+    check("qwen3:4b-instruct-2507-q4_K_M" not in CURATED_REFERENCES,
           "the old test Qwen does not appear in the curation")
 
     # The suggestion list is the screen the choice is made on. A measurement

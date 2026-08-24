@@ -2314,13 +2314,17 @@ check(held_state == "live" and shared_stop is None
       == "owner/isaacli-gpu-1",
       "closing one window leaves the kernel another window is still using")
 
-# And the last one out does end it, otherwise the brake on quota is gone.
+# And the last one out does end it, otherwise the brake on quota is gone. The
+# other window leaves the only way a window ever leaves, which is by closing:
+# one call to the same entry point this one just made, carrying its own pid.
+# It used to step out through a second function that dropped the holder without
+# claiming the ending, and no window has taken that path since the claim was
+# added, so the sequence being proved here was not the sequence that runs.
 with redirect_stdout(io.StringIO()):
-    cli_kaggle.release_profile_session(
-        "kaggle-one", config_file=shared_file, pid=other_process.pid)
     last_stop = cli_kaggle.stop_profile_session(
         "kaggle-one", config_file=shared_file, run_fn=shared_run,
-        which_fn=lambda _name: "/fake/kaggle", home_dir=home)
+        which_fn=lambda _name: "/fake/kaggle", home_dir=home,
+        pid=other_process.pid)
 other_process.kill()
 other_process.wait()
 check(last_stop == "owner/isaacli-gpu-1"

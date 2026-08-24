@@ -284,8 +284,15 @@ try:
             lambda _prompt="": next(kaggle_answers), catalog, fake_urlopen,
         )
     folder = Path(tempfile.mkdtemp())
-    setup_ollama._render_dynamic_kaggle_kernel(
+    # Through the function the launch runs. The wrapper this used to call sat
+    # in setup_ollama, pinned `dataset_sources` to empty and was reached by no
+    # user path, so a kernel rendered by the launch and a kernel rendered here
+    # were two different calls with nothing keeping them equal.
+    import cli_kaggle
+
+    cli_kaggle._render_kernel(
         folder, "tester/dynamic-model", kaggle_model, "secret",
+        dataset_sources=[],
     )
     metadata = json.loads((folder / "kernel-metadata.json").read_text())
     generated = (folder / "dynamic-model.py").read_text()
