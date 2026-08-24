@@ -951,6 +951,16 @@ def _print_commands_help(usage_message):
 def main(argv=None):
     _install_signals()
     arguments = list(sys.argv[1:] if argv is None else argv)
+    # --debug applies to the whole program, not to one parser. The commands
+    # below match their flags exactly, so leaving it in the list made
+    # `isaacli kaggle --debug` print the usage message instead of running with
+    # reporting on, and there was no way to ask for it other than the
+    # environment variable. Pulling it out first makes it work everywhere.
+    debug_requested = "--debug" in arguments
+    if debug_requested:
+        arguments = [argument for argument in arguments if argument != "--debug"]
+    debug.enable(debug_requested or debug.enabled_from_environment())
+
     setup_requested = bool(arguments and arguments[0] == "setup")
     install_requested = bool(arguments and arguments[0] == "install")
     uninstall_requested = bool(arguments and arguments[0] == "uninstall")
@@ -1017,9 +1027,10 @@ def main(argv=None):
     # exact flag, so hiding it from --help made the program contradict itself.
     ap.add_argument("--max-steps", type=int, default=12,
                     help=t("cli.args.max_steps"))
+    # Registered so --help documents it; the value is already applied above,
+    # because the flag was removed from the list before any parsing.
     ap.add_argument("--debug", action="store_true", help=t("cli.args.debug"))
     args = ap.parse_args(arguments)
-    debug.enable(args.debug or debug.enabled_from_environment())
 
     resumed = None
     if args.resume:
