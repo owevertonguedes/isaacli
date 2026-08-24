@@ -27,6 +27,10 @@ sys.path.insert(0, str(HERE.parent / "tool_harness"))
 # language the person running the tests happens to have configured.
 root = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(root / "config-home")
+# Same reasoning as XDG_CONFIG_HOME above: without this, session logs and
+# feedback written by /good, /bad and every new session would land in the
+# real ~/.local/share/isaacli/cli_sessions instead of this throwaway tree.
+os.environ["XDG_DATA_HOME"] = str(root / "data-home")
 
 import agent
 import cli as app
@@ -160,6 +164,37 @@ check(active_purge == 1 and purged == 0 and not (purge_bin / "isaacli").exists()
       )) and untouched_clone.exists(),
       "purge blocks active sessions, then removes private state and preserves the clone")
 
+# The default purge includes data left inside the package by old releases.
+# All paths are redirected into this test's temporary tree before removal.
+legacy_purge = purge_root / "legacy-package"
+legacy_sessions = legacy_purge / "cli_sessions"
+legacy_feedback = legacy_purge / "feedback"
+current_sessions = purge_root / "current-sessions"
+current_feedback = purge_root / "current-feedback"
+linked_models = purge_root / "linked-models"
+for directory in (legacy_sessions, legacy_feedback, current_sessions,
+                  current_feedback, linked_models):
+    directory.mkdir(parents=True)
+    (directory / "state").write_text("private", encoding="utf-8")
+with patch.object(installation, "sessions_dir", lambda: current_sessions), \
+     patch.object(installation, "feedback_dir", lambda: current_feedback), \
+     patch.object(installation, "LEGACY_SESSIONS_DIR", legacy_sessions), \
+     patch.object(installation, "LEGACY_FEEDBACK_DIR", legacy_feedback), \
+     patch.object(installation.local_models, "linked_dir", lambda: linked_models), \
+     patch.object(installation, "HERE", legacy_purge):
+    with redirect_stdout(io.StringIO()):
+        legacy_purged = installation.uninstall_launcher(
+            purge=True, bin_dir=purge_root / "legacy-bin",
+            config_dir=purge_root / "legacy-config",
+            runtime_dir=purge_root / "legacy-runtime",
+            cache_dir=purge_root / "legacy-cache")
+check(legacy_purged == 0
+      and not any(path.exists() for path in (
+          legacy_sessions, legacy_feedback, current_sessions,
+          current_feedback, linked_models,
+      )),
+      "the default purge removes current and both legacy package data paths")
+
 original_uninstall = app._uninstall_launcher
 original_ollama_uninstall = app._uninstall_official_ollama
 original_input = builtins.input
@@ -286,6 +321,29 @@ check("same language" in cli.history[0]["content"],
 check("project-one-rule" in cli.history[0]["content"],
       "startup injects the workspace-root AGENTS.md")
 check(cli.session_path.exists(), "the CLI creates the session's JSONL log")
+check(str(root / "data-home") in str(cli.session_path)
+      and "tool_harness" not in str(cli.session_path),
+      "sessions land in the user's data directory, not inside the package "
+      f"checkout ({cli.session_path})")
+check(str(root / "data-home") in str(cli.feedback_path)
+      and "tool_harness" not in str(cli.feedback_path),
+      "feedback lands in the user's data directory too, not inside the "
+      f"package checkout ({cli.feedback_path})")
+
+# An explicit home_dir wins over XDG_DATA_HOME and never touches either the
+# suite's XDG tree or this machine's real HOME.
+other_home = root / "other-home"
+other_home.mkdir()
+other_xdg = root / "must-not-win"
+with patch.dict(os.environ, {"XDG_DATA_HOME": str(other_xdg)}):
+    redirected = cli_sessions.sessions_dir(home_dir=other_home)
+    check(redirected == other_home / ".local" / "share" / "isaacli" / "cli_sessions",
+          f"sessions_dir(home_dir=...) wins over XDG_DATA_HOME ({redirected})")
+    redirected_feedback = cli_sessions.feedback_dir(home_dir=other_home)
+    check(redirected_feedback == other_home / ".local" / "share" / "isaacli" / "feedback",
+          f"feedback_dir(home_dir=...) wins over XDG_DATA_HOME ({redirected_feedback})")
+check(not other_xdg.exists(),
+      "the losing XDG_DATA_HOME destination was not touched")
 
 # The window has to be declared before the workspace file is read, because
 # every input cap is a share of it and the fallback ceiling is 32 KiB, which is
@@ -1379,7 +1437,7 @@ check(app._resume_command(cli.session_id) in output_lines,
       "the resume command sits alone on a copyable line")
 
 resume_id = "2026-08-07-123456-abcdef"
-resume_path = app.SESSIONS_DIR / f"{resume_id}.jsonl"
+resume_path = app.sessions_dir() / f"{resume_id}.jsonl"
 resume_events = [
     {"type": "meta", "workspace": str(sub), "model": "resume-model"},
     {"type": "user", "workspace": str(sub), "model": "resume-model",
@@ -1408,7 +1466,7 @@ check([role for role, _ in resumed["transcript"]] == [
 # file: a conversation is compacted in memory and then rebuilt from its log,
 # which still has to carry the whole result that was summarised away.
 recoverable_id = "2026-08-22-090000-abcdef"
-recoverable_path = app.SESSIONS_DIR / f"{recoverable_id}.jsonl"
+recoverable_path = app.sessions_dir() / f"{recoverable_id}.jsonl"
 recoverable_events = [
     {"type": "meta", "workspace": str(sub), "model": "resume-model"},
     {"type": "user", "workspace": str(sub), "model": "resume-model",
@@ -1433,7 +1491,7 @@ check(any(m.get("role") == "tool" and len(m.get("content") or "") == 60_000
 
 # Logs recorded before the identifiers were translated must still resume.
 legacy_id = "2026-08-06-101010-abcdef"
-legacy_path = app.SESSIONS_DIR / f"{legacy_id}.jsonl"
+legacy_path = app.sessions_dir() / f"{legacy_id}.jsonl"
 legacy_events = [
     {"tipo": "user", "workspace": str(sub), "modelo": "legacy-model",
      "content": "pergunta antiga"},
@@ -1446,6 +1504,32 @@ legacy = app._load_session(legacy_id)
 check(legacy["model"] == "legacy-model"
       and any(m.get("content") == "conteudo antigo" for m in legacy["history"]),
       "--resume still reads session logs written with the old field names")
+
+# Releases before XDG storage wrote the same JSONL format inside the package.
+# It remains where it is, but both /sessions and --resume must see it.
+package_legacy_dir = root / "legacy-package-sessions"
+package_legacy_dir.mkdir()
+package_legacy_id = "2026-08-05-090000-abcdef"
+package_legacy_path = package_legacy_dir / f"{package_legacy_id}.jsonl"
+package_legacy_path.write_text(json.dumps({
+    "type": "user", "workspace": str(sub), "model": "package-model",
+    "content": "kept in place",
+}) + "\n", encoding="utf-8")
+with patch.object(cli_sessions, "LEGACY_SESSIONS_DIR", package_legacy_dir):
+    try:
+        package_legacy = app._load_session(package_legacy_id)
+    except ValueError as error:
+        package_legacy = {"path": None, "history": [], "error": str(error)}
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.list_sessions()
+check(package_legacy["path"] == package_legacy_path
+      and any(message.get("content") == "kept in place"
+              for message in package_legacy["history"]),
+      f"--resume reads a package-directory session without moving it "
+      f"({package_legacy.get('error', package_legacy['path'])})")
+check(package_legacy_id in out.getvalue() and package_legacy_path.exists(),
+      "/sessions lists the legacy package session and leaves the file in place")
 
 cli.resume_transcript = resumed["transcript"]
 builtins.input = lambda _prompt="": (_ for _ in ()).throw(KeyboardInterrupt())
@@ -2326,12 +2410,20 @@ planted_sources = {
 }
 planted_catalogue = ["planted.title", "planted.kind.known",
                      "planted.kind.vanished", "planted.gone",
-                     "planted.origin.curated", "planted.origin.retired"]
+                     "planted.origin.curated", "planted.origin.retired",
+                     # A dead key that is a plain substring prefix of a live
+                     # one ("planted.kind" inside "planted.kind.known"). A
+                     # scan deciding with `in` reads this as asked-for
+                     # forever, exactly as `engine.ollama` hid behind
+                     # `engine.ollama.found` in the real catalogue.
+                     "planted.kind"]
 check(i18n_scan.orphan_keys(planted_catalogue, planted_sources)
-      == ["planted.gone", "planted.kind.vanished", "planted.origin.retired"],
+      == ["planted.gone", "planted.kind", "planted.kind.vanished",
+          "planted.origin.retired"],
       "the sweep resolves an assembled key to its suffix instead of exempting "
-      "the whole prefix, reaches a translator called through its module, and "
-      "still sees a plain key nobody asks for")
+      "the whole prefix, reaches a translator called through its module, "
+      "still sees a plain key nobody asks for, and reports a dead key that "
+      "is only a substring prefix of a live one instead of hiding behind it")
 
 # ----------------------------------------------------------------------
 # A sentence that never entered a catalogue at all has no pair to be missing,

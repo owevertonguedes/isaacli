@@ -256,7 +256,13 @@ def orphan_keys(catalog, sources):
     blob = "\n".join(sources.values())
     orphans = []
     for key in catalog:
-        if key in blob:
+        # A plain substring match also fires on a key that is only the prefix
+        # of a longer live key (`engine.ollama` inside `engine.ollama.found`),
+        # which hid a dead key for as long as a live sibling of it existed. A
+        # real occurrence never continues into more key characters, so the
+        # character right after the match is checked and rejected when it
+        # would extend the key instead of ending it.
+        if re.search(re.escape(key) + r"(?![A-Za-z0-9_.])", blob):
             continue
         # Every matching prefix is tried, not the first one found. Two of them
         # nest here (`onboarding.task.` and `onboarding.task.ruler.`), and
