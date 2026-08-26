@@ -1211,5 +1211,14 @@ def main(argv=None):
         _without_interruption(lambda: _kaggle_stop_session(cli.kaggle_profile))
 
 
+def entrypoint(argv=None):
+    """Run the CLI without ever exposing a Ctrl+C traceback to the user."""
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        say("\n" + t("cli.error.interrupted"))
+        return 130
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(entrypoint())

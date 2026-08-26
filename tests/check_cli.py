@@ -1407,6 +1407,21 @@ finally:
     cli.ensure_ollama = original_ollama
 check(ctrl_c_code == 130, "Ctrl+C at the prompt ends the interface without a traceback")
 
+# Menus and setup flows have many input sites. The executable boundary is the
+# one place that covers every uncaught Ctrl+C, including top-level commands
+# such as `isaacli kaggle` that return before the REPL is constructed.
+original_main = app.main
+app.main = lambda _argv=None: (_ for _ in ()).throw(KeyboardInterrupt())
+try:
+    interrupted_out = io.StringIO()
+    with redirect_stdout(interrupted_out):
+        interrupted_code = app.entrypoint(["kaggle"])
+finally:
+    app.main = original_main
+check(interrupted_code == 130
+      and app.t("cli.error.interrupted") in interrupted_out.getvalue(),
+      "Ctrl+C in any top-level command exits 130 without a traceback")
+
 cli.resume_transcript = [("user", "old message"), ("assistant", "old answer")]
 builtins.input = lambda _prompt="": (_ for _ in ()).throw(KeyboardInterrupt())
 cli.ensure_ollama = lambda warn=False: "test"
