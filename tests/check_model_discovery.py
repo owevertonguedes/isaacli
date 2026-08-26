@@ -14,6 +14,7 @@ sys.path.insert(0, str(HERE.parent / "tool_harness"))
 
 import model_discovery
 import setup_ollama
+import cli_kaggle
 
 
 def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
@@ -81,6 +82,7 @@ repos = {
         "cardData": {"base_model": "Qwen/Qwen3.8-27B"},
         "siblings": [
             {"rfilename": "Qwen3.8-27B-UD-Q4_K_M.gguf"},
+            {"rfilename": "Qwen3.8-27B-UD-Q6_K_L.gguf"},
             {"rfilename": "Qwen3.8-27B-UD-IQ4_XS.gguf"},
             {"rfilename": "Qwen3.8-27B-BF16-00001-of-00003.gguf"},
         ],
@@ -106,6 +108,7 @@ sizes = {
     "dense-Q4_K_M.gguf": 12 * GB,
     "huge-Q4_K_M.gguf": 40 * GB,
     "Qwen3.8-27B-UD-Q4_K_M.gguf": 16464440224,
+    "Qwen3.8-27B-UD-Q6_K_L.gguf": 24193919904,
     "Qwen3.8-27B-UD-IQ4_XS.gguf": 14 * GB,
     "Qwen3.8-27B-BF16-00001-of-00003.gguf": 18 * GB,
 }
@@ -276,7 +279,7 @@ original_discover = model_discovery.discover_models
 try:
     model_discovery.discover_models = lambda *_args, **_kwargs: ([], [])
     kaggle_answers = iter([
-        "5",
+        str(len(cli_kaggle.models_for_accelerator("NvidiaTeslaT4")) + 1),
         "https://huggingface.co/test/MoE-30B-GGUF/blob/main/moe-Q4_K_M.gguf",
     ])
     with redirect_stdout(io.StringIO()):
@@ -341,13 +344,13 @@ try:
     # one part, so offering it would misstate both fit and speed.
     check(len(drawn) == 2 and "IQ4_XS" in " ".join(drawn[1][1])
           and not any("00001-of-00003" in option for option in drawn[1][1])
-          and task_model["file"] == "Qwen3.8-27B-UD-Q4_K_M.gguf",
+          and task_model["file"] == "Qwen3.8-27B-UD-Q6_K_L.gguf",
           "the other precisions of the chosen model are offered, split files aside")
     check(ruler in drawn[0][0],
           "the screen names the public ruler that decided the order it shows")
 
     huge_answers = iter([
-        "5",
+        str(len(cli_kaggle.models_for_accelerator("NvidiaTeslaT4")) + 1),
         "https://huggingface.co/test/Huge-GGUF/blob/main/huge-Q4_K_M.gguf",
         "no",
     ])
@@ -451,7 +454,10 @@ check(model_discovery.matched_ruler(
 # model's LiveCodeBench, GPQA and SWE-bench numbers, none of which had ever
 # been measured on it.
 # ----------------------------------------------------------------------
-catalogued = json.loads(Path(catalog).read_text(encoding="utf-8"))["kaggle"][0]
+catalogued = next(
+    item for item in json.loads(Path(catalog).read_text(encoding="utf-8"))["kaggle"]
+    if item.get("benchmark_source")
+)
 official_gguf = catalogued["repo"]
 official_upstream = "/".join(
     catalogued["benchmark_source"].split("huggingface.co/")[1].split("/")[:2])
@@ -897,8 +903,6 @@ check(model_discovery.no_public_score() in detail,
 # two catalogs cannot see that: both catalogs have the key and both are correct.
 # Only running the screen in a Portuguese session can, so that is what this does.
 import cli_i18n
-import cli_kaggle
-
 kaggle_titles = []
 original_select = setup_ollama.terminal_ui.select
 original_choose = cli_kaggle._choose

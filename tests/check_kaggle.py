@@ -434,6 +434,13 @@ p100_aliases = {model["alias"] for model in p100_models}
 t4_aliases = {model["alias"] for model in t4_models}
 check(t4_model["alias"] not in p100_aliases,
       "a model that does not fit the selected accelerator is not offered")
+qwen38_q6 = next((model for model in t4_models
+                  if model["alias"] == "qwen38-27b-q6"), None)
+check(qwen38_q6 is not None
+      and qwen38_q6["file"] == "Qwen3.8-27B-UD-Q6_K_L.gguf"
+      and qwen38_q6["model_bytes"] == 24193919904
+      and not qwen38_q6["scores"],
+      "T4 x2 offers the exact Qwen3.8 Q6 file without inheriting a score")
 check(len(recommended) > 2 and p100_aliases != t4_aliases
       and p100_aliases < t4_aliases,
       "the catalog is larger than two and changing accelerator changes the fit list")

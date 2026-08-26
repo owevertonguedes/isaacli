@@ -77,6 +77,21 @@
   ],
   "kaggle": [
     {
+      "name": "Qwen3.8-27B, Q6_K_L",
+      "repo": "unsloth/Qwen3.8-27B-GGUF",
+      "file": "Qwen3.8-27B-UD-Q6_K_L.gguf",
+      "alias": "qwen38-27b-q6",
+      "source": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
+      "model_bytes": 24193919904,
+      "n_layers": 64,
+      "n_kv_heads": 4,
+      "head_dim": 256,
+      "benchmark": "",
+      "benchmark_source": "",
+      "scores": {},
+      "active_ratio": 1.0
+    },
+    {
       "name": "Qwen3.8-27B, Q4_K_M",
       "repo": "unsloth/Qwen3.8-27B-GGUF",
       "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
