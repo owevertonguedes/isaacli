@@ -2126,11 +2126,14 @@ cli_kaggle.save_kaggle_profile(
     "api-key", preference_file, account="user")
 stored_preference = (config.load(preference_file).get("kaggle") or {}).get(
     "preference") or {}
+stored_models = (config.load(preference_file).get("kaggle") or {}).get("models") or []
 check(stored_preference.get("account") == "user"
       and (stored_preference.get("model") or {}).get("file") == "Model-Q4_K_M.gguf"
       and (stored_preference.get("model") or {}).get("machine_shape")
-      == "NvidiaTeslaT4",
-      "what was chosen is remembered even though the session it ran in is not")
+      == "NvidiaTeslaT4"
+      and stored_models
+      and stored_models[0].get("file") == "Model-Q4_K_M.gguf",
+      "the chosen model is remembered as a selectable Kaggle model")
 
 # The kernel is gone, so the record and the profile went with it. The preference
 # has to survive that, because it is the answer to a different question.
@@ -2166,8 +2169,9 @@ def preference_select(title, options, **kwargs):
 
 try:
     cli_kaggle.terminal_ui.select = preference_select
-    cli_kaggle._select_model = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("the model list was drawn again"))
+    selected_again = []
+    cli_kaggle._select_model = lambda *args, **kwargs: (
+        selected_again.append(True) or stored_preference["model"])
     with redirect_stdout(io.StringIO()) as repeat_output:
         cli_kaggle.run_kaggle(
             input_fn=lambda prompt: "y" if "Push" in prompt else "n",
@@ -2178,22 +2182,17 @@ try:
 finally:
     cli_kaggle.terminal_ui.select = original_preference_select
     cli_kaggle._select_model = original_select_model
-# Two screens, and both are about spending rather than about choosing: the
-# ceiling and the push confirmation. Repeating a choice skips the account and
-# the model, which are what cost the user time; it does not skip agreeing to
-# how many hours of a weekly budget this launch may burn unattended.
+# The account is remembered, but the model is selected on every launch. One
+# selected row means one model; a repository and its GGUF file must never be
+# presented as two things that will be launched together.
 check(len(repeat_screens) == 2
+      and selected_again == [True]
       and any("live" in title.lower() for title in repeat_screens)
       and any("kernels push" in " ".join(c) for c in repeat_commands)
-      and "Model, Q4_K_M" in repeat_output.getvalue(),
-      "repeating the last choice names it and asks once, not for account and model again")
-# The context screen is part of choosing, so whoever repeated a choice has
-# already answered it. It travels inside the remembered model, like the account
-# and the exact file do.
-check(not any("context" in title.lower() for title in repeat_screens),
-      "repeating the last choice does not ask about context again")
+      and any("context" in title.lower() for title in repeat_screens),
+      "a later Kaggle launch selects exactly one model and its context")
 check("12.18h" in repeat_output.getvalue(),
-      "repeating still shows the quota before anything is spent")
+      "a later launch still shows the quota before anything is spent")
 
 # Once a push has been approved, Ctrl+C during tunnel discovery must end that
 # exact unfinished kernel. Otherwise the command exits with a traceback while

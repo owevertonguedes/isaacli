@@ -1703,6 +1703,14 @@ def save_kaggle_profile(url, slug, model, api_key, config_file=None,
     # choice apart from the session is what turns the next launch back into one
     # keypress instead of the whole flow again.
     state["preference"] = {"account": account, "model": dict(model)}
+    remembered = state.setdefault("models", [])
+    exact = (model.get("repo"), model.get("file"))
+    remembered[:] = [
+        item for item in remembered
+        if isinstance(item, dict)
+        and (item.get("repo"), item.get("file")) != exact
+    ]
+    remembered.insert(0, dict(model))
     kernels = state.setdefault("kernels", [])
     kernels.append({
         "slug": slug, "url": url,
@@ -2548,19 +2556,6 @@ def stored_preference(config_file=None):
     return preference
 
 
-def _offer_preference(preference, input_fn):
-    """Repeat the last choice, or open the screens that change it."""
-    model = preference["model"]
-    index = _choose(
-        t("cli.kaggle.preference.title"),
-        [t("cli.kaggle.preference.repeat",
-           model=model.get("name") or model.get("alias"),
-           account=preference["account"]),
-         t("cli.kaggle.preference.change")],
-        input_fn)
-    return preference if index == 0 else None
-
-
 def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
                 popen_fn=subprocess.Popen, config_file=None, home_dir=None,
                 record_path=None, which_fn=shutil.which,
@@ -2576,8 +2571,6 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
     if executable is None:
         return 1
     preference = None if validation_cpu else stored_preference(config_file)
-    if preference:
-        preference = _offer_preference(preference, input_fn)
     try:
         if preference:
             account, environment = _use_account(
@@ -2637,29 +2630,19 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         say(t("cli.kaggle.cpu_only"))
         model = {"repo": "", "file": "", "alias": "isaacli-flow-probe"}
     else:
-        if preference:
-            # The screens are what cost the user time, not the choice. Naming
-            # what is about to be launched is what keeps skipping them honest.
-            # The context chosen that time travels inside the model, so
-            # repeating a choice does not ask about it again either.
-            model = preference["model"]
-            say(t("cli.kaggle.preference.using",
-                  model=model.get("name") or model.get("alias"),
-                  machine=model.get("machine_label", "")))
-        else:
-            try:
-                model = _select_model(
-                    input_fn,
-                    prepared_fn=prepared_weight_probe(
-                        executable, username, run_fn, environment))
-            except RuntimeError as error:
-                print(error)
-                return 1
-            context = _choose_kernel_context(model, input_fn)
-            if context is None:
-                say(t("cli.kaggle.cancelled"))
-                return 130
-            model = dict(model, context=context)
+        try:
+            model = _select_model(
+                input_fn,
+                prepared_fn=prepared_weight_probe(
+                    executable, username, run_fn, environment))
+        except RuntimeError as error:
+            say(t("cli.kaggle.failed", error=error))
+            return 1
+        context = _choose_kernel_context(model, input_fn)
+        if context is None:
+            say(t("cli.kaggle.cancelled"))
+            return 130
+        model = dict(model, context=context)
     dataset_sources = []
     if not validation_cpu:
         try:

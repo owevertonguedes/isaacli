@@ -1042,7 +1042,7 @@ def _kaggle_accelerators():
 
 def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
                              urlopen_fn=urllib.request.urlopen, onboarding_task=None,
-                             prepared_fn=None):
+                             prepared_fn=None, saved_models=None):
     """Combine the offline seed with live GGUF discovery for Kaggle."""
     import cli_kaggle
 
@@ -1059,7 +1059,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     for error in errors:
         debug.note("setup_ollama._dynamic_kaggle_selector discovery", error)
     merged = {}
-    for item in [*seeded, *discovered]:
+    for item in [*seeded, *(saved_models or []), *discovered]:
         # The curated entry wins a collision. It carries the reviewed name and
         # the benchmark evidence, and letting live discovery overwrite it
         # replaced a curated row with a duplicate of itself under a repo path.
@@ -1187,11 +1187,25 @@ def _with_dynamic_selector(entry, kwargs, urlopen_fn):
         except ValueError:
             debug.swallowed("setup_ollama._with_dynamic_selector onboarding")
             onboarding_task = None
+    state = config.load(kwargs.get("config_file")).get("kaggle") or {}
+    saved_models = [
+        item for item in (state.get("models") or [])
+        if isinstance(item, dict) and not cli_kaggle._replayable_model(item)
+    ]
+    legacy_model = (state.get("preference") or {}).get("model")
+    if (isinstance(legacy_model, dict)
+            and not cli_kaggle._replayable_model(legacy_model)
+            and not any(
+            item.get("repo") == legacy_model.get("repo")
+            and item.get("file") == legacy_model.get("file")
+            for item in saved_models)):
+        saved_models.insert(0, legacy_model)
     cli_kaggle._select_model = lambda _input, catalog_path=MODEL_CATALOG_PATH, \
             prepared_fn=None: (
         _dynamic_kaggle_selector(
             _input, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
             onboarding_task=onboarding_task, prepared_fn=prepared_fn,
+            saved_models=saved_models,
         )
     )
     try:
