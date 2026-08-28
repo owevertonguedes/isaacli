@@ -887,6 +887,38 @@ except RuntimeError as error:
     divergent = str(error)
 check("expected 5" in divergent and "got 4" in divergent,
       "a same-name dataset with a divergent file is refused")
+
+# Kaggle extracts tar.gz files during publication. A prepared runtime therefore
+# appears as an open tree, and its files can span more than the default page of
+# 20 entries. Both pages must be read and the files the kernel actually uses
+# must prove that the asset is complete.
+runtime_pages = []
+
+
+def extracted_runtime_run(command, **_kwargs):
+    runtime_pages.append(list(command))
+    root = "llama-cuda-sm75-b10502"
+    if "--page-token" not in command:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=("name,size\n"
+                    f"{root}/bin/llama-server,17896\n"
+                    f"{root}/bin/libggml-cuda.so,61121376\n"),
+            stderr="Next Page Token = second-page\n")
+    return SimpleNamespace(
+        returncode=0,
+        stdout=("name,size\n"
+                f"{root}/cloudflared-linux-amd64,39799316\n"
+                f"{root}/lib/libcudart.so,728800\n"), stderr="")
+
+
+cli_kaggle._verify_asset_dataset(
+    "/fake/kaggle", "owner/isaacli-llama-cuda-sm75-b10502", "binary", {},
+    extracted_runtime_run, {})
+check(len(runtime_pages) == 2
+      and runtime_pages[0][-2:] == ["--page-size", "200"]
+      and runtime_pages[1][-2:] == ["--page-token", "second-page"],
+      f"an extracted runtime is verified across every dataset page: {runtime_pages}")
 check(not cli_kaggle._push_succeeded(SimpleNamespace(
           returncode=0, stdout="could not be added to the kernel", stderr="")),
       "a zero-exit push that refuses a dataset source is still a failure")

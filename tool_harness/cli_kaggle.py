@@ -1450,20 +1450,29 @@ def _publish_private_dataset(executable, folder, ref, title,
 
 
 def _dataset_files(executable, ref, run_fn=subprocess.run, env=None):
-    result = _run_capture(
-        [str(executable), "datasets", "files", ref, "--csv"], run_fn, env)
-    output = (result.stderr or result.stdout or "").strip()
-    if result.returncode != 0:
-        raise RuntimeError(output or f"dataset files failed for {ref}")
     files = {}
-    for row in csv.DictReader(io.StringIO(result.stdout)):
-        name = row.get("name") or row.get("Name") or row.get("fileName")
-        raw_size = row.get("size") or row.get("Size") or row.get("totalBytes")
-        if name and raw_size:
-            try:
-                files[name] = int(raw_size)
-            except ValueError:
-                continue
+    page_token = None
+    while True:
+        command = [str(executable), "datasets", "files", ref, "--csv",
+                   "--page-size", "200"]
+        if page_token:
+            command += ["--page-token", page_token]
+        result = _run_capture(command, run_fn, env)
+        output = (result.stderr or result.stdout or "").strip()
+        if result.returncode != 0:
+            raise RuntimeError(output or f"dataset files failed for {ref}")
+        for row in csv.DictReader(io.StringIO(result.stdout)):
+            name = row.get("name") or row.get("Name") or row.get("fileName")
+            raw_size = row.get("size") or row.get("Size") or row.get("totalBytes")
+            if name and raw_size:
+                try:
+                    files[name] = int(raw_size)
+                except ValueError:
+                    continue
+        token = re.search(r"Next Page Token\s*=\s*(\S+)", result.stderr or "")
+        if not token:
+            break
+        page_token = token.group(1)
     return files
 
 
@@ -1502,7 +1511,16 @@ def _verify_asset_dataset(executable, ref, kind, model,
                 expected=model["model_bytes"], actual=actual or 0))
         return
     archive = ref.split("/", 1)[-1].removeprefix("isaacli-") + ".tar.gz"
-    if files.get(archive, 0) <= 0:
+    root = archive.removesuffix(".tar.gz")
+    extracted = (
+        files.get(f"{root}/bin/llama-server", 0) > 0
+        and files.get(f"{root}/cloudflared-linux-amd64", 0) > 0
+        and any(name.startswith(f"{root}/bin/libggml-cuda.so") and size > 0
+                for name, size in files.items())
+        and any(name.startswith(f"{root}/lib/libcudart.so") and size > 0
+                for name, size in files.items())
+    )
+    if files.get(archive, 0) <= 0 and not extracted:
         raise RuntimeError(t(
             "cli.kaggle.dataset.file_missing", ref=ref, name=archive))
 
