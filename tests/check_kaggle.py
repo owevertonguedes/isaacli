@@ -292,6 +292,15 @@ def rendered_sources_for_account(username):
             refs = cli_kaggle._asset_refs(credential["username"], model)
             rows = "\n".join(f"{ref},asset" for ref in refs.values())
             return SimpleNamespace(returncode=0, stdout=f"ref,title\n{rows}\n", stderr="")
+        if "datasets files" in joined:
+            model = cli_kaggle.prepared_models()[0]
+            ref = list(map(str, command))[3]
+            if ref.endswith(cli_kaggle._asset_refs(credential["username"], model)["model"].split("/", 1)[1]):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"name,size\n{model['file']},{model['model_bytes']}\n", stderr="")
+            archive = ref.split("/", 1)[-1].removeprefix("isaacli-") + ".tar.gz"
+            return SimpleNamespace(returncode=0, stdout=f"name,size\n{archive},1\n", stderr="")
         if "kernels push" in joined:
             folder = Path(command[command.index("-p") + 1])
             rendered.append(json.loads((folder / "kernel-metadata.json").read_text()))
@@ -813,6 +822,75 @@ check(preparation_metadata["enable_gpu"] is False
       and preparation_metadata["is_private"] is True,
       "asset compilation runs in a private CPU kernel")
 
+weight_render = root / "weight-render"
+weight_render.mkdir()
+weight_model = cli_kaggle.prepared_models()[0]
+weight_ref = cli_kaggle._asset_refs("owner", weight_model)["model"]
+cli_kaggle._render_preparation_kernel(
+    weight_render, "owner/prepare-weight", weight_model["cuda_arch"],
+    weight_model, weight_ref)
+weight_metadata = json.loads((weight_render / "kernel-metadata.json").read_text())
+weight_code = next(weight_render.glob("*.py")).read_text()
+check(weight_metadata["enable_gpu"] is False
+      and weight_metadata["is_private"] is True
+      and "kagglehub.dataset_upload" in weight_code
+      and weight_model["file"] in weight_code
+      and str(weight_model["model_bytes"]) in weight_code
+      and "KAGGLE_API_TOKEN" not in weight_code
+      and "KAGGLE_KEY" not in weight_code,
+      "the rendered CPU notebook downloads, validates and publishes without embedded credentials")
+
+# Dataset publication is asynchronous. Prove the gate against an independent
+# file listing, including delay, timeout, a wrong file and a zero-exit push
+# whose own output says Kaggle refused the source.
+materialization_answers = iter([
+    SimpleNamespace(returncode=1, stdout="", stderr="403 Forbidden"),
+    SimpleNamespace(returncode=0, stdout="name,size\nasset.bin,5\n", stderr=""),
+])
+
+
+def materialization_run(_command, **_kwargs):
+    return next(materialization_answers)
+
+
+original_monotonic = cli_kaggle.time.monotonic
+original_sleep = cli_kaggle.time.sleep
+clock = [0.0]
+try:
+    cli_kaggle.time.monotonic = lambda: clock[0]
+    cli_kaggle.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    delayed = cli_kaggle._wait_for_dataset(
+        "/fake/kaggle", "owner/asset", "asset.bin", 5,
+        materialization_run, {}, timeout=5, poll=1)
+    timed_out = ""
+    try:
+        cli_kaggle._wait_for_dataset(
+            "/fake/kaggle", "owner/missing", "asset.bin", 5,
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="", stderr="404 Not Found"),
+            {}, timeout=2, poll=1)
+    except RuntimeError as error:
+        timed_out = str(error)
+finally:
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.time.sleep = original_sleep
+check(delayed == {"asset.bin": 5} and "404 Not Found" in timed_out,
+      "materialization waits through a refusal and timeout reports the last live state")
+divergent = ""
+try:
+    cli_kaggle._verify_asset_dataset(
+        "/fake/kaggle", "owner/asset", "model",
+        {"file": "asset.bin", "model_bytes": 5},
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout="name,size\nasset.bin,4\n", stderr=""), {})
+except RuntimeError as error:
+    divergent = str(error)
+check("expected 5" in divergent and "got 4" in divergent,
+      "a same-name dataset with a divergent file is refused")
+check(not cli_kaggle._push_succeeded(SimpleNamespace(
+          returncode=0, stdout="could not be added to the kernel", stderr="")),
+      "a zero-exit push that refuses a dataset source is still a failure")
+
 owned_sources = [HERE.parent / "tool_harness", HERE]
 forbidden_hits = []
 for source_root in owned_sources:
@@ -987,6 +1065,16 @@ def prepare_run(command, check=False, capture_output=False, text=False, env=None
         folder = Path(parts[parts.index("-p") + 1])
         (folder / f"{prepared_archive}.tar.gz").write_bytes(b"runtime")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "datasets files" in joined:
+        ref = parts[parts.index("files") + 1]
+        if ref == prepared_refs["binary"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"name,size\n{prepared_archive}.tar.gz,7\n", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"name,size\n{prepared_model['file']},{prepared_model['model_bytes']}\n",
+            stderr="")
     if "datasets create" in joined:
         folder = Path(parts[parts.index("-p") + 1])
         prepare_datasets.append((
@@ -1054,46 +1142,50 @@ with redirect_stdout(io.StringIO()) as partial_output:
 partial_text = partial_output.getvalue()
 check(partial_code == 130 and not partial_pushes
       and prepared_refs["binary"] in partial_text
-      and "CPU kernel" not in partial_text
       and f"{units.gib(prepared_model['model_bytes'])} GiB" in partial_text,
       "the plan names only the assets that are actually missing: "
       f"code={partial_code}, pushes={partial_pushes}, output={partial_text!r}")
 
-# Staging belongs on a disk, and the refusal belongs before the transfer. /tmp
-# is a tmpfs on a normal desktop, so a 15 GiB weight staged there is written
-# into RAM. What is checked is the effect: the scratch directory is not the
-# system temp root, and a weight that cannot fit is refused without curl ever
-# being invoked, rather than after spending the whole download to find out.
-space_file = root / "space" / "config.json"
-add_account(space_file, "preparer", "prepare-key")
+# The weight is downloaded and published inside a private CPU kernel. The local
+# process writes only the small notebook and metadata, and waits for Kaggle to
+# expose the exact remote file before recording success.
 space_calls = []
-original_free = cli_kaggle._free_bytes
-try:
-    cli_kaggle._free_bytes = lambda _path: SimpleNamespace(
-        total=0, used=0, free=prepared_model["model_bytes"] - 1)
+space_pushed = [False]
 
-    def space_run(command, check=False, capture_output=False, text=False, env=None,
-                  **kwargs):
-        space_calls.append(list(map(str, command)))
-        return prepare_run(command, check, capture_output, text, env, **kwargs)
 
-    refused = ""
-    with redirect_stdout(io.StringIO()) as space_output:
-        # The runtime is already published, so only the weight is left to decide.
-        cli_kaggle._prepare_assets(
-            "/fake/kaggle", "preparer", prepared_model, {"binary": "x"},
-            lambda _prompt: "y", space_run, {},
-        )
-except RuntimeError as error:
-    refused = str(error)
-finally:
-    cli_kaggle._free_bytes = original_free
-check("GiB" in refused and not any("curl" in parts[0] for parts in space_calls),
-      "a weight that cannot fit is refused with the numbers, before any download")
+def space_run(command, check=False, capture_output=False, text=False, env=None,
+              **kwargs):
+    parts = list(map(str, command))
+    space_calls.append(parts)
+    joined = " ".join(parts)
+    if "kernels push" in joined:
+        space_pushed[0] = True
+    if "kernels status" in joined and space_pushed[0]:
+        return SimpleNamespace(returncode=0, stdout="KernelWorkerStatus.COMPLETE", stderr="")
+    if "kernels status" in joined:
+        return SimpleNamespace(returncode=1, stdout="", stderr="404 Not Found")
+    if "datasets files" in joined:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"name,size\n{prepared_model['file']},{prepared_model['model_bytes']}\n",
+            stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+with tempfile.TemporaryDirectory() as rendered_weight:
+    result = cli_kaggle._prepare_assets(
+        "/fake/kaggle", "preparer", prepared_model, {"binary": "x"},
+        lambda _prompt: "y", space_run, {},
+    )
+check(result["model"] == prepared_refs["model"]
+      and any("kernels" in parts and "push" in parts for parts in space_calls)
+      and not any(parts and parts[0] == "curl" for parts in space_calls)
+      and any("datasets files" in " ".join(parts) for parts in space_calls),
+      "the weight crosses only Hugging Face and Kaggle, then its remote file is verified")
 check(all(Path(path).is_relative_to(config.cache_path()) for path in prepare_paths)
       and prepare_paths
       and Path(cli_kaggle._scratch_root()) == config.cache_path(),
-      "large staging follows the cache location, not the system temp filesystem")
+      "the CUDA runtime staging follows the cache location, not system temporary memory")
 
 # Uninstalling has to reach the account, not only the disk. A kernel left in a
 # Kaggle account can still be spending quota, and the credential that could

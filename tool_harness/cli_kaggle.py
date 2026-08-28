@@ -110,6 +110,8 @@ MODEL_DATASET_SLUGS = {
     "qwen38-27b": "isaacli-qwen38-27b-ud-q4-k-m",
 }
 PREPARATION_TIMEOUT_SECONDS = 4 * 60 * 60
+DATASET_READY_TIMEOUT_SECONDS = 10 * 60
+DATASET_READY_POLL_SECONDS = 10
 # The first line of the help the Kaggle CLI prints, on stdout, when every
 # authentication mechanism it knows has come up empty. It is matched rather
 # than parsed because it is the whole difference between "this account is
@@ -1060,7 +1062,10 @@ def _available_asset_refs(executable, username, model, run_fn=subprocess.run,
                           env=None):
     expected = _asset_refs(username, model)
     existing = _dataset_refs(executable, run_fn, env)
-    return {kind: ref for kind, ref in expected.items() if ref in existing}
+    available = {kind: ref for kind, ref in expected.items() if ref in existing}
+    for kind, ref in available.items():
+        _verify_asset_dataset(executable, ref, kind, model, run_fn, env)
+    return available
 
 
 def _needs_every_gpu(model):
@@ -1098,6 +1103,10 @@ def _needs_every_gpu(model):
 KERNEL_VALUE_PATTERNS = {
     "__MODEL_REPO__": re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"),
     "__MODEL_FILE__": re.compile(r"[A-Za-z0-9_./+ -]+"),
+    "__MODEL_URL__": re.compile(r"https://[A-Za-z0-9_./+?=&%:-]+"),
+    "__MODEL_BYTES__": re.compile(r"[0-9]+"),
+    "__MODEL_SHA256__": re.compile(r"[A-Fa-f0-9]{64}"),
+    "__DATASET_REF__": re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"),
     "__MODEL_ALIAS__": re.compile(r"[A-Za-z0-9_.-]+"),
     "__API_KEY__": re.compile(r"[A-Za-z0-9_-]+"),
     "__CUDA_ARCH__": re.compile(r"[0-9]+"),
@@ -1351,16 +1360,29 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
     )
 
 
-def _render_preparation_kernel(folder, slug, cuda_arch):
+def _render_preparation_kernel(folder, slug, cuda_arch, model=None,
+                               dataset_ref=""):
     # This is the second file this program writes for Kaggle to run on the
     # user's own account, and it substitutes into a bare literal exactly like
     # the GPU one. The comment above `KERNEL_VALUE_PATTERNS` called rendering
     # the single point every value passes through, and that was only true of
     # one of the two renderers.
-    template = (TEMPLATE_DIR / "prepare-assets-cpu.py.tmpl").read_text(
+    template_name = "prepare-weight-cpu.py.tmpl" if model else "prepare-assets-cpu.py.tmpl"
+    template = (TEMPLATE_DIR / template_name).read_text(
         encoding="utf-8")
-    template = template.replace(
-        "__CUDA_ARCH__", _kernel_value("__CUDA_ARCH__", cuda_arch))
+    values = {"__CUDA_ARCH__": cuda_arch}
+    if model:
+        values.update({
+            "__MODEL_REPO__": model["repo"],
+            "__MODEL_FILE__": model["file"],
+            "__MODEL_URL__": model.get("file_url") or
+                f"https://huggingface.co/{model['repo']}/resolve/main/{model['file']}",
+            "__MODEL_BYTES__": str(model["model_bytes"]),
+            "__MODEL_SHA256__": model.get("sha256", ""),
+            "__DATASET_REF__": dataset_ref,
+        })
+    for marker, value in values.items():
+        template = template.replace(marker, _kernel_value(marker, value))
     code_name = f"{slug.rsplit('/', 1)[-1]}.py"
     (folder / code_name).write_text(template, encoding="utf-8")
     metadata = {
@@ -1394,7 +1416,8 @@ def _wait_for_kernel(executable, slug, run_fn=subprocess.run, env=None,
         output = (result.stdout + " " + result.stderr).upper()
         if "COMPLETE" in output:
             return
-        if "ERROR" in output or "CANCELLED" in output:
+        if ("ERROR" in output or "CANCEL_REQUESTED" in output
+                or "CANCEL_ACKNOWLEDGED" in output):
             raise RuntimeError(t("cli.kaggle.prepare.kernel_failed", slug=slug))
         time.sleep(15)
     raise RuntimeError(t("cli.kaggle.prepare.kernel_timeout", slug=slug))
@@ -1419,7 +1442,68 @@ def _publish_private_dataset(executable, folder, ref, title,
         raise RuntimeError(t("cli.kaggle.prepare.publish_failed", ref=ref))
 
 
-_free_bytes = shutil.disk_usage
+def _dataset_files(executable, ref, run_fn=subprocess.run, env=None):
+    result = _run_capture(
+        [str(executable), "datasets", "files", ref, "--csv"], run_fn, env)
+    output = (result.stderr or result.stdout or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError(output or f"dataset files failed for {ref}")
+    files = {}
+    for row in csv.DictReader(io.StringIO(result.stdout)):
+        name = row.get("name") or row.get("Name") or row.get("fileName")
+        raw_size = row.get("size") or row.get("Size") or row.get("totalBytes")
+        if name and raw_size:
+            try:
+                files[name] = int(raw_size)
+            except ValueError:
+                continue
+    return files
+
+
+def _wait_for_dataset(executable, ref, expected_name, expected_size,
+                      run_fn=subprocess.run, env=None,
+                      timeout=DATASET_READY_TIMEOUT_SECONDS,
+                      poll=DATASET_READY_POLL_SECONDS):
+    started = time.monotonic()
+    last = "not visible"
+    while time.monotonic() - started < timeout:
+        try:
+            files = _dataset_files(executable, ref, run_fn, env)
+        except RuntimeError as error:
+            last = str(error)
+        else:
+            last = repr(files)
+            if files.get(expected_name) == expected_size:
+                return files
+            if expected_name in files:
+                raise RuntimeError(t(
+                    "cli.kaggle.dataset.divergent", ref=ref,
+                    expected=expected_size, actual=files[expected_name]))
+        time.sleep(poll)
+    raise RuntimeError(t("cli.kaggle.dataset.timeout", ref=ref,
+                         seconds=int(time.monotonic() - started), state=last))
+
+
+def _verify_asset_dataset(executable, ref, kind, model,
+                          run_fn=subprocess.run, env=None):
+    files = _dataset_files(executable, ref, run_fn, env)
+    if kind == "model":
+        actual = files.get(model["file"])
+        if actual != model["model_bytes"]:
+            raise RuntimeError(t(
+                "cli.kaggle.dataset.divergent", ref=ref,
+                expected=model["model_bytes"], actual=actual or 0))
+        return
+    archive = ref.split("/", 1)[-1].removeprefix("isaacli-") + ".tar.gz"
+    if files.get(archive, 0) <= 0:
+        raise RuntimeError(t(
+            "cli.kaggle.dataset.file_missing", ref=ref, name=archive))
+
+
+def _push_succeeded(result):
+    output = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+    refused = ("not valid dataset sources", "could not be added")
+    return result.returncode == 0 and not any(text in output for text in refused)
 
 
 def _scratch_root():
@@ -1427,21 +1511,6 @@ def _scratch_root():
     root = config.cache_path()
     root.mkdir(parents=True, exist_ok=True)
     return str(root)
-
-
-def _require_space(directory, needed_bytes):
-    """Refuse a download that cannot land, before it starts, with the numbers.
-
-    The limit belongs at the entrance. Starting a 15 GiB transfer into a
-    filesystem that has 7 GiB spends the whole transfer to find out, and the
-    error at the end is about a write, not about the choice that caused it.
-    """
-    free = _free_bytes(directory).free
-    if free >= needed_bytes:
-        return
-    raise RuntimeError(t(
-        "cli.kaggle.prepare.no_space", path=directory,
-        needed=units.gib(needed_bytes), free=units.gib(free)))
 
 
 def _prepare_assets(executable, username, model, available, input_fn,
@@ -1477,10 +1546,15 @@ def _prepare_assets(executable, username, model, available, input_fn,
             dataset.mkdir()
             # Moved, not copied: a second copy of the runtime archive buys
             # nothing and doubles what has to fit while it is being published.
-            archives[0].replace(dataset / archives[0].name)
+            archive_name = archives[0].name
+            archive_size = archives[0].stat().st_size
+            archives[0].replace(dataset / archive_name)
             _publish_private_dataset(
                 executable, dataset, expected["binary"],
                 f"isaacli CUDA runtime sm{model['cuda_arch']}", run_fn, env)
+            _wait_for_dataset(
+                executable, expected["binary"], archive_name, archive_size,
+                run_fn, env)
             say(t("cli.kaggle.prepare.created", ref=expected["binary"]))
             say(t("cli.kaggle.prepare.kernel_remove", slug=slug))
         available["binary"] = expected["binary"]
@@ -1489,20 +1563,37 @@ def _prepare_assets(executable, username, model, available, input_fn,
               size=units.gib(model["model_bytes"]), name=model["name"]))
         if input_fn(wrap_text(t("cli.kaggle.prepare.weight_confirm"))).strip().lower() == t(
                 "cli.kaggle.confirm_yes"):
-            _require_space(scratch, model["model_bytes"])
             with tempfile.TemporaryDirectory(
-                    prefix="isaacli-kaggle-weight-", dir=scratch) as temporary:
+                    prefix="isaacli-kaggle-weight-") as temporary:
                 folder = Path(temporary)
-                target = folder / model["file"]
-                url = model.get("file_url") or (
-                    f"https://huggingface.co/{model['repo']}/resolve/main/{model['file']}")
-                result = run_fn(
-                    ["curl", "-fL", "-o", str(target), url], check=False, env=env)
-                if result.returncode != 0:
-                    raise RuntimeError(t("cli.kaggle.prepare.download_failed"))
-                _publish_private_dataset(
-                    executable, folder, expected["model"],
-                    f"isaacli model {model['alias']}", run_fn, env)
+                asset_slug = expected["model"].split("/", 1)[-1]
+                slug = f"{username}/{asset_slug.replace('isaacli-model-', 'isaacli-prepare-')}"
+                prior_state = _kernel_state(executable, slug, run_fn, env)
+                if prior_state in {"QUEUED", "RUNNING", "NEW_SCRIPT"}:
+                    _wait_for_kernel(executable, slug, run_fn, env)
+                    _wait_for_dataset(
+                        executable, expected["model"], model["file"],
+                        model["model_bytes"], run_fn, env)
+                    available["model"] = expected["model"]
+                    return available
+                if prior_state == "COMPLETE":
+                    _wait_for_dataset(
+                        executable, expected["model"], model["file"],
+                        model["model_bytes"], run_fn, env)
+                    available["model"] = expected["model"]
+                    return available
+                _render_preparation_kernel(
+                    folder, slug, model["cuda_arch"], model, expected["model"])
+                result = run_fn([
+                    str(executable), "kernels", "push", "-p", temporary,
+                    "-t", str(PREPARATION_TIMEOUT_SECONDS),
+                ], check=False, capture_output=True, text=True, env=env)
+                if not _push_succeeded(result):
+                    raise RuntimeError(t("cli.kaggle.push.failed"))
+                _wait_for_kernel(executable, slug, run_fn, env)
+                _wait_for_dataset(
+                    executable, expected["model"], model["file"],
+                    model["model_bytes"], run_fn, env)
                 say(t("cli.kaggle.prepare.created", ref=expected["model"]))
             available["model"] = expected["model"]
     return available
@@ -2682,6 +2773,13 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             if len(available) < 2:
                 say(t("cli.kaggle.assets.self_contained"))
         dataset_sources = list(available.values())
+        try:
+            for kind, ref in available.items():
+                _verify_asset_dataset(
+                    executable, ref, kind, model, run_fn, environment)
+        except RuntimeError as error:
+            say(t("cli.kaggle.failed", error=error))
+            return 1
         for ref in dataset_sources:
             say(t("cli.kaggle.assets.available", ref=ref))
     # Asked before the push confirmation, because the ceiling is part of what is
@@ -2713,8 +2811,8 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
             # to the same agreement if the script dies before its watch fires.
             result = run_fn([str(executable), "kernels", "push", "-p", temporary,
                              "-t", str(session_seconds)], check=False,
-                            env=environment)
-            if result.returncode != 0:
+                            capture_output=True, text=True, env=environment)
+            if not _push_succeeded(result):
                 raise RuntimeError(t("cli.kaggle.push.failed"))
         say(t("cli.kaggle.pushed", slug=slug,
               url=f"https://www.kaggle.com/code/{slug}"))
