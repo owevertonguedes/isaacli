@@ -90,6 +90,7 @@ class ProvidersMixin:
         self.thinking = item.get("thinking")
         self.num_ctx = item.get("num_ctx")
         self.temperature = item.get("temperature")
+        self.max_output_tokens = item.get("max_output_tokens")
         self.provider = provider
 
     def announce_model_change(self):

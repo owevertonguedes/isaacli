@@ -29,6 +29,7 @@ WINDOW_CHOICES = (4096, 8192, 16384, 32768, 65536, 131072)
 # Steps, not a slider, for the same reason. 0 is the value every measurement in
 # this repository was taken at, so it stays first.
 TEMPERATURE_CHOICES = (0.0, 0.2, 0.5, 0.7, 1.0)
+OUTPUT_TOKEN_CHOICES = (2048, 4096, 6144, 8192, 12288, 16384)
 
 # Where a value came from. `hand` is the honest answer for a number that is in
 # the file with nothing saying a screen put it there, which is the state
@@ -148,6 +149,7 @@ class ConfigMixin:
         chosen = "context_management" in data
         window = (item or {}).get("num_ctx")
         temperature = (item or {}).get("temperature")
+        output_tokens = (item or {}).get("max_output_tokens")
         return [
             (self._config_context_management, t(
                 "cli.config.row",
@@ -167,7 +169,35 @@ class ConfigMixin:
                 value=(str(temperature) if temperature is not None
                        else t("cli.config.value.unset")),
                 origin=t(_origin(item, "temperature")))),
+            (self._config_output_tokens, t(
+                "cli.config.row",
+                label=t("cli.config.label.output_tokens"),
+                value=(str(output_tokens) if output_tokens is not None
+                       else t("cli.config.value.automatic")),
+                origin=t(_origin(item, "max_output_tokens")))),
         ]
+
+    def _config_output_tokens(self, data, name, item):
+        if not item:
+            return t("cli.config.no_profile")
+        options = [t("cli.config.output_tokens.option", value=value)
+                   for value in OUTPUT_TOKEN_CHOICES]
+        options.append(t("cli.config.output_tokens.automatic"))
+        current = item.get("max_output_tokens")
+        initial = (OUTPUT_TOKEN_CHOICES.index(current)
+                   if current in OUTPUT_TOKEN_CHOICES else len(options) - 1)
+        index = _menu(t("cli.config.output_tokens.title"),
+                      t("cli.config.output_tokens.explain"), options,
+                      initial=initial)
+        value = (OUTPUT_TOKEN_CHOICES[index]
+                 if index < len(OUTPUT_TOKEN_CHOICES) else None)
+        _record_choice(item, "max_output_tokens", value)
+        data["profiles"][name] = item
+        config.save(data, self.config_file)
+        self.max_output_tokens = value
+        self._log("meta", event="max_output_tokens", profile=name, value=value)
+        return t("cli.config.output_tokens.set", value=value) if value else t(
+            "cli.config.output_tokens.automatic_set")
 
     def _config_context_management(self, data, _name, _item):
         options = [t("cli.config.context.on"), t("cli.config.context.off")]

@@ -94,13 +94,6 @@ CONTEXT_INPUT_SHARE = 0.75
 COMPACTED_PREFIX = "... ISAACLI COMPACTED THIS RESULT"
 
 
-def output_token_limit(num_ctx):
-    """Generation budget paired with the input share of the same window."""
-    if not num_ctx:
-        return None
-    return max(1, int(num_ctx * (1 - CONTEXT_INPUT_SHARE)))
-
-
 def estimate_tokens(messages):
     """A cheap upper hand on how much of the window these messages occupy."""
     chars = 0
@@ -525,15 +518,15 @@ def _reasoning_effort_rejected(error_text):
 
 def call_api(model, messages, use_tools=True, temperature=0.0,
              tools_schema=None, thinking=None, api_key=None, base_url=None,
-             response_format=None, seed=None, num_ctx=None):
+             response_format=None, seed=None, max_output_tokens=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
         raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": False}
-    if output_token_limit(num_ctx):
-        payload["max_tokens"] = output_token_limit(num_ctx)
+    if max_output_tokens:
+        payload["max_tokens"] = int(max_output_tokens)
     if seed is not None:
         payload["seed"] = int(seed)
     if response_format:
@@ -577,7 +570,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
 def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                     on_token=None, tools_schema=None, thinking=None,
                     api_key=None, base_url=None, on_progress=None, seed=None,
-                    num_ctx=None):
+                    max_output_tokens=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
@@ -585,8 +578,8 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": True,
                "stream_options": {"include_usage": True}}
-    if output_token_limit(num_ctx):
-        payload["max_tokens"] = output_token_limit(num_ctx)
+    if max_output_tokens:
+        payload["max_tokens"] = int(max_output_tokens)
     if seed is not None:
         payload["seed"] = int(seed)
     if use_tools:
@@ -668,7 +661,7 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
 
 
 def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
-         thinking=None, num_ctx=None):
+         thinking=None, num_ctx=None, max_output_tokens=None):
     payload = {
         "model": model,
         "messages": _messages_for_ollama(messages),
@@ -680,8 +673,9 @@ def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
     if thinking is not None:
         payload["think"] = thinking
     if num_ctx:
-        payload["options"] = {"num_ctx": int(num_ctx),
-                              "num_predict": output_token_limit(num_ctx)}
+        payload["options"] = {"num_ctx": int(num_ctx)}
+    if max_output_tokens:
+        payload.setdefault("options", {})["num_predict"] = int(max_output_tokens)
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -694,7 +688,7 @@ def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
 
 def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
                 tools_schema=None, thinking=None, on_thinking=None, num_ctx=None,
-                on_progress=None):
+                on_progress=None, max_output_tokens=None):
     """Like call(), but streaming: on_token(chunk) is called for every token.
 
     Returns the same assembled message call() would return, so the caller does
@@ -707,8 +701,9 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
     if thinking is not None:
         payload["think"] = thinking
     if num_ctx:
-        payload["options"] = {"num_ctx": int(num_ctx),
-                              "num_predict": output_token_limit(num_ctx)}
+        payload["options"] = {"num_ctx": int(num_ctx)}
+    if max_output_tokens:
+        payload.setdefault("options", {})["num_predict"] = int(max_output_tokens)
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -886,7 +881,7 @@ def message_from_constrained(content, schema):
 
 
 def _constrained_correction(model, msgs, schema, provider, provider_kind,
-                            temperature=0.0, seed=None, num_ctx=None):
+                            temperature=0.0, seed=None, max_output_tokens=None):
     """The correction turn, with the output constrained to one tool call.
 
     Returns None when the constraint could not be applied, and says why under
@@ -906,7 +901,7 @@ def _constrained_correction(model, msgs, schema, provider, provider_kind,
             api_key=(provider or {}).get("api_key"),
             base_url=(provider or {}).get("base_url"),
             temperature=temperature, seed=seed,
-            num_ctx=num_ctx,
+            max_output_tokens=max_output_tokens,
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "tool_call", "strict": True,
@@ -1035,7 +1030,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         on_thinking=None, num_ctx=None, require_change=False,
         is_changing_tool=None, changing_tool_succeeded=None, on_progress=None,
         temperature=0.0, seed=None, on_context_note=None,
-        on_context_pressure=None, manage_context=True):
+        on_context_pressure=None, manage_context=True, max_output_tokens=None):
     """on_token(chunk): text streaming.
     on_tool_before(name, args): BEFORE running. If it returns a string, that
       string replaces the tool execution (used by the CLI to approve/deny
@@ -1095,7 +1090,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
 
         def query(schema, allow_stream=True):
             should_stream = stream_response and allow_stream
-            context_kw = {"num_ctx": num_ctx} if num_ctx else {}
+            output_kw = ({"max_output_tokens": max_output_tokens}
+                         if max_output_tokens else {})
             if provider_kind == "openai_compatible" and should_stream:
                 return call_stream_api(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
@@ -1103,22 +1099,23 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                     api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"),
                     on_progress=on_progress, temperature=temperature, seed=seed,
-                    **context_kw)
+                    **output_kw)
             if provider_kind == "openai_compatible":
                 return call_api(
                     model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"),
-                    temperature=temperature, seed=seed, **context_kw)
+                    temperature=temperature, seed=seed, **output_kw)
             if should_stream:
                 return call_stream(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
                     on_thinking=on_thinking, num_ctx=num_ctx,
-                    on_progress=on_progress, temperature=temperature)
+                    on_progress=on_progress, temperature=temperature,
+                    **output_kw)
             return call(model, msgs, use_tools=use_tools,
                         tools_schema=schema, thinking=thinking, num_ctx=num_ctx,
-                        temperature=temperature)
+                        temperature=temperature, **output_kw)
 
         call_via = "native"
         sent_upto = len(msgs)
@@ -1128,7 +1125,8 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             msgs.append({"role": "system", "content": instruction})
             constrained = _constrained_correction(
                 model, msgs, active_schema, provider, provider_kind,
-                temperature=temperature, seed=seed, num_ctx=num_ctx)
+                temperature=temperature, seed=seed,
+                max_output_tokens=max_output_tokens)
             if constrained is None:
                 # Keep this non-streaming. If an unsupported provider returns a
                 # JSON object as ordinary content, it must be rejected before

@@ -216,7 +216,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                ProvidersMixin):
     def __init__(self, model, workspace, max_steps, autostart_ollama=True,
                  thinking=None, num_ctx=None, config_file=None, provider=None,
-                 temperature=None, workspace_instructions_snapshot=None):
+                 temperature=None, max_output_tokens=None,
+                 workspace_instructions_snapshot=None):
         self.model = model
         self.thinking = thinking
         self.num_ctx = num_ctx  # declares the window; see the property below
@@ -224,6 +225,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         # silently does nothing, which is worse than not offering it. `None`
         # means the profile did not choose, and the agent's own default holds.
         self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
         self.config_file = config_file
         try:
             data = config.load(config_file)
@@ -663,6 +665,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                     on_context_pressure=(self._context_pressure
                                          if terminal_ui.interactive() else None),
                     manage_context=self.manage_context,
+                    max_output_tokens=self.max_output_tokens,
                     provider=self.provider,
                     **({} if self.temperature is None
                        else {"temperature": self.temperature}),
@@ -1187,6 +1190,7 @@ def main(argv=None):
         model, workspace, args.max_steps, thinking=thinking,
         num_ctx=(model_profile or {}).get("num_ctx"),
         temperature=(model_profile or {}).get("temperature"),
+        max_output_tokens=(model_profile or {}).get("max_output_tokens"),
         workspace_instructions_snapshot=(resumed or {}).get("workspace_instructions"),
     )
     cli.provider = cli._provider_from_profile(model_profile)

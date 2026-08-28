@@ -2114,7 +2114,7 @@ check(handled and dispatched == [True],
 
 # A number nobody chose must not be presented as a choice. This is the whole
 # reason the origin column exists.
-rows, _ = run_config([3])
+rows, _ = run_config([4])
 check(any("8192" in option or "8K" in option for option in rows[0][1])
       and any(Translator("en").t("cli.config.origin.hand") in option
               for option in rows[0][1]),
@@ -2122,11 +2122,11 @@ check(any("8192" in option or "8K" in option for option in rows[0][1])
 
 # Set it from the screen: 16384 is index 2 of WINDOW_CHOICES. The row that comes
 # back has to stop calling it a hand edit, because now it is not one.
-rows, _ = run_config([1, 2, 3])
+rows, _ = run_config([1, 2, 4])
 saved = config.load(config_home)["profiles"]["local"]
 check(saved.get("num_ctx") == 16_384 and drive.num_ctx == 16_384,
       f"the window chosen on the screen is what the profile and the session hold: {saved}")
-rows, _ = run_config([3])
+rows, _ = run_config([4])
 check(any(Translator("en").t("cli.config.origin.chosen") in option
           for option in rows[0][1])
       and not any(Translator("en").t("cli.config.origin.hand") in option
@@ -2138,9 +2138,9 @@ check(any(Translator("en").t("cli.config.origin.chosen") in option
 # honest row is that whatever that script passed is what holds. Clearing also
 # has to forget that a screen was ever involved, otherwise the next hand edit
 # would inherit the word "chosen".
-rows, _ = run_config([1, len(cli_config.WINDOW_CHOICES), 3])
+rows, _ = run_config([1, len(cli_config.WINDOW_CHOICES), 4])
 saved = config.load(config_home)["profiles"]["local"]
-rows, _ = run_config([3])
+rows, _ = run_config([4])
 check(saved.get("num_ctx") is None and drive.num_ctx is None
       and "num_ctx" not in (saved.get("chosen_in_isaacli") or []),
       f"clearing the window clears the record that a screen set it: {saved}")
@@ -2149,10 +2149,22 @@ check(any(Translator("en").t("cli.config.origin.inherited") in option
       f"with no window saved the row says the server's own window holds: {rows[0][1]}")
 
 # Temperature, the third setting that had no screen at all.
-rows, _ = run_config([2, 1, 3])
+rows, _ = run_config([2, 1, 4])
 saved = config.load(config_home)["profiles"]["local"]
 check(saved.get("temperature") == 0.2 and drive.temperature == 0.2,
       f"the temperature chosen on the screen reaches the profile: {saved}")
+
+# Output is automatic unless the user chooses a ceiling. The value has to move
+# from the screen to both the saved profile and the live request path.
+rows, _ = run_config([3, 3, 4])
+saved = config.load(config_home)["profiles"]["local"]
+check(saved.get("max_output_tokens") == 8192
+      and drive.max_output_tokens == 8192,
+      f"the manual output ceiling reaches the profile and session: {saved}")
+rows, _ = run_config([3, len(cli_config.OUTPUT_TOKEN_CHOICES), 4])
+saved = config.load(config_home)["profiles"]["local"]
+check("max_output_tokens" not in saved and drive.max_output_tokens is None,
+      f"automatic output removes the request ceiling: {saved}")
 
 # ---- context management, proven by effect ----------------------------------
 # Turning it off through the screen has to change what the agent does, not just
@@ -2170,11 +2182,11 @@ def oversized():
     ]
 
 
-run_config([0, 1, 3])          # context management -> off
+run_config([0, 1, 4])          # context management -> off
 off_messages = oversized()
 off_summaries = agent.fit_to_context(off_messages, 8192,
                                      manage=drive.manage_context)
-run_config([0, 0, 3])          # context management -> on
+run_config([0, 0, 4])          # context management -> on
 on_messages = oversized()
 on_summaries = agent.fit_to_context(on_messages, 8192,
                                     manage=drive.manage_context)
@@ -2192,11 +2204,11 @@ check(config.load(config_home).get("context_management") is True,
 # Asserted in Portuguese so a screen that quietly reverts to English fails here.
 app.set_language("pt-BR")
 try:
-    rows, printed = run_config([0, 1, 3])
+    rows, printed = run_config([0, 1, 4])
     toggle_title = rows[1][0]
 finally:
     app.set_language("en")
-run_config([0, 0, 3])
+run_config([0, 0, 4])
 portuguese = Translator("pt-BR")
 check(portuguese.t("cli.config.context.explain") in toggle_title,
       "the screen that offers to switch context management off explains, in "

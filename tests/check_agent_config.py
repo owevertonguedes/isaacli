@@ -49,8 +49,8 @@ finally:
 
 assert captured[0]["think"] == "high", "GPT-OSS has to receive the reasoning level"
 assert captured[0]["options"]["num_ctx"] == 32768, "the chosen context has to reach Ollama"
-assert captured[0]["options"]["num_predict"] == 8192, (
-    "the answer receives the quarter of the shared window reserved for it")
+assert "num_predict" not in captured[0]["options"], (
+    "automatic output lets the server use the room left in its actual window")
 assert captured[1]["think"] is False, "Qwen Instruct has to receive thinking disabled"
 assert "think" not in captured[2], "a raw model must preserve Ollama's default"
 assert agent._usage({"eval_duration": 500_000_000})["eval_duration"] == 500_000_000
@@ -122,7 +122,7 @@ try:
     agent.urllib.request.urlopen = urlopen_sse
     agent.call_stream_api(
         "local-model", [{"role": "user", "content": "hi"}], use_tools=False,
-        base_url="http://127.0.0.1:8080/v1", num_ctx=24576,
+        base_url="http://127.0.0.1:8080/v1", max_output_tokens=6144,
     )
 finally:
     agent.urllib.request.urlopen = original
