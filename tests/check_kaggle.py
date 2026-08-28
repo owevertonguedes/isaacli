@@ -35,6 +35,7 @@ import cli_kaggle
 import cli
 import config
 import setup_ollama
+import units
 
 
 failures = []
@@ -336,7 +337,7 @@ from cli_i18n import t
 
 check(len(drawn) == 1 and len(drawn[0][1]) == len(cli_kaggle.prepared_models())
       and all("\n" not in option for option in drawn[0][1])
-      and model_discovery.resolved_row_name(chosen_model) in drawn[0][1][0],
+      and "Q4_K_M" not in drawn[0][1][0],
       "the Kaggle model screen is drawn by the shared selector, one line per model")
 
 # The card a row is drawn against is the kernel's, never this machine's:
@@ -346,9 +347,10 @@ kaggle_table = cli_kaggle.model_table(cli_kaggle.prepared_models())
 kaggle_cells = cli_kaggle.model_rows(cli_kaggle.prepared_models())
 check(drawn[0][1] == kaggle_table["rows"],
       "and the rows it drew are the ones the shared table produced")
-check(t("cli.kaggle.models.gpu_header") in kaggle_table["header"]
+check(t("model.table.size") not in kaggle_table["header"]
+      and t("model.table.tps") not in kaggle_table["header"]
       and all(cell["fit"] in {"P100", "T4 x2"} for cell in kaggle_cells),
-      f"each row names the accelerator it was assigned ({kaggle_table['header']})")
+      "the model screen does not show numbers that belong to a quantization")
 for model, cell in zip(cli_kaggle.prepared_models(), kaggle_cells):
     accelerator = cli_kaggle.ACCELERATORS[model["machine_shape"]]
     expected = hardware.estimate_tokens_per_second(
@@ -434,13 +436,8 @@ p100_aliases = {model["alias"] for model in p100_models}
 t4_aliases = {model["alias"] for model in t4_models}
 check(t4_model["alias"] not in p100_aliases,
       "a model that does not fit the selected accelerator is not offered")
-qwen38_q6 = next((model for model in t4_models
-                  if model["alias"] == "qwen38-27b-q6"), None)
-check(qwen38_q6 is not None
-      and qwen38_q6["file"] == "Qwen3.8-27B-UD-Q6_K_L.gguf"
-      and qwen38_q6["model_bytes"] == 24193919904
-      and not qwen38_q6["scores"],
-      "T4 x2 offers the exact Qwen3.8 Q6 file without inheriting a score")
+check(len({model["repo"].casefold() for model in t4_models}) == len(t4_models),
+      "each Hugging Face model appears once before quantization is chosen")
 check(len(recommended) > 2 and p100_aliases != t4_aliases
       and p100_aliases < t4_aliases,
       "the catalog is larger than two and changing accelerator changes the fit list")
@@ -1058,8 +1055,9 @@ partial_text = partial_output.getvalue()
 check(partial_code == 130 and not partial_pushes
       and prepared_refs["binary"] in partial_text
       and "CPU kernel" not in partial_text
-      and f"{prepared_model['model_bytes'] / 1024 ** 3:.1f} GiB" in partial_text,
-      "the plan names only the assets that are actually missing")
+      and f"{units.gib(prepared_model['model_bytes'])} GiB" in partial_text,
+      "the plan names only the assets that are actually missing: "
+      f"code={partial_code}, pushes={partial_pushes}, output={partial_text!r}")
 
 # Staging belongs on a disk, and the refusal belongs before the transfer. /tmp
 # is a tmpfs on a normal desktop, so a 15 GiB weight staged there is written

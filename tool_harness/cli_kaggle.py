@@ -908,7 +908,14 @@ def model_rows(models, fit=None):
 
     return [
         model_discovery.model_row(
-            dict(model, name=model_discovery.resolved_row_name(model)),
+            # This screen chooses the model. Its repository provides the
+            # available quantizations on the next screen, so putting the seed
+            # file's quantization in this name makes one model look like
+            # several different models.
+            dict(model, name=re.sub(
+                r"[-_.]?gguf$", "", str(model.get("repo") or "").split("/")[-1],
+                flags=re.I,
+            )),
             accelerator_machine(model["machine_shape"]), translate=t,
             fit=fit or ACCELERATORS[model["machine_shape"]]["column"],
             # Everything on these screens was selected for fitting the
@@ -924,19 +931,19 @@ def model_rows(models, fit=None):
 
 
 def model_table(models):
-    """Header and rows for a catalogue whose rows do not share one card.
+    """Header and rows for choosing a model before choosing its GGUF.
 
-    Every model here is assigned to the smallest accelerator that holds it, so
-    the card is a property of the row and heads no column: it becomes the cell
-    under GPU, and the legend says once where the throughput came from.
+    Size, fit and throughput belong to a quantization, not to the model. They
+    stay off this screen and appear after the repository's live files have been
+    fetched and the user is choosing among them.
     """
     import model_discovery
 
     return model_discovery.model_table(
         model_rows(models), translate=t,
         state_header=t("model.table.origin"),
-        fit_header=t("cli.kaggle.models.gpu_header"),
-        legend=t("model.table.legend.per_accelerator"),
+        columns=("name", "rankings", "state"),
+        legend="",
     )
 
 

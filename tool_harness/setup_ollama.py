@@ -1060,10 +1060,12 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         debug.note("setup_ollama._dynamic_kaggle_selector discovery", error)
     merged = {}
     for item in [*seeded, *(saved_models or []), *discovered]:
-        # The curated entry wins a collision. It carries the reviewed name and
-        # the benchmark evidence, and letting live discovery overwrite it
-        # replaced a curated row with a duplicate of itself under a repo path.
-        merged.setdefault((item["repo"].casefold(), item["file"].casefold()), item)
+        # A Hugging Face repository is one model on this screen. Its GGUF files
+        # are quantization choices on the next screen. Keying this merge by the
+        # file too put saved or curated Q4 and Q6 weights on separate rows even
+        # though selecting either row immediately offered both files again.
+        # The curated entry stays first and keeps the reviewed evidence.
+        merged.setdefault(item["repo"].casefold(), item)
     accelerator = cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]
     models = []
     for item in merged.values():
@@ -1097,7 +1099,8 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     table = model_discovery.model_table(
         cli_kaggle.model_rows(
             models, fit=model_discovery.text("model.fit.yes_cell")),
-        row_machine, state_header=model_discovery.text("model.table.origin"))
+        row_machine, state_header=model_discovery.text("model.table.origin"),
+        columns=("name", "rankings", "state"), legend="")
     selected = cli_kaggle._choose(
         "\n\n".join([
             model_discovery.text("cli.kaggle.models.section"), *explanation,

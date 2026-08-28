@@ -325,6 +325,12 @@ try:
             task_model = setup_ollama._dynamic_kaggle_selector(
                 lambda _prompt="": "1", catalog, fake_urlopen,
                 onboarding_task="fix_bug",
+                saved_models=[{
+                    **json.loads(Path(catalog).read_text(encoding="utf-8"))["kaggle"][0],
+                    "file": "Qwen3.8-27B-UD-Q6_K_L.gguf",
+                    "alias": "saved-qwen38-q6",
+                    "model_bytes": 24193919904,
+                }],
             )
     finally:
         cli_kaggle.terminal_ui.select = original_select
@@ -338,6 +344,13 @@ try:
     check(all("\n" not in option for option in drawn[0][1])
           and drawn[0][1][-1] == model_discovery.text("model.discovery.exact"),
           "the Kaggle discovery screen is drawn by the shared selector too")
+    check(sum("Qwen3.8-27B" in option for option in drawn[0][1]) == 1
+          and not any("Q4_K_M" in option or "Q6_K_L" in option
+                      for option in drawn[0][1] if "Qwen3.8-27B" in option),
+          "the model screen has one quantization-free row per HF repository")
+    check(model_discovery.text("model.table.size") not in drawn[0][0]
+          and model_discovery.text("model.table.tps") not in drawn[0][0],
+          "size and throughput wait for the quantization screen too")
     # Choosing the model and choosing how much of it to keep are two questions.
     # The second one only exists because the repository publishes more than one
     # file, and a split weight is not one of the answers: its Content-Length is

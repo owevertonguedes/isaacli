@@ -644,7 +644,5 @@
   "model.table.installed": "ON DISK",
   "model.table.installed_yes": "yes",
   "model.table.installed_no": "no",
-  "model.table.origin": "SOURCE",
-  "model.table.legend.per_accelerator": "TOK/S estimated from the published memory bandwidth of each row's accelerator, not measured.",
-  "cli.kaggle.models.gpu_header": "GPU"
+  "model.table.origin": "SOURCE"
 }
