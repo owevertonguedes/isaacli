@@ -94,6 +94,13 @@ CONTEXT_INPUT_SHARE = 0.75
 COMPACTED_PREFIX = "... ISAACLI COMPACTED THIS RESULT"
 
 
+def output_token_limit(num_ctx):
+    """Generation budget paired with the input share of the same window."""
+    if not num_ctx:
+        return None
+    return max(1, int(num_ctx * (1 - CONTEXT_INPUT_SHARE)))
+
+
 def estimate_tokens(messages):
     """A cheap upper hand on how much of the window these messages occupy."""
     chars = 0
@@ -518,13 +525,15 @@ def _reasoning_effort_rejected(error_text):
 
 def call_api(model, messages, use_tools=True, temperature=0.0,
              tools_schema=None, thinking=None, api_key=None, base_url=None,
-             response_format=None, seed=None):
+             response_format=None, seed=None, num_ctx=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
         raise RuntimeError("API key missing; use /setup")
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": False}
+    if output_token_limit(num_ctx):
+        payload["max_tokens"] = output_token_limit(num_ctx)
     if seed is not None:
         payload["seed"] = int(seed)
     if response_format:
@@ -567,7 +576,8 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
 
 def call_stream_api(model, messages, use_tools=True, temperature=0.0,
                     on_token=None, tools_schema=None, thinking=None,
-                    api_key=None, base_url=None, on_progress=None, seed=None):
+                    api_key=None, base_url=None, on_progress=None, seed=None,
+                    num_ctx=None):
     if not base_url:
         raise RuntimeError("API endpoint missing; use /setup")
     if not api_key and not config.is_local_endpoint(base_url):
@@ -575,6 +585,8 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
     payload = {"model": model, "messages": _messages_for_openai(messages),
                "temperature": temperature, "stream": True,
                "stream_options": {"include_usage": True}}
+    if output_token_limit(num_ctx):
+        payload["max_tokens"] = output_token_limit(num_ctx)
     if seed is not None:
         payload["seed"] = int(seed)
     if use_tools:
@@ -668,7 +680,8 @@ def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
     if thinking is not None:
         payload["think"] = thinking
     if num_ctx:
-        payload["options"] = {"num_ctx": int(num_ctx)}
+        payload["options"] = {"num_ctx": int(num_ctx),
+                              "num_predict": output_token_limit(num_ctx)}
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -694,7 +707,8 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
     if thinking is not None:
         payload["think"] = thinking
     if num_ctx:
-        payload["options"] = {"num_ctx": int(num_ctx)}
+        payload["options"] = {"num_ctx": int(num_ctx),
+                              "num_predict": output_token_limit(num_ctx)}
     req = urllib.request.Request(
         URL, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
@@ -872,7 +886,7 @@ def message_from_constrained(content, schema):
 
 
 def _constrained_correction(model, msgs, schema, provider, provider_kind,
-                            temperature=0.0, seed=None):
+                            temperature=0.0, seed=None, num_ctx=None):
     """The correction turn, with the output constrained to one tool call.
 
     Returns None when the constraint could not be applied, and says why under
@@ -892,6 +906,7 @@ def _constrained_correction(model, msgs, schema, provider, provider_kind,
             api_key=(provider or {}).get("api_key"),
             base_url=(provider or {}).get("base_url"),
             temperature=temperature, seed=seed,
+            num_ctx=num_ctx,
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "tool_call", "strict": True,
@@ -1080,19 +1095,21 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
 
         def query(schema, allow_stream=True):
             should_stream = stream_response and allow_stream
+            context_kw = {"num_ctx": num_ctx} if num_ctx else {}
             if provider_kind == "openai_compatible" and should_stream:
                 return call_stream_api(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
                     tools_schema=schema, thinking=thinking,
                     api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"),
-                    on_progress=on_progress, temperature=temperature, seed=seed)
+                    on_progress=on_progress, temperature=temperature, seed=seed,
+                    **context_kw)
             if provider_kind == "openai_compatible":
                 return call_api(
                     model, msgs, use_tools=use_tools, tools_schema=schema,
                     thinking=thinking, api_key=(provider or {}).get("api_key"),
                     base_url=(provider or {}).get("base_url"),
-                    temperature=temperature, seed=seed)
+                    temperature=temperature, seed=seed, **context_kw)
             if should_stream:
                 return call_stream(
                     model, msgs, use_tools=use_tools, on_token=visible_token,
@@ -1111,7 +1128,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             msgs.append({"role": "system", "content": instruction})
             constrained = _constrained_correction(
                 model, msgs, active_schema, provider, provider_kind,
-                temperature=temperature, seed=seed)
+                temperature=temperature, seed=seed, num_ctx=num_ctx)
             if constrained is None:
                 # Keep this non-streaming. If an unsupported provider returns a
                 # JSON object as ordinary content, it must be rejected before

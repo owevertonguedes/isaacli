@@ -1126,6 +1126,12 @@ KERNEL_VALUE_PATTERNS = {
 # So when the cards still have room after the weights, the ceiling rises to the
 # largest rung that fits, decided by the same fit function that chose the model.
 MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
+# A served launch is a lower bound, not an estimate. Keep exact geometry and
+# byte count in the key so a score or fit measured on one quantization cannot
+# leak to another derivative of the same base model.
+MEASURED_CONTEXT_FLOORS = {
+    ("NvidiaTeslaT4", 24193919904, 64, 4, 256): 24576,
+}
 # The cache used to be allowed only half of what was free after the weights,
 # and that half was never a measurement. It was compensating, without saying
 # so, for a VRAM figure that was 2048 MiB larger than the cards: with the real
@@ -1149,14 +1155,10 @@ MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
 # leave 751 MiB per card serves, and 768 MiB per card sits between them, which
 # is what `hardware.DEFAULT_OVERHEAD_MB` already said.
 #
-# One thing this arithmetic gets wrong is written down rather than corrected,
-# because correcting it would be guessing. For that dense launch it predicted
-# 29217 MiB of weights plus cache and the pair really held 24642 MiB, an
-# overshoot of 4575 MiB. The direction is safe, it refuses more than it must,
-# and the cost is real: 24576 tokens is refused by 33 MiB on a model measured
-# serving at exactly that size. Whatever explains the overshoot is in
-# llama.cpp's own buffer sizes, which Kaggle's log keeps a few dozen records of
-# and drops.
+# The arithmetic overstates the dense launch by 4575 MiB and would refuse its
+# measured 24576-token window by 33 MiB. The measured floor above corrects that
+# exact derivative without extrapolating a larger untested window or weakening
+# the refusal for the MoE launch that failed.
 
 
 def _context_ceiling(model):
@@ -1192,6 +1194,11 @@ def _context_ceiling(model):
             best = max(best, context)
         else:
             break
+    measured_key = (
+        model.get("machine_shape"), model.get("model_bytes"),
+        model.get("n_layers"), model.get("n_kv_heads"), model.get("head_dim"),
+    )
+    best = max(best, MEASURED_CONTEXT_FLOORS.get(measured_key, 0))
     debug.note("cli_kaggle._context_ceiling",
                f"{model.get('alias')} allows up to {best} tokens, "
                f"{units.gib(budget_per_card)} GiB free for cache on each "

@@ -49,6 +49,8 @@ finally:
 
 assert captured[0]["think"] == "high", "GPT-OSS has to receive the reasoning level"
 assert captured[0]["options"]["num_ctx"] == 32768, "the chosen context has to reach Ollama"
+assert captured[0]["options"]["num_predict"] == 8192, (
+    "the answer receives the quarter of the shared window reserved for it")
 assert captured[1]["think"] is False, "Qwen Instruct has to receive thinking disabled"
 assert "think" not in captured[2], "a raw model must preserve Ollama's default"
 assert agent._usage({"eval_duration": 500_000_000})["eval_duration"] == 500_000_000
@@ -113,6 +115,19 @@ assert api_capture["payload"]["seed"] == 21001
 assert msg["content"] == "Hello" and tokens == ["Hello"]
 assert msg["_usage"]["prompt_eval_count"] == 12
 print("AGENT API OK: OpenAI-compatible endpoint, streaming and tools are configurable")
+
+api_capture.clear()
+original = agent.urllib.request.urlopen
+try:
+    agent.urllib.request.urlopen = urlopen_sse
+    agent.call_stream_api(
+        "local-model", [{"role": "user", "content": "hi"}], use_tools=False,
+        base_url="http://127.0.0.1:8080/v1", num_ctx=24576,
+    )
+finally:
+    agent.urllib.request.urlopen = original
+assert api_capture["payload"]["max_tokens"] == 6144, (
+    "the OpenAI-compatible server receives the output share of the chosen window")
 
 # Each OpenAI-compatible provider accepts a different set of reasoning_effort
 # values (e.g. Groq accepts low/medium/high for some models and only

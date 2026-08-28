@@ -3156,9 +3156,9 @@ dense_ceiling = cli_kaggle._context_ceiling(served_at_24576)
 check(moe_ceiling < 65536,
       "the exact request that died allocating its cache on 2026-08-21 is "
       f"refused before it costs anything: {moe_ceiling} offered, not 65536")
-check(dense_ceiling >= cli_kaggle.MODEL_CONTEXT,
-      "the dense that served on 2026-08-22 still reaches the floor every "
-      f"launch used to get: {dense_ceiling}")
+check(dense_ceiling == 24576,
+      "the exact dense quantization that served 24576 tokens on 2026-08-22 "
+      f"offers that measured floor automatically: {dense_ceiling}")
 
 # A model whose weights already exceed the cards asks for a ceiling that has
 # no room for any cache at all, and it must answer the floor rather than a
