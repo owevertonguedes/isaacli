@@ -1001,7 +1001,7 @@ def _select_model(input_fn, catalog_path=MODEL_CATALOG_PATH, prepared_fn=None):
 DATASET_SLUG_LIMIT = 50
 
 
-def _model_dataset_slug(alias, limit=DATASET_SLUG_LIMIT):
+def _model_dataset_slug(alias, limit=DATASET_SLUG_LIMIT, prefix="isaacli-model-"):
     """A dataset name short enough for Kaggle that still says what it holds.
 
     The name was being cut at the limit from the end, and what lives at the end
@@ -1011,7 +1011,6 @@ def _model_dataset_slug(alias, limit=DATASET_SLUG_LIMIT):
     now happens in the middle, which is the only part that does not identify
     anything.
     """
-    prefix = "isaacli-model-"
     slug = re.sub(r"[^a-z0-9-]+", "-", str(alias).lower()).strip("-")
     room = limit - len(prefix)
     if len(slug) <= room:
@@ -1021,6 +1020,25 @@ def _model_dataset_slug(alias, limit=DATASET_SLUG_LIMIT):
     head = slug[:max(1, room - len(tail) - 1)]
     head = head.rsplit("-", 1)[0] if "-" in head[1:] else head
     return f"{prefix}{head.rstrip('-')}-{tail}"
+
+
+def _preparation_slug(asset_slug):
+    """The name of the kernel that builds an asset, never the asset's own name.
+
+    Kaggle keeps notebooks and datasets in one namespace per account, and it
+    refuses to create a dataset whose title a notebook already holds. This used
+    to be derived by rewriting the `isaacli-model-` prefix into
+    `isaacli-prepare-`, which quietly did nothing for any name that did not
+    carry that prefix. `MODEL_DATASET_SLUGS` holds exactly such a name, so for
+    that one model the kernel and the dataset asked for the same title: the
+    kernel downloaded 15 GiB, uploaded 16.5 GiB, and only then was refused by
+    its own name. The name is now built rather than rewritten, from the same
+    middle-cut the dataset name uses, so it is distinct and inside the limit
+    whatever the asset is called. Rewriting also produced names two characters
+    over the limit for every asset whose own name had been cut to fit.
+    """
+    body = asset_slug.removeprefix("isaacli-model-").removeprefix("isaacli-")
+    return _model_dataset_slug(body, prefix="isaacli-prepare-")
 
 
 def _asset_refs(username, model):
@@ -1610,7 +1628,7 @@ def _prepare_assets(executable, username, model, available, input_fn,
                     prefix="isaacli-kaggle-weight-") as temporary:
                 folder = Path(temporary)
                 asset_slug = expected["model"].split("/", 1)[-1]
-                slug = f"{username}/{asset_slug.replace('isaacli-model-', 'isaacli-prepare-')}"
+                slug = f"{username}/{_preparation_slug(asset_slug)}"
                 prior_state = _kernel_state(executable, slug, run_fn, env)
                 if prior_state in {"QUEUED", "RUNNING", "NEW_SCRIPT"}:
                     _wait_for_kernel(executable, slug, run_fn, env)

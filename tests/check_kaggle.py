@@ -3774,6 +3774,29 @@ check(reused_state == "live" and relaunched_state == "relaunched"
 check(failed_state == "failed" and len(started_for) == 2,
       "a launch that failed starts no beat, because there is nothing to beat at")
 
+# Notebooks and datasets share one namespace per Kaggle account, so a kernel
+# named after the dataset it publishes is refused by its own name, and it is
+# refused only after the upload finishes: 15 GiB down and 16.5 GiB up before the
+# answer. This is checked for every model the catalogue offers, and separately
+# for every hand-written override, because the collision arrived through an
+# override that did not carry the prefix the old derivation rewrote.
+_collisions = []
+for _model in cli_kaggle.prepared_models():
+    _refs = cli_kaggle._asset_refs("someone", _model)
+    _asset = _refs["model"].split("/", 1)[-1]
+    _kernel = cli_kaggle._preparation_slug(_asset)
+    if _kernel == _asset or _kernel == _refs["binary"].split("/", 1)[-1]:
+        _collisions.append(_model.get("alias"))
+for _alias, _override in cli_kaggle.MODEL_DATASET_SLUGS.items():
+    if cli_kaggle._preparation_slug(_override) == _override:
+        _collisions.append(_alias)
+check(not _collisions,
+      f"no preparation kernel is named after the asset it publishes: {_collisions}")
+check(all(len(cli_kaggle._preparation_slug(slug)) <= cli_kaggle.DATASET_SLUG_LIMIT
+          for slug in list(cli_kaggle.MODEL_DATASET_SLUGS.values())
+          + ["isaacli-model-" + "x" * 80]),
+      "the preparation kernel name stays inside the slug limit")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)
