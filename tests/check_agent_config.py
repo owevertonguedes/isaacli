@@ -607,6 +607,28 @@ def openai_response(message, tokens=7):
     }).encode())
 
 
+def openai_answer(payload, message, tokens=7):
+    """The same answer in whichever shape this request asked for.
+
+    A fake that only speaks the whole-body shape answers a streamed request
+    with nothing, and the run under test then fails for the transport rather
+    than for what it is measuring.
+    """
+    if not payload.get("stream"):
+        return openai_response(message, tokens)
+    events = []
+    delta = {k: v for k, v in message.items() if k != "content"}
+    if message.get("content"):
+        delta["content"] = message["content"]
+    events.append({"choices": [{"index": 0, "delta": delta,
+                                "finish_reason": None}]})
+    events.append({"choices": [{"index": 0, "delta": {},
+                                "finish_reason": "stop"}],
+                   "usage": {"prompt_tokens": 20, "completion_tokens": tokens}})
+    body = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    return Response((body + "data: [DONE]\n\n").encode())
+
+
 constrained_payloads = []
 
 
@@ -876,8 +898,10 @@ def urlopen_sequence(req, timeout=0):
             }],
         })
     if len(sequence_payloads) == 2:
-        return openai_response({"role": "assistant", "content": sequence_answer})
-    return openai_response({"role": "assistant", "content": "Both files are saved."})
+        return openai_answer(
+            payload, {"role": "assistant", "content": sequence_answer})
+    return openai_answer(
+        payload, {"role": "assistant", "content": "Both files are saved."})
 
 
 sequence_executed = []

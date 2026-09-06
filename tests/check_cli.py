@@ -2590,6 +2590,118 @@ check(all(len(re.sub(r"\x1b\[[0-9;]*m", "", line)) <= 80 for line in _rendered)
       and len(_rendered) == 2,
       "each option is drawn as exactly one line that fits the terminal")
 
+# The turn right after a successful change is the one the user reported as the
+# program freezing. Its answer has to be validated before it can be shown, and
+# that used to be bought by turning the whole stream off, which also silenced
+# the live status line: the terminal sat on one unchanging row for the entire
+# generation. Withholding the text is the requirement; withholding the evidence
+# that the endpoint is answering is not.
+def _post_change_turn(final_content):
+    """Drive one run that changes something and then answers `final_content`."""
+    streamed, tokens, progress = [], [], []
+
+    def fake_stream(model, msgs, **kw):
+        streamed.append(True)
+        turn = sum(1 for m in msgs if m.get("role") == "tool")
+        if turn == 0:
+            return {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "write_file", "arguments": "{}"}}]}
+        for piece in (final_content[:3], final_content[3:]):
+            if kw.get("on_progress"):
+                kw["on_progress"](piece)
+            if kw.get("on_token"):
+                kw["on_token"](piece)
+        return {"role": "assistant", "content": final_content}
+
+    def fake_plain(model, msgs, **kw):
+        streamed.append(False)
+        return {"role": "assistant", "content": final_content}
+
+    saved = agent.call_stream_api, agent.call_api, agent._constrained_correction
+    agent.call_stream_api, agent.call_api = fake_stream, fake_plain
+    # The correction turn is a separate mechanism with its own checks; forcing
+    # it to the unconstrained path keeps this measuring only the stream.
+    agent._constrained_correction = lambda *_a, **_kw: None
+    try:
+        result = agent.run(
+            "escreva o arquivo", "m", max_steps=3, verbose=False,
+            provider={"provider": "openai_compatible", "base_url": "http://x"},
+            on_token=tokens.append, on_progress=progress.append,
+            on_tool_before=lambda *_a: "OK: wrote 1 bytes to f",
+            require_change=True,
+            is_changing_tool=lambda *_a: True,
+            changing_tool_succeeded=lambda *_a: True,
+        )
+    finally:
+        (agent.call_stream_api, agent.call_api,
+         agent._constrained_correction) = saved
+    return result, streamed, tokens, progress
+
+
+_prose = "resposta em prosa depois da mudanca"
+_run, _streamed, _tokens, _progress = _post_change_turn(_prose)
+check(all(_streamed) and len(_streamed) >= 2,
+      "the turn after a successful change still streams instead of going dark")
+check(len(_progress) >= 2,
+      "the live status line keeps receiving chunks while the answer is withheld")
+check("".join(_tokens) == _prose and _tokens.count(_prose) == 1,
+      "the withheld answer reaches the screen exactly once, after validation")
+
+# The inverse, which is what the withholding is for: an object is not prose
+# completion, and no part of it may reach the terminal on its way to being
+# discarded.
+# An object that comes back a second time is refused for good, and that refusal
+# arrives as ConstrainedOutputError. It is the expected end of this path, so it
+# is captured as a value here instead of taking the file down with it.
+_json_tokens, _json_refused = [], None
+try:
+    _, _, _json_tokens, _ = _post_change_turn('{"name": "write_file"}')
+except agent.ConstrainedOutputError as _error:
+    _json_refused = str(_error)
+check(_json_refused is not None,
+      "a JSON object answered after a change is refused rather than delivered")
+check(not any("{" in chunk for chunk in _json_tokens),
+      "a JSON object answered after a change never reaches the screen")
+
+# The neighbouring hole, on the same line: a turn that wanted to stream and was
+# forbidden from it. The correction path always calls without streaming, so
+# nothing is written live there, and a fallback that asked "was streaming on?"
+# instead of "did anything reach the screen?" stayed quiet as well. The answer
+# fell between the two and the user read nothing at all.
+_correction_tokens = []
+_attempted = json.dumps({"name": "write_file",
+                         "arguments": {"path": "a.txt", "content": "x"}})
+
+
+def _correction_stream(model, msgs, **kw):
+    return {"role": "assistant", "content": _attempted}
+
+
+def _correction_plain(model, msgs, **kw):
+    return {"role": "assistant", "content": "pronto, era so isso"}
+
+
+_saved = agent.call_stream_api, agent.call_api, agent._constrained_correction
+agent.call_stream_api, agent.call_api = _correction_stream, _correction_plain
+# No constrained decoding available is exactly the case that falls back to an
+# ordinary call with streaming forbidden.
+agent._constrained_correction = lambda *_a, **_kw: None
+try:
+    _correction_run = agent.run(
+        "me explique o arquivo", "m", max_steps=3, verbose=False,
+        provider={"provider": "openai_compatible", "base_url": "http://x"},
+        on_token=_correction_tokens.append, on_progress=lambda _c: None,
+    )
+finally:
+    (agent.call_stream_api, agent.call_api,
+     agent._constrained_correction) = _saved
+
+check("".join(_correction_tokens) == "pronto, era so isso",
+      "an answer from a turn that could not stream still reaches the screen")
+check(_attempted not in "".join(_correction_tokens),
+      "the call object that armed the correction never reaches the screen")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")

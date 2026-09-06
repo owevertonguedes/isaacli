@@ -1084,12 +1084,27 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         visible_stream = not require_change or successful_changes or correction_sent
         # Post-tool output must be validated before display. Otherwise a JSON
         # object can leak token by token before the loop knows it was not prose.
-        stream_response = (bool(on_progress or (on_token and visible_stream))
-                           and not (require_change and successful_changes))
-        visible_token = on_token if visible_stream else None
+        # Withholding the text is not a reason to withhold the fact that the
+        # endpoint is answering: the request still streams, only `on_token` is
+        # dropped. Turning the whole stream off left the one screen the user is
+        # watching frozen for the entire generation right after a successful
+        # change, which reads as the program having died mid-work.
+        withhold_text = bool(require_change and successful_changes)
+        stream_response = bool(on_progress or (on_token and visible_stream))
+        visible_token = (on_token if visible_stream and not withhold_text
+                         else None)
+
+        # Whether any of this turn's text already reached the screen. Deducing
+        # that from the flags above missed the turn that wanted to stream and
+        # could not: the correction path forbids streaming, so nothing was
+        # written live, and a fallback keyed on the flags stayed quiet too. The
+        # answer was then lost between the two.
+        shown_live = False
 
         def query(schema, allow_stream=True):
+            nonlocal shown_live
             should_stream = stream_response and allow_stream
+            shown_live = bool(should_stream and visible_token)
             output_kw = ({"max_output_tokens": max_output_tokens}
                          if max_output_tokens else {})
             if provider_kind == "openai_compatible" and should_stream:
@@ -1178,7 +1193,10 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
                 correction_pending = True
                 continue
             msgs.append(msg)
-            if on_token and not stream_response and msg.get("content"):
+            # Nothing streamed, the text was withheld while it streamed, or the
+            # turn was not allowed to stream at all. All three mean the answer
+            # has not reached the screen yet, and by here it is validated prose.
+            if on_token and not shown_live and msg.get("content"):
                 on_token(msg["content"])
             if verbose:
                 print(f"[step {step}] FINAL ANSWER:\n{msg.get('content')}")
