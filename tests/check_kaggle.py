@@ -915,6 +915,105 @@ def extracted_runtime_run(command, **_kwargs):
 cli_kaggle._verify_asset_dataset(
     "/fake/kaggle", "owner/isaacli-llama-cuda-sm75-b10502", "binary", {},
     extracted_runtime_run, {})
+
+# The wait that precedes that verification asked for the archive by name, and
+# Kaggle had already opened it, so a finished build spent the whole timeout and
+# was reported as a failure. Measured on 2026-09-06 against a real prepared
+# runtime: the tree was complete and the archive was absent. Both directions are
+# proved here, because a wait that accepts anything is the same defect inverted.
+runtime_root = "llama-cuda-sm75-b10502"
+complete_tree = ("name,size\n"
+                 f"{runtime_root}/bin/llama-server,17896\n"
+                 f"{runtime_root}/bin/libggml-cuda.so,61158240\n"
+                 f"{runtime_root}/cloudflared-linux-amd64,39763452\n"
+                 f"{runtime_root}/lib/libcudart.so,728800\n")
+# Same tree with the tunnel binary missing, which the GPU kernel needs to
+# publish its URL at all.
+partial_tree = ("name,size\n"
+                f"{runtime_root}/bin/llama-server,17896\n"
+                f"{runtime_root}/bin/libggml-cuda.so,61158240\n"
+                f"{runtime_root}/lib/libcudart.so,728800\n")
+accept_tree = (lambda files:
+               cli_kaggle._runtime_tree_present(files, runtime_root))
+tree_monotonic = cli_kaggle.time.monotonic
+tree_sleep = cli_kaggle.time.sleep
+tree_clock = [0.0]
+try:
+    cli_kaggle.time.monotonic = lambda: tree_clock[0]
+    cli_kaggle.time.sleep = lambda seconds: tree_clock.__setitem__(
+        0, tree_clock[0] + seconds)
+    opened = cli_kaggle._wait_for_dataset(
+        "/fake/kaggle", "owner/isaacli-llama-cuda-sm75-b10502",
+        f"{runtime_root}.tar.gz", 161292699,
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout=complete_tree, stderr=""),
+        {}, timeout=5, poll=1, accept=accept_tree)
+    incomplete = ""
+    try:
+        cli_kaggle._wait_for_dataset(
+            "/fake/kaggle", "owner/isaacli-llama-cuda-sm75-b10502",
+            f"{runtime_root}.tar.gz", 161292699,
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0, stdout=partial_tree, stderr=""),
+            {}, timeout=3, poll=1, accept=accept_tree)
+    except RuntimeError as error:
+        incomplete = str(error)
+finally:
+    cli_kaggle.time.monotonic = tree_monotonic
+    cli_kaggle.time.sleep = tree_sleep
+check(opened.get(f"{runtime_root}/bin/llama-server") == 17896
+      and f"{runtime_root}.tar.gz" not in opened,
+      "the wait accepts the tree Kaggle opened, instead of the archive it removed")
+check(bool(incomplete) and runtime_root in incomplete,
+      f"a runtime tree missing the tunnel binary still times out: {incomplete[:70]}")
+
+# The two checks above prove the wait, and a wait that is never handed the
+# predicate is exactly the defect that shipped. So drive the preparation itself
+# against a dataset that lists only the opened tree, and let it fail the way it
+# failed on 2026-09-06 if the call site forgets to say what its asset looks like.
+def prepared_runtime_run(command, **_kwargs):
+    text = " ".join(str(part) for part in command)
+    if "kernels push" in text:
+        return SimpleNamespace(returncode=0, stdout="pushed", stderr="")
+    if "kernels status" in text:
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.COMPLETE", stderr="")
+    if "kernels output" in text:
+        target = Path(command[command.index("-p") + 1])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{runtime_root}.tar.gz").write_bytes(b"archive")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "datasets create" in text:
+        return SimpleNamespace(returncode=0, stdout="created", stderr="")
+    if "datasets files" in text:
+        # Kaggle opened the archive, so it is gone and only the tree remains.
+        return SimpleNamespace(returncode=0, stdout=complete_tree, stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+prepare_monotonic = cli_kaggle.time.monotonic
+prepare_sleep = cli_kaggle.time.sleep
+prepare_clock = [0.0]
+prepared = {}
+prepare_error = ""
+try:
+    cli_kaggle.time.monotonic = lambda: prepare_clock[0]
+    cli_kaggle.time.sleep = lambda seconds: prepare_clock.__setitem__(
+        0, prepare_clock[0] + seconds)
+    prepared = cli_kaggle._prepare_assets(
+        "/fake/kaggle", "owner",
+        {"cuda_arch": "75", "alias": "qwen38-27b",
+         "file": "weights.gguf", "model_bytes": 5, "name": "model"},
+        {"model": "owner/isaacli-model-qwen38-27b"},
+        lambda _prompt: "n", prepared_runtime_run, {})
+except RuntimeError as error:
+    prepare_error = str(error)
+finally:
+    cli_kaggle.time.monotonic = prepare_monotonic
+    cli_kaggle.time.sleep = prepare_sleep
+check(prepared.get("binary") == "owner/isaacli-llama-cuda-sm75-b10502"
+      and not prepare_error,
+      f"preparing a runtime succeeds when Kaggle lists only the opened tree: {prepare_error[:70]}")
 check(len(runtime_pages) == 2
       and runtime_pages[0][-2:] == ["--page-size", "200"]
       and runtime_pages[1][-2:] == ["--page-token", "second-page"],

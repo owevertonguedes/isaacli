@@ -1476,10 +1476,29 @@ def _dataset_files(executable, ref, run_fn=subprocess.run, env=None):
     return files
 
 
+def _runtime_tree_present(files, root):
+    """The runtime as Kaggle exposes it, which is an open tree, not the archive.
+
+    Kaggle extracts a published `.tar.gz`, so the archive that was uploaded is
+    never listed again and only this tree ever appears. Both the wait and the
+    later verification ask the same question through here: waiting for the
+    archive name instead burned the whole timeout on an asset that was already
+    complete, and reported a finished build as a failure.
+    """
+    return (
+        files.get(f"{root}/bin/llama-server", 0) > 0
+        and files.get(f"{root}/cloudflared-linux-amd64", 0) > 0
+        and any(name.startswith(f"{root}/bin/libggml-cuda.so") and size > 0
+                for name, size in files.items())
+        and any(name.startswith(f"{root}/lib/libcudart.so") and size > 0
+                for name, size in files.items())
+    )
+
+
 def _wait_for_dataset(executable, ref, expected_name, expected_size,
                       run_fn=subprocess.run, env=None,
                       timeout=DATASET_READY_TIMEOUT_SECONDS,
-                      poll=DATASET_READY_POLL_SECONDS):
+                      poll=DATASET_READY_POLL_SECONDS, accept=None):
     started = time.monotonic()
     last = "not visible"
     while time.monotonic() - started < timeout:
@@ -1490,6 +1509,11 @@ def _wait_for_dataset(executable, ref, expected_name, expected_size,
         else:
             last = repr(files)
             if files.get(expected_name) == expected_size:
+                return files
+            # The archive can be gone because Kaggle opened it, which is
+            # success, not absence. Only a caller that knows the shape of its
+            # own asset can tell those apart, so it says so here.
+            if accept is not None and accept(files):
                 return files
             if expected_name in files:
                 raise RuntimeError(t(
@@ -1512,15 +1536,7 @@ def _verify_asset_dataset(executable, ref, kind, model,
         return
     archive = ref.split("/", 1)[-1].removeprefix("isaacli-") + ".tar.gz"
     root = archive.removesuffix(".tar.gz")
-    extracted = (
-        files.get(f"{root}/bin/llama-server", 0) > 0
-        and files.get(f"{root}/cloudflared-linux-amd64", 0) > 0
-        and any(name.startswith(f"{root}/bin/libggml-cuda.so") and size > 0
-                for name, size in files.items())
-        and any(name.startswith(f"{root}/lib/libcudart.so") and size > 0
-                for name, size in files.items())
-    )
-    if files.get(archive, 0) <= 0 and not extracted:
+    if files.get(archive, 0) <= 0 and not _runtime_tree_present(files, root):
         raise RuntimeError(t(
             "cli.kaggle.dataset.file_missing", ref=ref, name=archive))
 
@@ -1577,9 +1593,11 @@ def _prepare_assets(executable, username, model, available, input_fn,
             _publish_private_dataset(
                 executable, dataset, expected["binary"],
                 f"isaacli CUDA runtime sm{model['cuda_arch']}", run_fn, env)
+            archive_root = archive_name.removesuffix(".tar.gz")
             _wait_for_dataset(
                 executable, expected["binary"], archive_name, archive_size,
-                run_fn, env)
+                run_fn, env,
+                accept=lambda files: _runtime_tree_present(files, archive_root))
             say(t("cli.kaggle.prepare.created", ref=expected["binary"]))
             say(t("cli.kaggle.prepare.kernel_remove", slug=slug))
         available["binary"] = expected["binary"]
