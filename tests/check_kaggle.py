@@ -1500,9 +1500,9 @@ check(unverified_stop == 0 and len(unverified_deletes) == 1
           "kernels", "delete", "stopper/burning", "--yes"],
       "an account whose quota call is refused can still stop its kernel")
 
-# And the harder half: nothing answers at all, which is the state a browser
-# account lands in when the twelve-hour token cannot be renewed. The screen
-# must not be the CLI's help text, and it must name the page that still works.
+# And the harder half: nothing answers at all because the saved browser
+# credential was refused. The screen must not be the CLI's help text, and it
+# must name the page that still works.
 signed_out_file = root / "signed-out-stop" / "config.json"
 config.save({
     "language": "en", "profiles": {},
@@ -1527,7 +1527,7 @@ with redirect_stdout(io.StringIO()) as signed_out_output:
         home_dir=home)
 signed_out_screen = signed_out_output.getvalue()
 check(signed_out_stop == 1
-      and "twelve hours" in signed_out_screen
+      and "Kaggle rejected this account's sign-in" in signed_out_screen
       and "Authentication required to call the Kaggle API" not in signed_out_screen,
       "a refused sign-in is named as itself, not pasted as the CLI's help wall")
 check("https://www.kaggle.com/code/stopper/orphan" in signed_out_screen,
