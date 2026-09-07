@@ -35,8 +35,16 @@ def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
     """
     entries, _notes = setup_ollama._detect_engines(
         setup_ollama.Translator("en"), which_fn=which)
-    return str(next(index for index, (name, _label) in enumerate(entries, 1)
-                    if name == key))
+    for index, (name, _label) in enumerate(entries, 1):
+        if name == key:
+            return str(index)
+    # Was a bare next(), which raises StopIteration for an engine that is not
+    # on the screen and takes the rest of the file down with it. A helper that
+    # cannot answer has to say which name it could not find, the way
+    # source_answer does, so the run reports instead of ending.
+    raise AssertionError(
+        f"no {key} entry in the engine screen: "
+        f"{[name for name, _label in entries]}")
 
 
 def language_answer(code):
