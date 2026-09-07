@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import config
@@ -113,6 +114,12 @@ MODEL_DATASET_SLUGS = {
 PREPARATION_TIMEOUT_SECONDS = 4 * 60 * 60
 DATASET_READY_TIMEOUT_SECONDS = 10 * 60
 DATASET_READY_POLL_SECONDS = 10
+# How many identical, non-empty listings in a row prove the dataset is at rest
+# rather than still arriving. A Kaggle dataset version publishes atomically, so
+# once files are listed the set does not grow; a minute of the same answer is
+# the asset saying it is finished, and waiting nine more only delays the news.
+# It is deliberately not one: a single reading is a sample, not a rest.
+DATASET_STABLE_POLLS = 6
 # The first line of the help the Kaggle CLI prints, on stdout, when every
 # authentication mechanism it knows has come up empty. It is matched rather
 # than parsed because it is the whole difference between "this account is
@@ -818,6 +825,47 @@ def _kernel_refs(executable, run_fn=subprocess.run, env=None):
         if len(rows) < 100:
             return refs
         page += 1
+
+
+def _kernel_age_seconds(executable, slug, run_fn=subprocess.run, env=None,
+                        now=None):
+    """How long ago this kernel last started, or None when that is not knowable.
+
+    `kernels status` says whether a kernel is running and never says for how
+    long, and the difference matters: a kernel pushed with a four hour ceiling
+    that has been RUNNING for twenty-six is not working, it is stuck, and every
+    GPU launch is refused while it exists. The number that settles it is in
+    `kernels list`, in the `lastRunTime` column, and nothing was reading it.
+
+    That column is UTC. Measured rather than assumed: this account holds a
+    kernel whose slug carries the `gmtime` stamp of its own creation,
+    `...-20260907-193344`, and the column answers `2026-09-07 19:33:47` for it.
+    """
+    result = _run_capture([
+        str(executable), "kernels", "list", "--mine", "--csv",
+        "--search", slug.split("/", 1)[-1], "--page-size", "100",
+    ], run_fn, env)
+    if result.returncode != 0:
+        debug.note("cli_kaggle._kernel_age_seconds list",
+                   (result.stderr or result.stdout or "").strip())
+        return None
+    for row in csv.DictReader(io.StringIO(result.stdout or "")):
+        if (row.get("ref") or row.get("Ref")) != slug:
+            continue
+        stamp = (row.get("lastRunTime") or row.get("LastRunTime") or "").strip()
+        if not stamp:
+            return None
+        try:
+            started = datetime.strptime(
+                stamp.split(".", 1)[0], "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc)
+        except ValueError as error:
+            debug.note("cli_kaggle._kernel_age_seconds stamp", error)
+            return None
+        current = now or datetime.now(timezone.utc)
+        return (current - started).total_seconds()
+    debug.note("cli_kaggle._kernel_age_seconds", f"{slug} not listed")
+    return None
 
 
 def live_kernels(executable, run_fn=subprocess.run, env=None):
@@ -1577,30 +1625,88 @@ def _runtime_tree_present(files, root):
 def _wait_for_dataset(executable, ref, expected_name, expected_size,
                       run_fn=subprocess.run, env=None,
                       timeout=DATASET_READY_TIMEOUT_SECONDS,
-                      poll=DATASET_READY_POLL_SECONDS, accept=None):
+                      poll=DATASET_READY_POLL_SECONDS, accept=None,
+                      stable_polls=DATASET_STABLE_POLLS):
+    """Wait for an asset, and know when waiting can no longer help.
+
+    A listing that answers is an answer. This used to treat one the same as
+    silence: it compared a name and a size, and when neither matched it slept
+    and asked the identical question sixty more times, then blamed Kaggle for
+    an asset that was published, complete and correct. What was wrong was the
+    question, and ten minutes of an unchanging screen went by before the user
+    was told the wrong thing.
+
+    So a listing that is non-empty and unchanged across `stable_polls` rounds
+    ends the wait, naming what was found and what was wanted. The asymmetry
+    that decides this is not symmetric: a false failure costs minutes, and a
+    false success costs GPU quota, because the kernel boots against a runtime
+    that is not there and spends real hours on it. Nothing here loosens a
+    predicate, so the only new outcome is a failure arriving sooner and naming
+    its real cause. A publication still in flight either has no listing yet or
+    has one that keeps changing, and neither of those is stable.
+    """
     started = time.monotonic()
-    last = "not visible"
-    while time.monotonic() - started < timeout:
+    last_error = None
+    last_files = None
+    repeats = 0
+    drawn = False
+
+    def clear():
+        if drawn:
+            print()
+
+    while True:
+        elapsed = time.monotonic() - started
+        if elapsed >= timeout:
+            break
         try:
             files = _dataset_files(executable, ref, run_fn, env)
         except RuntimeError as error:
-            last = str(error)
+            # A ref that is not listable yet is the answer this probe went to
+            # get, not a surprise, so it costs one line and never a traceback.
+            debug.note("cli_kaggle._wait_for_dataset listing", error)
+            last_error = str(error)
+            files = None
         else:
-            last = repr(files)
             if files.get(expected_name) == expected_size:
+                clear()
                 return files
             # The archive can be gone because Kaggle opened it, which is
             # success, not absence. Only a caller that knows the shape of its
             # own asset can tell those apart, so it says so here.
             if accept is not None and accept(files):
+                clear()
                 return files
             if expected_name in files:
+                clear()
                 raise RuntimeError(t(
                     "cli.kaggle.dataset.divergent", ref=ref,
                     expected=expected_size, actual=files[expected_name]))
+            repeats = repeats + 1 if files and files == last_files else 0
+            last_files = files
+            if files and repeats + 1 >= stable_polls:
+                clear()
+                debug.note("cli_kaggle._wait_for_dataset settled listing", files)
+                raise RuntimeError(t(
+                    "cli.kaggle.dataset.unreachable", ref=ref,
+                    name=expected_name, count=len(files),
+                    seconds=int(time.monotonic() - started)))
+        # A wait this long has to show it is alive, and it redraws in place
+        # rather than growing the scrollback by one line every ten seconds.
+        say(t("cli.kaggle.dataset.waiting", ref=ref, seconds=int(elapsed),
+              count=len(files) if files is not None else 0),
+            end="\r", flush=True)
+        drawn = True
         time.sleep(poll)
+    clear()
+    # The listing is diagnosis, and it is where the cause actually lives, so it
+    # goes to --debug. Interpolating it into the message put twenty-seven
+    # entries of a Python dict on the screen of somebody who wanted a URL.
+    debug.note("cli_kaggle._wait_for_dataset last listing",
+               last_files if last_files is not None else last_error)
     raise RuntimeError(t("cli.kaggle.dataset.timeout", ref=ref,
-                         seconds=int(time.monotonic() - started), state=last))
+                         seconds=int(time.monotonic() - started),
+                         count=len(last_files) if last_files else 0))
 
 
 def _verify_asset_dataset(executable, ref, kind, model,
@@ -1673,10 +1779,20 @@ def _prepare_assets(executable, username, model, available, input_fn,
                 executable, dataset, expected["binary"],
                 f"isaacli CUDA runtime sm{model['cuda_arch']}", run_fn, env)
             archive_root = archive_name.removesuffix(".tar.gz")
-            _wait_for_dataset(
-                executable, expected["binary"], archive_name, archive_size,
-                run_fn, env,
-                accept=lambda files: _runtime_tree_present(files, archive_root))
+            try:
+                _wait_for_dataset(
+                    executable, expected["binary"], archive_name, archive_size,
+                    run_fn, env,
+                    accept=lambda files: _runtime_tree_present(
+                        files, archive_root))
+            except RuntimeError:
+                # Half an hour of compiling already landed in the account, and
+                # a failure that does not say so reads as work to redo. The
+                # next run finds it by listing, so what is missing here is only
+                # the sentence.
+                say(t("cli.kaggle.prepare.published_anyway",
+                      ref=expected["binary"]))
+                raise
             say(t("cli.kaggle.prepare.created", ref=expected["binary"]))
             say(t("cli.kaggle.prepare.kernel_remove", slug=slug))
         available["binary"] = expected["binary"]
@@ -1692,6 +1808,16 @@ def _prepare_assets(executable, username, model, available, input_fn,
                 slug = f"{username}/{_preparation_slug(asset_slug)}"
                 prior_state = _kernel_state(executable, slug, run_fn, env)
                 if prior_state in {"QUEUED", "RUNNING", "NEW_SCRIPT"}:
+                    # A state is not a promise. This kernel was pushed with its
+                    # own ceiling, so an age past that ceiling proves it is not
+                    # going to finish, and entering the wait would buy four
+                    # silent hours before failing anyway.
+                    age = _kernel_age_seconds(executable, slug, run_fn, env)
+                    if age is not None and age > PREPARATION_TIMEOUT_SECONDS:
+                        raise RuntimeError(t(
+                            "cli.kaggle.prepare.kernel_zombie", slug=slug,
+                            age=round(age / 3600, 1),
+                            limit=round(PREPARATION_TIMEOUT_SECONDS / 3600, 1)))
                     _wait_for_kernel(executable, slug, run_fn, env)
                     _wait_for_dataset(
                         executable, expected["model"], model["file"],

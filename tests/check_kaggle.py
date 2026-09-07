@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +35,9 @@ os.environ["KAGGLE_KEY"] = "ambient-key"
 
 import cli_kaggle
 import cli
+import cli_i18n
 import config
+import debug
 import setup_ollama
 import units
 
@@ -875,8 +878,152 @@ try:
 finally:
     cli_kaggle.time.monotonic = original_monotonic
     cli_kaggle.time.sleep = original_sleep
-check(delayed == {"asset.bin": 5} and "404 Not Found" in timed_out,
-      "materialization waits through a refusal and timeout reports the last live state")
+check(delayed == {"asset.bin": 5},
+      "materialization waits through a refusal instead of failing on the first one")
+check("owner/missing" in timed_out and "404 Not Found" not in timed_out
+      and "{" not in timed_out,
+      "the timeout names the asset and keeps the raw last state off the screen")
+
+# The defect this covers: a listing that was complete, coherent and stable was
+# treated as silence, so the wait asked the identical question sixty times and
+# then blamed Kaggle for an asset that was published and correct. The listing
+# below can never contain the expected name, and the wait has to say so rather
+# than spend its clock.
+settled = "name,size\nrunner/bin/llama-server,17896\nrunner/other,3\n"
+settled_error = ""
+settled_polls = [0]
+
+
+def settled_run(_command, **_kwargs):
+    settled_polls[0] += 1
+    return SimpleNamespace(returncode=0, stdout=settled, stderr="")
+
+
+debug_capture = io.StringIO()
+original_monotonic = cli_kaggle.time.monotonic
+original_sleep = cli_kaggle.time.sleep
+clock = [0.0]
+try:
+    cli_kaggle.time.monotonic = lambda: clock[0]
+    cli_kaggle.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    debug.enable(True)
+    with redirect_stdout(io.StringIO()), redirect_stderr(debug_capture):
+        try:
+            cli_kaggle._wait_for_dataset(
+                "/fake/kaggle", "owner/asset", "runner.tar.gz", 900,
+                settled_run, {}, timeout=600, poll=10, stable_polls=6)
+        except RuntimeError as error:
+            settled_error = str(error)
+finally:
+    debug.enable(False)
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.time.sleep = original_sleep
+
+check("runner.tar.gz" in settled_error and "owner/asset" in settled_error
+      and settled_polls[0] <= 8 and clock[0] < 600,
+      "a settled listing that cannot hold the target ends the wait instead of the clock")
+check("{" not in settled_error and "llama-server" not in settled_error,
+      "the settled listing itself never reaches the user's screen")
+check("llama-server" in debug_capture.getvalue(),
+      "the listing that explains the failure is there under --debug")
+
+# The inverse, and it is the expensive direction: a tree that is still arriving
+# must not be accepted, and must not be cut short either. Each poll answers
+# differently, so nothing is settled and the wait keeps its clock.
+growing_polls = [0]
+
+
+def growing_run(_command, **_kwargs):
+    # One more part every poll, so no two answers are alike and the listing is
+    # never at rest. This is the publication that is genuinely still arriving,
+    # and cutting it short would turn normal slowness into an error.
+    growing_polls[0] += 1
+    rows = "".join(f"runner/part-{index},{index + 1}\n"
+                   for index in range(growing_polls[0]))
+    return SimpleNamespace(returncode=0, stdout="name,size\n" + rows, stderr="")
+
+
+growing_error = ""
+original_monotonic = cli_kaggle.time.monotonic
+original_sleep = cli_kaggle.time.sleep
+clock = [0.0]
+try:
+    cli_kaggle.time.monotonic = lambda: clock[0]
+    cli_kaggle.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    with redirect_stdout(io.StringIO()):
+        try:
+            cli_kaggle._wait_for_dataset(
+                "/fake/kaggle", "owner/asset", "runner.tar.gz", 900,
+                growing_run, {}, timeout=100, poll=10, stable_polls=6,
+                accept=lambda files: cli_kaggle._runtime_tree_present(
+                    files, "runner"))
+        except RuntimeError as error:
+            growing_error = str(error)
+finally:
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.time.sleep = original_sleep
+
+check(growing_error and "owner/asset" in growing_error and clock[0] >= 100
+      and growing_polls[0] >= 6,
+      "a listing still arriving is never cut short, and it is still refused at the end")
+check("{" not in growing_error and "runner/part-" not in growing_error,
+      "a timeout that did see a listing still keeps it off the screen")
+
+# And the completion it is waiting for is still accepted through the open tree,
+# which is the shape Kaggle actually exposes after it extracts the archive.
+complete_tree = ("name,size\nrunner/bin/llama-server,17896\n"
+                 "runner/cloudflared-linux-amd64,39763452\n"
+                 "runner/bin/libggml-cuda.so,42\n"
+                 "runner/lib/libcudart.so.12,7\n")
+with redirect_stdout(io.StringIO()):
+    accepted_tree = cli_kaggle._wait_for_dataset(
+        "/fake/kaggle", "owner/asset", "runner.tar.gz", 900,
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout=complete_tree, stderr=""),
+        {}, timeout=100, poll=10,
+        accept=lambda files: cli_kaggle._runtime_tree_present(files, "runner"))
+check(accepted_tree.get("runner/bin/llama-server") == 17896,
+      "the open tree Kaggle leaves behind is still accepted as ready")
+
+# Every asset each of the four components can be missing from, one at a time.
+# This is the direction that costs GPU quota when it is wrong, so it is checked
+# component by component rather than once.
+required = {
+    "runner/bin/llama-server": 17896,
+    "runner/cloudflared-linux-amd64": 39763452,
+    "runner/bin/libggml-cuda.so": 42,
+    "runner/lib/libcudart.so.12": 7,
+}
+refused_each = []
+for absent in required:
+    partial = {name: size for name, size in required.items() if name != absent}
+    refused_each.append(not cli_kaggle._runtime_tree_present(partial, "runner"))
+    emptied = dict(required)
+    emptied[absent] = 0
+    refused_each.append(not cli_kaggle._runtime_tree_present(emptied, "runner"))
+check(all(refused_each) and cli_kaggle._runtime_tree_present(required, "runner"),
+      "a runtime missing or emptying any one of its four parts is still refused")
+
+# A kernel's state is not a promise. One that has been RUNNING for longer than
+# the ceiling it was pushed with is stuck, and entering the wait buys four
+# silent hours before failing anyway.
+age_row = ("ref,title,author,lastRunTime,totalVotes\n"
+           "owner/isaacli-stuck,isaacli stuck,W,2026-09-06 23:09:00.100000,0\n")
+measured_age = cli_kaggle._kernel_age_seconds(
+    "/fake/kaggle", "owner/isaacli-stuck",
+    lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=age_row, stderr=""),
+    {}, now=datetime(2026, 9, 8, 1, 9, 0, tzinfo=timezone.utc))
+check(abs(measured_age - 26 * 60 * 60) < 1,
+      "the kernel's age is read from lastRunTime, as UTC, in seconds")
+
+missing_age = cli_kaggle._kernel_age_seconds(
+    "/fake/kaggle", "owner/isaacli-absent",
+    lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=age_row, stderr=""), {})
+unlisted_age = cli_kaggle._kernel_age_seconds(
+    "/fake/kaggle", "owner/isaacli-stuck",
+    lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="", stderr="boom"), {})
+check(missing_age is None and unlisted_age is None,
+      "an age that cannot be established says so instead of inventing a number")
 divergent = ""
 try:
     cli_kaggle._verify_asset_dataset(
@@ -1022,6 +1169,87 @@ check(len(runtime_pages) == 2
 check(not cli_kaggle._push_succeeded(SimpleNamespace(
           returncode=0, stdout="could not be added to the kernel", stderr="")),
       "a zero-exit push that refuses a dataset source is still a failure")
+
+# Half an hour of compiling lands in the account before the wait even starts.
+# When something after that fails, a message that does not name what was
+# published reads as work to redo, and that is how a finished runtime got
+# thrown away. The dataset here lists a tree that is real but incomplete, so
+# publication succeeded and the wait cannot.
+def orphan_runtime_run(command, **_kwargs):
+    text = " ".join(str(part) for part in command)
+    if "kernels status" in text:
+        return SimpleNamespace(
+            returncode=0, stdout="KernelWorkerStatus.COMPLETE", stderr="")
+    if "kernels output" in text:
+        target = Path(command[command.index("-p") + 1])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{runtime_root}.tar.gz").write_bytes(b"archive")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "datasets files" in text:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"name,size\n{runtime_root}/bin/llama-server,17896\n",
+            stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+orphan_screen = io.StringIO()
+orphan_error = ""
+prepare_monotonic = cli_kaggle.time.monotonic
+prepare_sleep = cli_kaggle.time.sleep
+orphan_clock = [0.0]
+try:
+    cli_kaggle.time.monotonic = lambda: orphan_clock[0]
+    cli_kaggle.time.sleep = lambda seconds: orphan_clock.__setitem__(
+        0, orphan_clock[0] + seconds)
+    with redirect_stdout(orphan_screen):
+        cli_kaggle._prepare_assets(
+            "/fake/kaggle", "owner",
+            {"cuda_arch": "75", "alias": "qwen38-27b",
+             "file": "weights.gguf", "model_bytes": 5, "name": "model"},
+            {"model": "owner/isaacli-model-qwen38-27b"},
+            lambda _prompt: "n", orphan_runtime_run, {})
+except RuntimeError as error:
+    orphan_error = str(error)
+finally:
+    cli_kaggle.time.monotonic = prepare_monotonic
+    cli_kaggle.time.sleep = prepare_sleep
+
+# Compared against the rendered catalogue sentence, not against the ref: the
+# live progress line carries the ref too, so asserting the ref alone passed
+# with the sentence deleted.
+orphan_sentence = cli_i18n.t(
+    "cli.kaggle.prepare.published_anyway",
+    ref="owner/isaacli-llama-cuda-sm75-b10502")
+check(bool(orphan_error)
+      and orphan_sentence.split(".")[0] in orphan_screen.getvalue()
+      and orphan_clock[0] < cli_kaggle.DATASET_READY_TIMEOUT_SECONDS,
+      "a failure after publishing names what is already in the account, and fails early")
+check("{" not in orphan_error and "llama-server" not in orphan_error,
+      "that failure names the asset rather than reciting the listing")
+
+# Coverage, which is the thing that was missing when this defect shipped: the
+# archive question was taught to one of the two places that ask it. Every
+# listing of a remote asset has to come from `_dataset_files`, and every
+# judgement about whether a runtime is complete from `_runtime_tree_present`,
+# so teaching one of them cannot leave a sibling behind.
+kaggle_tree = ast.parse((HERE.parent / "tool_harness" / "cli_kaggle.py").read_text(
+    encoding="utf-8"))
+listing_callers = set()
+tree_callers = set()
+for node in ast.walk(kaggle_tree):
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        continue
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+            if inner.func.id == "_dataset_files":
+                listing_callers.add(node.name)
+            if inner.func.id == "_runtime_tree_present":
+                tree_callers.add(node.name)
+check(listing_callers == {"_wait_for_dataset", "_verify_asset_dataset"},
+      f"every remote asset listing goes through one function: {sorted(listing_callers)}")
+check(tree_callers == {"_verify_asset_dataset", "_prepare_assets"},
+      f"what counts as a complete runtime is decided in one place: {sorted(tree_callers)}")
 
 owned_sources = [HERE.parent / "tool_harness", HERE]
 forbidden_hits = []
