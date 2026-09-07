@@ -540,6 +540,13 @@ check(compile(gpu_source, str(gpu_code), "exec") is not None,
 # to first byte while the server behind it answered in 0.874 s, and the reason
 # would have been in this file. Kept under /kaggle/working so `kernels output`
 # returns it, and never printed: the screen somebody is watching is for the URL.
+# The model load is the first thing llama-server prints and the first thing
+# Kaggle's retention drops, and it carries the one line that says how many
+# layers reached the cards. Inferring that from nvidia-smi is what the last
+# measurement had to do, because the log no longer held it.
+check("/kaggle/working/llama-server.log" in gpu_source,
+      "the GPU kernel keeps the whole server log, including the model load")
+
 check("/kaggle/working/cloudflared.log" in gpu_source
       and "list(tunnel.stdout)" not in gpu_source,
       "the GPU kernel keeps what cloudflared says instead of discarding it")

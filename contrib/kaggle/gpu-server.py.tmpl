@@ -208,11 +208,32 @@ def watch_server_log(stream):
     the session did, and Kaggle keeps only a few dozen records of it, so
     swallowing lines here would cost the next investigation its evidence.
     """
-    for line in stream:
-        if "request: " in line:
-            with last_request_lock:
-                last_request[0] = time.monotonic()
-        print(line, end="", flush=True)
+    # Also kept on disk, because the screen is not storage. Kaggle retains only
+    # the last few dozen records of a kernel's output, and what falls off the
+    # front is the model load, which is where llama.cpp says
+    # `offloaded N/N layers to GPU`. That line has never been read in a Kaggle
+    # run of this program: a search for "offload" in the log of the 2026-08-20
+    # measurement matched nothing, and the conclusion that the model was
+    # entirely on the cards was reached by inference from nvidia-smi instead.
+    # /kaggle/working survives the session and `kernels output` returns it.
+    log_path = Path("/kaggle/working/llama-server.log")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sink = log_path.open("a", encoding="utf-8")
+    except OSError:
+        sink = None
+    try:
+        for line in stream:
+            if "request: " in line:
+                with last_request_lock:
+                    last_request[0] = time.monotonic()
+            if sink is not None:
+                sink.write(line)
+                sink.flush()
+            print(line, end="", flush=True)
+    finally:
+        if sink is not None:
+            sink.close()
 
 
 # A pipe turns llama-server's own C stdout from line buffered into block
