@@ -2749,6 +2749,75 @@ missing_targets = sorted(
 check(not missing_targets,
       f"every local link in the READMEs resolves: {missing_targets}")
 
+# The system prompt is a contract with the model, and it is the one contract
+# nothing reads back. That is how `graphify` survived longest: six lines telling
+# the model to use a program that was never installed, never detected, never on
+# a screen and never in a document. Whatever the prompt names has to have a way
+# of arriving, and these are the three ways anything can arrive.
+import agent as agent_module
+import cli_sessions as sessions_module
+import execution as execution_module
+import tools as tools_module
+
+system_prompt = (agent_module.TOOLS_KNOWLEDGE + "\n"
+                 + sessions_module.CLI_KNOWLEDGE)
+offered_tools = {entry["function"]["name"] for entry in tools_module.SCHEMA}
+
+# Only names shaped like a tool, so ordinary prose can never be mistaken for one.
+named_tools = {word for word in re.findall(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b",
+                                           system_prompt)}
+# Words the prompt uses about the machine rather than about a tool it offers.
+not_tools = {"working_directory", "exit_code"}
+phantom_tools = sorted(named_tools - offered_tools - not_tools)
+check(not phantom_tools,
+      f"every tool the system prompt names is one the program offers: {phantom_tools}")
+
+# Backticked commands are the prompt telling the model what to type. Each first
+# word is either allowlisted, or the prompt itself has to say it needs approval.
+quoted = re.findall(r"`([^`\n]+)`", system_prompt)
+# The prompt also backticks the shell constructs it forbids, and most of them
+# are punctuation that never looked like a program. `cd` is the one that does,
+# and reading it as a command the prompt recommends inverts the sentence it
+# comes from.
+FORBIDDEN_SHELL = {"cd"}
+quoted_programs = {parts[0] for item in quoted
+                   if (parts := item.split()) and parts[0].isalnum()
+                   and parts[0] not in FORBIDDEN_SHELL}
+# Named here rather than sniffed out of the prose. The first version of this
+# asked whether the word "approval" appeared anywhere in the prompt, which it
+# always does, so the check flagged nothing and passed while proving nothing.
+# `rm` is in the prompt on purpose, as the worked example of a command that
+# goes through the user instead of through the allowlist.
+NEEDS_APPROVAL = {"rm"}
+unbacked_programs = sorted(
+    name for name in quoted_programs
+    if name not in execution_module.ALLOWED and name not in offered_tools
+    and name not in NEEDS_APPROVAL)
+check(not unbacked_programs,
+      f"a program the prompt names either runs unasked or is the approval "
+      f"example: {unbacked_programs}")
+
+# The prompt lists six gh commands and several git ones by name. A name here
+# that the allowlist does not carry is a promise the sandbox will refuse.
+#
+# Read from the backticked spans only, not from the prose. The prompt also
+# discusses what gh does ("if gh reports missing authentication"), and a scan
+# loose enough to catch that reported `gh reports missing` as a command. The
+# rule was right and the ruler was wrong, so the ruler is what changed: a
+# command the prompt tells the model to type is one it shows in backticks.
+named_gh = {(match[0], match[1]) for item in quoted for match in
+            re.findall(r"^gh (\w+) (\w+)", item)}
+stray_gh = sorted(pair for pair in named_gh
+                  if pair not in execution_module.GH_ALLOWED)
+check(not stray_gh,
+      f"every `gh a b` the prompt names runs without asking: {stray_gh}")
+
+named_git = set(re.findall(r"\bgit (\w+)\b", system_prompt))
+stray_git = sorted(named_git - execution_module.GIT_ALLOWED)
+check(not stray_git,
+      f"every git subcommand the prompt names is allowlisted: {stray_git}")
+
+
 print()
 # The gate belongs at the end of the file, not in the middle of it. It used to
 # sit above the README checks, so those printed [FAILED] and the file still
