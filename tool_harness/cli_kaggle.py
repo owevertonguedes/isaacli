@@ -384,12 +384,14 @@ def login_account(executable, config_file=None, run_fn=subprocess.run,
 
 def register_api_key_file(source, config_file=None, executable=None,
                           run_fn=subprocess.run):
-    """Register an account from whatever kaggle.com/settings handed the user.
+    """Register an account from whatever credential the user actually has.
 
-    That is either the kaggle.json file, which carries the username with it, or
-    a bare access token, which does not have to: the CLI introspects the token
-    against Kaggle and answers with the account it belongs to, so the name is
-    read back rather than typed, exactly as it is after a browser sign-in.
+    Three shapes reach this, and they are not interchangeable. A legacy
+    kaggle.json carries the username with it. A bare access token does not: the
+    CLI introspects it against Kaggle and answers with the account it belongs
+    to, so the name is read back rather than typed. And a credentials.json,
+    which is what `kaggle auth login` leaves behind and the only credential some
+    machines still have, is handed to the CLI whole.
     """
     text = str(source).strip()
     path = Path(text).expanduser()
@@ -398,17 +400,75 @@ def register_api_key_file(source, config_file=None, executable=None,
             text = path.read_text(encoding="utf-8").strip()
     except OSError:
         debug.swallowed("cli_kaggle.register_api_key_file read")
+    payload = None
     try:
         payload = json.loads(text)
-        return register_account(
-            payload["username"], {"key": payload["key"]}, config_file)
-    except (TypeError, ValueError, KeyError) as error:
-        debug.note("cli_kaggle.register_api_key_file not a kaggle.json", error)
+    except ValueError as error:
+        debug.note("cli_kaggle.register_api_key_file not json", error)
+    if isinstance(payload, dict):
+        if payload.get("username") and payload.get("key"):
+            return register_account(
+                payload["username"], {"key": payload["key"]}, config_file)
+        if payload.get("refresh_token"):
+            if executable is None:
+                raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid"))
+            return _register_credentials_file(
+                text, executable, config_file, run_fn)
+        debug.note("cli_kaggle.register_api_key_file json without a credential",
+                   sorted(payload))
     if not text or any(character.isspace() for character in text):
         raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid"))
     if executable is None:
         raise RuntimeError(t("cli.kaggle.accounts.api_key_invalid"))
     return _register_bare_token(text, executable, config_file, run_fn)
+
+
+def _register_credentials_file(text, executable, config_file=None,
+                               run_fn=subprocess.run):
+    """File a credentials.json whole, the way a browser sign-in leaves it.
+
+    The short path would be to pull `access_token` out of this file, and it is
+    wrong. On the machine that made this necessary the embedded access token had
+    expired eight days earlier and the CLI still authenticated, because what
+    authenticates is the `refresh_token`, which mints a new one. Extracting the
+    field would register an account with a credential that is already dead, and
+    the setup would report success for something that fails on first use, which
+    is worse than today's refusal.
+
+    So this copies the file and lets the SDK own its own format, the same
+    argument `_account_environment` makes for a browser login. The account is
+    marked `browser_login` because that is exactly what the folder holds: a
+    credential the Kaggle CLI wrote and keeps refreshing.
+    """
+    root = _accounts_root(config_file)
+    root.mkdir(parents=True, exist_ok=True)
+    pending = Path(tempfile.mkdtemp(prefix="pending-", dir=str(root)))
+    pending.chmod(0o700)
+    environment = _isolated_environment(pending)
+    credentials_path = pending / ".kaggle" / "credentials.json"
+    credentials_path.write_text(text + "\n", encoding="utf-8")
+    credentials_path.chmod(0o600)
+    try:
+        username = _authenticated_username(executable, run_fn, environment)
+    except RuntimeError as error:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise RuntimeError(
+            t("cli.kaggle.accounts.credentials_rejected", error=error))
+    except BaseException:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise
+    target = _account_dir(username, config_file)
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    pending.replace(target)
+    target.chmod(0o700)
+    data = config.load(config_file)
+    state = data.setdefault("kaggle", {})
+    state.setdefault("accounts", {})[username] = {"browser_login": True}
+    state["selected_account"] = username
+    config.save(data, config_file)
+    say(t("cli.kaggle.accounts.login_done", username=username))
+    return username
 
 
 def _register_bare_token(token, executable, config_file=None,

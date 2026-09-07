@@ -1728,6 +1728,108 @@ check(token_refused and not pending_left
       and len(config.load(login_file)["kaggle"]["accounts"]) == len(token_accounts),
       "a token Kaggle does not recognise registers nothing and leaves no folder behind")
 
+# The credential `kaggle auth login` leaves behind is a credentials.json, and on
+# the machine that made this necessary it was the only credential that still
+# authenticated. It has a username and no key, so it used to fall through to the
+# bare-token branch, where its own indentation disqualified it as whitespace.
+credentials_commands = []
+expired_credentials = json.dumps({
+    "refresh_token": "refresh-alive",
+    "access_token": "KGAT_expired",
+    "access_token_expiration": "2026-08-29T04:54:07Z",
+    "username": "creds-user",
+    "scopes": ["resources.admin:*"],
+}, indent=2)
+
+
+def credentials_run(command, check=False, capture_output=False, text=False,
+                    env=None, **kwargs):
+    parts = list(map(str, command))
+    credentials_commands.append((parts, dict(env or {})))
+    if parts[1:3] == ["config", "view"]:
+        stored = Path(env["KAGGLE_CONFIG_DIR"]) / "credentials.json"
+        if not stored.is_file():
+            return SimpleNamespace(returncode=1, stdout="", stderr="no credential")
+        payload = json.loads(stored.read_text(encoding="utf-8"))
+        # The real CLI authenticates on the refresh token and mints a new access
+        # token from it. A copy that carried only the expired access token would
+        # be refused here, which is what makes the naive fix fail this check.
+        if payload.get("refresh_token") != "refresh-alive":
+            return SimpleNamespace(
+                returncode=1, stdout="", stderr="Authentication required")
+        return SimpleNamespace(
+            returncode=0, stdout="- username: creds-user\n", stderr="")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+credentials_path = root / "credentials.json"
+credentials_path.write_text(expired_credentials, encoding="utf-8")
+try:
+    with redirect_stdout(io.StringIO()):
+        registered_credentials = cli_kaggle.register_api_key_file(
+            str(credentials_path), login_file, Path("/fake/kaggle"),
+            credentials_run)
+except Exception as error:
+    # A refusal here is the defect this check exists for, and it has to arrive
+    # at `check` as a value. Letting it propagate would end the file and take
+    # every check below it along, which hides the result instead of showing it.
+    registered_credentials = f"refused: {error!r}"
+credentials_dir = cli_kaggle._account_dir("creds-user", login_file)
+stored_credentials = credentials_dir / ".kaggle" / "credentials.json"
+credentials_accounts = config.load(login_file)["kaggle"]["accounts"]
+check(registered_credentials == "creds-user"
+      and "creds-user" in credentials_accounts
+      and stored_credentials.is_file()
+      and json.loads(stored_credentials.read_text(encoding="utf-8"))
+      == json.loads(expired_credentials),
+      "a credentials.json registers under the account Kaggle names, copied whole")
+
+# This is the check that fails the short fix. Pulling `access_token` out of the
+# file looks like the obvious move and would have registered an account on a
+# credential that expired eight days before it was offered.
+credentials_secrets = json.loads(secrets_file.read_text(encoding="utf-8"))
+check(credentials_accounts.get("creds-user") == {"browser_login": True}
+      and "kaggle:creds-user" not in credentials_secrets
+      and "KGAT_expired" not in login_file.read_text(encoding="utf-8")
+      and "KGAT_expired" not in secrets_file.read_text(encoding="utf-8")
+      and not (credentials_dir / ".kaggle" / "access_token").exists(),
+      "the expired access token inside the file is never promoted to the credential")
+
+check(credentials_dir.is_dir() and stored_credentials.is_file()
+      and credentials_dir.stat().st_mode & 0o077 == 0
+      and stored_credentials.stat().st_mode & 0o077 == 0,
+      "the copied credential is readable by nobody but its owner")
+
+try:
+    credentials_env = cli_kaggle._account_environment("creds-user", login_file)
+except RuntimeError as error:
+    credentials_env = {"HOME": f"unavailable: {error}"}
+check(credentials_env.get("HOME") == str(credentials_dir)
+      and credentials_env.get("KAGGLE_CONFIG_DIR")
+      == str(credentials_dir / ".kaggle")
+      and stored_credentials.is_file()
+      and json.loads(stored_credentials.read_text(encoding="utf-8"))["refresh_token"]
+      == "refresh-alive",
+      "selecting that account points the CLI at the file the CLI itself owns")
+
+credentials_refused = False
+try:
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.register_api_key_file(
+            json.dumps({"refresh_token": "dead", "username": "ghost"}, indent=2),
+            login_file, Path("/fake/kaggle"), credentials_run)
+except Exception as error:
+    # Any exception other than the refusal is itself the defect, so it is
+    # recorded and reported rather than allowed to end the file.
+    credentials_refused = (isinstance(error, RuntimeError)
+                           and "credentials.json" in str(error))
+credentials_pending = [path
+                       for path in cli_kaggle._accounts_root(login_file).iterdir()
+                       if path.name.startswith("pending-")]
+check(credentials_refused and not credentials_pending
+      and "ghost" not in config.load(login_file)["kaggle"]["accounts"],
+      "a credentials.json Kaggle refuses names itself and leaves no folder behind")
+
 # Signing out is local unless revoking was asked for. Revoking cannot be undone
 # from here, so it must never be the thing that happens by default.
 revoke_commands = []
