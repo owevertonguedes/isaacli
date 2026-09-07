@@ -85,7 +85,8 @@ def read_file(path: str, offset: int = 0) -> str:
     p = _safe(path)
     if not p.is_file():
         return f"ERROR: file does not exist: {path}"
-    size = p.stat().st_size
+    stat = p.stat()
+    size = stat.st_size
     cap = context_budget.bytes_for("read")
     try:
         start = max(0, int(offset))
@@ -94,7 +95,12 @@ def read_file(path: str, offset: int = 0) -> str:
     if start >= size and size:
         return (f"ERROR: offset {start} is at or past the end of {path}, "
                 f"which is {size} bytes")
-    spent = _READ_SPENT.get(str(p), 0)
+    # Keyed by the version of the file, not its name: a file that was edited
+    # since it was read is a different file, and refusing to show the model the
+    # result of its own change would be the ceiling firing at the one moment
+    # re-reading is exactly the right thing to do.
+    ledger_key = (str(p), size, stat.st_mtime_ns)
+    spent = _READ_SPENT.get(ledger_key, 0)
     room = _read_session_budget() - spent
     if room <= 0:
         return (f"ERROR: this session has already read {spent} bytes of {path}, "
@@ -102,12 +108,12 @@ def read_file(path: str, offset: int = 0) -> str:
                 f"served; work from what you already have, or ask the user.")
     window = min(cap, room)
     if start == 0 and size <= window:
-        _READ_SPENT[str(p)] = spent + size
+        _READ_SPENT[ledger_key] = spent + size
         return p.read_text()
     with p.open("rb") as f:
         f.seek(start)
         chunk = f.read(window)
-    _READ_SPENT[str(p)] = spent + len(chunk)
+    _READ_SPENT[ledger_key] = spent + len(chunk)
     stop = start + len(chunk)
     text = chunk.decode("utf-8", errors="ignore")
     # A cut that does not say where it landed is a wall: it was read twice and
