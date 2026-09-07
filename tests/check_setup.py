@@ -39,6 +39,69 @@ def engine_answer(key, which=lambda _name: "/usr/bin/ollama"):
                     if name == key))
 
 
+def language_answer(code):
+    """The language screen's position for one language, resolved by its code.
+
+    Same argument as engine_answer: the screen is built from a mapping, and a
+    check that answers it with a fixed number would keep passing while setting
+    up in another language the day a third one is added, first or in the middle.
+    """
+    codes = list(setup_ollama.SUPPORTED_LANGUAGES)
+    if code not in codes:
+        raise AssertionError(f"no {code} entry in the language screen")
+    return str(codes.index(code) + 1)
+
+
+def task_answer(value):
+    """The onboarding task screen's position, by task name or None to skip.
+
+    The skip entry is appended after the tasks, so its number moves every time a
+    task is added. Answering it by name is what keeps a check that means "skip"
+    from quietly starting to mean "explain code".
+    """
+    values = list(setup_ollama.TASK_VALUES)
+    if value is None:
+        return str(len(values) + 1)
+    if value not in values:
+        raise AssertionError(f"no {value} entry in the task screen")
+    return str(values.index(value) + 1)
+
+
+def thinking_answer(level):
+    """The reasoning screen's position for one level, or `back`.
+
+    Four fixed entries today, and the back row is the one that moves the day a
+    level is added, which is exactly the row a check uses to prove going back.
+    Derived from the same list the screen returns through.
+    """
+    levels = ["low", "medium", "high", "__context__"]
+    if level == "back":
+        level = "__context__"
+    if level not in levels:
+        raise AssertionError(f"no {level} entry in the reasoning screen")
+    return str(levels.index(level) + 1)
+
+
+def context_answer(limit, key):
+    """The context screen's position for `manual` or `back`, under one ceiling.
+
+    This screen is the worst of them to answer by number, because its length is
+    computed from the ceiling: the rungs that do not fit are not drawn, and a
+    ceiling that is not itself a rung adds one. So the number that means "type
+    it myself" under one card means a rung under another. Rebuilt here from the
+    same two constants the screen builds from.
+    """
+    levels = [level for level in setup_ollama.CONTEXT_LEVELS
+              if not limit or level[1] <= limit]
+    if limit and limit not in {value for _, value in levels}:
+        levels.append(("context.maximum", limit))
+    if key == "manual":
+        return str(len(levels) + 1)
+    if key == "back":
+        return str(len(levels) + 2)
+    raise AssertionError(f"no {key} entry in the context screen")
+
+
 def source_answer(key, config_file, tr=None, which=lambda _name: "/usr/bin/ollama"):
     """The /model source screen's position for one entry, resolved by name.
 
@@ -123,7 +186,7 @@ try:
     out = io.StringIO()
     with redirect_stdout(out):
         code = setup_ollama.run_setup(
-            answers("1", "4", engine_answer("ollama"), "1", "6", "12K", "1"), config_file=config_file,
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1", "6", "12K", "1"), config_file=config_file,
         )
     data = json.loads(config_file.read_text())
     qwen_profile = data["profiles"][data["default_profile"]]
@@ -215,7 +278,7 @@ try:
 
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", engine_answer("ollama"), "5", "3", "3"), config_file=config_file,
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "5", "3", "3"), config_file=config_file,
         )
     data = config.load(config_file)
     gpt_profile = data["profiles"][data["default_profile"]]
@@ -233,7 +296,7 @@ try:
         "model_info": {"qwen3.context_length": 262144},
     }
     with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers("1", "4", engine_answer("ollama"), "1"), config_file=config_file)
+        code = setup_ollama.run_setup(answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1"), config_file=config_file)
     check(code == 1 and config_file.read_text() == before_failure,
           "a model without tools is refused without touching the previous profile")
     client.infos[qwen36] = original_qwen_info
@@ -267,7 +330,7 @@ try:
     if bare_ollama is not None:
         with redirect_stdout(printed):
             code = setup_ollama.run_setup(
-                answers("1", "4", engine_answer("ollama", which=lambda _name: None)),
+                answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama", which=lambda _name: None)),
                 config_file=missing_config,
             )
     instructions = printed.getvalue()
@@ -411,7 +474,7 @@ try:
     api_config = root / "api-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", engine_answer("api"), "Groq", "https://api.groq.com/openai/v1",
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("api"), "Groq", "https://api.groq.com/openai/v1",
                     "openai/gpt-oss-20b", "test-secret", "3"),
             config_file=api_config,
         )
@@ -456,7 +519,8 @@ try:
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             answers(
-                "1", "4", engine_answer("api"), "Server", "https://api.test/v1/chat/completions",
+                language_answer("pt-BR"), task_answer(None),
+                engine_answer("api"), "Server", "https://api.test/v1/chat/completions",
                 "test-model", "wrong-key", "1",
                 "Server", "https://api.test/v1", "test-model", "right-key", "1",
             ),
@@ -473,7 +537,7 @@ try:
     back_config = root / "back-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers("1", "4", engine_answer("ollama"), "8", "4", engine_answer("api"), "Server", "https://api.test/v1",
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "8", "4", engine_answer("api"), "Server", "https://api.test/v1",
                     "test-model", "key", "1"),
             config_file=back_config,
         )
@@ -588,15 +652,16 @@ try:
         "it detects the nominal context and ignores original_context_length",
     )
     check(setup_ollama.parse_context("16K") == 16384, "the human input 16K becomes tokens")
-    context_answers = answers("6", "4K", "12K")
+    context_answers = answers(context_answer(262144, "manual"), "4K", "12K")
     with redirect_stdout(io.StringIO()):
         context = setup_ollama._choose_context(262144, context_answers, pt)
     check(context == 12288, "the manual context refuses 4K and accepts 12K")
     with redirect_stdout(io.StringIO()):
-        back = setup_ollama._choose_context(262144, answers("7"), pt)
+        back = setup_ollama._choose_context(
+            262144, answers(context_answer(262144, "back")), pt)
         back_thinking = setup_ollama._choose_thinking(
             dict(setup_ollama._model_item("test"), thinking_kind="levels"),
-            answers("4"), pt,
+            answers(thinking_answer("back")), pt,
         )
     check(back is None and back_thinking == "__context__",
           "the context and reasoning menus allow going back")
@@ -701,7 +766,7 @@ try:
         task_out = io.StringIO()
         with redirect_stdout(task_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"), config_file=task_config,
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"), config_file=task_config,
             )
         task_data = config.load(task_config)
         screen = task_out.getvalue()
@@ -730,7 +795,7 @@ try:
         skip_out = io.StringIO()
         with redirect_stdout(skip_out):
             code = setup_ollama.run_setup(
-                answers("1", "4", engine_answer("ollama"), "1", "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1", "6", "12K", "1"),
                 config_file=skip_config,
             )
         skip_data = config.load(skip_config)
@@ -756,7 +821,8 @@ try:
             )
         finally:
             setup_ollama._select = original_select
-        check(chosen_task == "fix_bug" and preselected == [0],
+        check(chosen_task == "fix_bug"
+              and preselected == [setup_ollama.TASK_VALUES.index("fix_bug")],
               "running the onboarding again defaults to the task already stored")
 
         # No GPU is a normal machine. Reporting "does not fit" against zero VRAM
@@ -769,7 +835,7 @@ try:
         headless_out = io.StringIO()
         with redirect_stdout(headless_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"),
                 config_file=root / "headless-config.json",
             )
         headless = headless_out.getvalue()
@@ -800,7 +866,7 @@ try:
         broken_out = io.StringIO()
         with redirect_stdout(broken_out):
             code = setup_ollama.run_setup(
-                answers("1", "1", engine_answer("ollama"), "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"),
                 config_file=root / "broken-detect-config.json",
             )
         check(code == 0 and "Traceback" not in broken_out.getvalue()
