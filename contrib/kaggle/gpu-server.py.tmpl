@@ -257,7 +257,36 @@ for line in tunnel.stdout:
         break
 if not url:
     raise RuntimeError("cloudflared did not publish a tunnel URL")
-threading.Thread(target=lambda: list(tunnel.stdout), daemon=True).start()
+
+# Everything cloudflared says after it publishes the URL, kept instead of
+# dropped. The pipe still has to be drained or the process blocks on a full
+# buffer, which is what the discard was for, but draining it into nothing threw
+# away the only account of what the transport did: QUIC failing, a retry, a
+# datacenter change. A session was measured at 39 s to first byte while the
+# server behind it answered the same call in 0.874 s, and this file is where the
+# reason for that would have been. /kaggle/working is what `kernels output`
+# returns, so it survives the session; it is never printed, because a screen
+# somebody is watching for a URL is not the place for it.
+TUNNEL_LOG = Path("/kaggle/working/cloudflared.log")
+
+
+def keep_tunnel_log(stream, path):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as sink:
+            for entry in stream:
+                sink.write(entry)
+                sink.flush()
+    except OSError:
+        # The drain is what keeps cloudflared from blocking, so it outlives any
+        # failure to write: losing the log costs diagnosis, losing the drain
+        # costs the session.
+        for _entry in stream:
+            pass
+
+
+threading.Thread(target=keep_tunnel_log, args=(tunnel.stdout, TUNNEL_LOG),
+                 daemon=True).start()
 
 
 def serving():

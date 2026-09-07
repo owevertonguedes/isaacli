@@ -2740,6 +2740,14 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
         # a kernel that was already running.
         say(t("cli.kaggle.session.silent", slug=record["slug"],
               seconds=ENDPOINT_PROBE_TIMEOUT_SECONDS), "warn")
+        # The kernel keeps everything cloudflared said in a file of its own, and
+        # a silent endpoint is exactly when somebody wants it. This cannot fetch
+        # it, because `kernels output` answers empty while a kernel is still
+        # running, so what goes out is where it is and how to get it once the
+        # session ends.
+        debug.note("cli_kaggle.ensure_profile_session tunnel log",
+                   f"kaggle kernels output {record['slug']} -p . "
+                   f"brings cloudflared.log once that kernel finishes")
         return None
     if verdict:
         if hold_profile_session(profile_name, config_file, pid) is None:

@@ -534,6 +534,28 @@ check("/v1/models" in gpu_source
       "the GPU template probes the server before publishing the tunnel URL")
 check(compile(gpu_source, str(gpu_code), "exec") is not None,
       "the rendered GPU kernel is valid Python before it ever reaches Kaggle")
+
+# What cloudflared says after publishing the URL is the only account of what the
+# transport did, and it used to be drained into nothing. A session measured 39 s
+# to first byte while the server behind it answered in 0.874 s, and the reason
+# would have been in this file. Kept under /kaggle/working so `kernels output`
+# returns it, and never printed: the screen somebody is watching is for the URL.
+check("/kaggle/working/cloudflared.log" in gpu_source
+      and "list(tunnel.stdout)" not in gpu_source,
+      "the GPU kernel keeps what cloudflared says instead of discarding it")
+check(gpu_source.count("for entry in stream") == 1
+      and "for _entry in stream" in gpu_source,
+      "the pipe is still drained even if the log cannot be written, because "
+      "losing the drain costs the session and losing the log costs diagnosis")
+# Bounded with find() rather than index(): with the drain-and-discard planted
+# back, the function is not there and index() raises, which would end this file
+# and take every check below it along. A missing function fails this check by
+# reporting, which is the same verdict without the collateral.
+_keeper = gpu_source.find("def keep_tunnel_log")
+_after = gpu_source.find("def serving")
+check(_keeper != -1 and _after > _keeper
+      and "print" not in gpu_source[_keeper:_after],
+      "the tunnel log never reaches the screen the user is watching for a URL")
 check(compile(t4_source, str(t4_code), "exec") is not None,
       "the rendered T4 kernel is valid Python before it ever reaches Kaggle")
 
