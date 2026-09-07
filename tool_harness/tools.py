@@ -40,6 +40,25 @@ MAX_DIFF_INPUT_BYTES = 1_000_000
 MAX_READ_BYTES = context_budget.CEILINGS["read"]
 
 
+# Bytes already served per file in the request being answered. Paging exists so
+# a big file can be reached, not so it can be poured in one chunk per step: the
+# dense model of task 036 burned 45 steps doing exactly that with `dd`.
+_READ_SPENT = {}
+
+
+def _read_session_budget():
+    """All one file may cost across a request, however many chunks it takes.
+
+    The window is the honest stopping point: past it there is nothing more of
+    that file the model could be holding anyway, so serving more is spending
+    steps to push earlier bytes out of the same window.
+    """
+    window = context_budget.window()
+    if not window:
+        return MAX_READ_BYTES
+    return int(window * context_budget.CHARS_PER_TOKEN)
+
+
 def set_read_budget(num_ctx):
     """Tie every input cap to the window the endpoint was actually started with.
 
@@ -48,6 +67,9 @@ def set_read_budget(num_ctx):
     size, which is how one call of each came to 96.790 tokens.
     """
     context_budget.set_window(num_ctx)
+    # A new request starts the paging ledger over: the ceiling bounds one
+    # request's steps, which is where reading the same file to death happens.
+    _READ_SPENT.clear()
     return context_budget.bytes_for("read")
 
 
@@ -59,19 +81,49 @@ def _safe(path: str) -> Path:
     return p
 
 
-def read_file(path: str) -> str:
+def read_file(path: str, offset: int = 0) -> str:
     p = _safe(path)
     if not p.is_file():
         return f"ERROR: file does not exist: {path}"
     size = p.stat().st_size
     cap = context_budget.bytes_for("read")
-    if size <= cap:
+    try:
+        start = max(0, int(offset))
+    except (TypeError, ValueError):
+        return (f"ERROR: offset must be a whole number of bytes, got {offset!r}")
+    if start >= size and size:
+        return (f"ERROR: offset {start} is at or past the end of {path}, "
+                f"which is {size} bytes")
+    spent = _READ_SPENT.get(str(p), 0)
+    room = _read_session_budget() - spent
+    if room <= 0:
+        return (f"ERROR: this session has already read {spent} bytes of {path}, "
+                f"which is the ceiling for one file. Nothing more of it will be "
+                f"served; work from what you already have, or ask the user.")
+    window = min(cap, room)
+    if start == 0 and size <= window:
+        _READ_SPENT[str(p)] = spent + size
         return p.read_text()
     with p.open("rb") as f:
-        head = f.read(cap)
-    return (head.decode("utf-8", errors="ignore")
-            + f"\n\n... FILE TRUNCATED BY ISAACLI LIMITS: showing the first "
-              f"{cap} of {size} bytes ...")
+        f.seek(start)
+        chunk = f.read(window)
+    _READ_SPENT[str(p)] = spent + len(chunk)
+    stop = start + len(chunk)
+    text = chunk.decode("utf-8", errors="ignore")
+    # A cut that does not say where it landed is a wall: it was read twice and
+    # then worked around with an external pager, three steps for one file.
+    # Lines inside this chunk, not line numbers in the file: numbering from the
+    # file would mean re-reading everything before the offset, and a number that
+    # looks absolute but restarts at each chunk is worse than no number.
+    lines = text.count("\n") + 1
+    header = (f"... SHOWING BYTES {start}-{stop} OF {size} IN {path}, "
+              f"{lines} lines in this chunk ...\n")
+    if stop >= size:
+        return header + text + f"\n\n... END OF {path} ..."
+    return (header + text
+            + f"\n\n... CUT AT BYTE {stop} OF {size}. To continue, call "
+              f"read_file again with path={path!r} and offset={stop}. No shell "
+              f"pager is needed and none is allowed ...")
 
 
 def write_file(path: str, content: str) -> str:
@@ -448,11 +500,21 @@ SCHEMA = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a text file and return its content as a string.",
+            "description": (
+                "Read a text file and return its content as a string. A file "
+                "larger than the per-call limit comes back cut, saying at which "
+                "byte it stopped; call this again with that byte as `offset` to "
+                "read on. Never use a shell pager for this."),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "relative path of the file"}
+                    "path": {"type": "string", "description": "relative path of the file"},
+                    "offset": {
+                        "type": "integer",
+                        "description": (
+                            "byte to start reading from, for continuing a cut "
+                            "read; omit or 0 to start at the beginning"),
+                    },
                 },
                 "required": ["path"],
             },

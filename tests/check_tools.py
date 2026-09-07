@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Cheap tests for the local tools."""
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -120,10 +121,13 @@ with tempfile.TemporaryDirectory() as tmp:
         partial = tools.read_file("long.txt")
     finally:
         context_budget.CEILINGS["read"] = original_read_cap
-    check(partial.startswith("y" * 100) and "y" * 101 not in partial
-          and "FILE TRUNCATED BY ISAACLI LIMITS" in partial
-          and "of 900 bytes" in partial,
+    check("y" * 100 in partial and "y" * 101 not in partial
+          and "OF 900" in partial and "CUT AT BYTE 100 OF 900" in partial,
           "read_file stops at the cap and says so instead of loading the whole file")
+    # A cut that does not say how to go on is the wall that pushed a model into
+    # `sed`, which is not on the allowlist and stopped the session on a prompt.
+    check("offset=100" in partial and "read_file" in partial,
+          "the cut names the next call that continues it, not an external pager")
 
     # --- --debug surfaces what the normal flow absorbs ---------------------
     # By effect: the same call is made twice and only the stderr differs. A
@@ -297,8 +301,17 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         tools.set_read_budget(32_768)
         narrow = tools.read_file("huge.ts")
-        check(len(narrow) < 40_000 and "TRUNCATED" in narrow,
+        check(len(narrow) < 40_000 and "CUT AT BYTE" in narrow,
               "one read cannot swallow a window it was told the size of")
+        # Paging must not become the same overflow one chunk per step.
+        served, guard = 0, 0
+        while "CUT AT BYTE" in narrow and guard < 100:
+            served += 1
+            guard += 1
+            narrow = tools.read_file(
+                "huge.ts", int(re.search(r"offset=(\d+)", narrow).group(1)))
+        check("ceiling for one file" in narrow and served < 20,
+              "paging one file has its own ceiling, and says so on reaching it")
         check(agent.estimate_tokens([{"role": "tool", "content": narrow}])
               < 32_768 * agent.CONTEXT_INPUT_SHARE,
               "what one read returns still leaves the window room to answer")
