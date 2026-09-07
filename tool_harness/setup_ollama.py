@@ -329,7 +329,12 @@ def _task_ruler(task, tr):
 
 def _choose_task(data, input_fn, tr):
     stored = (data.get("onboarding") or {}).get("task")
-    initial = TASK_VALUES.index(stored) if stored in TASK_VALUES else 3
+    # The skip row sits after the tasks, so its index is however many there
+    # are. Written as a literal 3 it was right only while there were exactly
+    # three, and a fourth task would have moved the default highlight onto the
+    # last task instead, silently.
+    initial = (TASK_VALUES.index(stored) if stored in TASK_VALUES
+               else len(TASK_VALUES))
     index = _select(
         tr, tr.t("onboarding.task.title"),
         [tr.t(f"onboarding.task.{value}") for value in TASK_VALUES]
