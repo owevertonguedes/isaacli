@@ -488,6 +488,7 @@
   "cli.kaggle.accounts.forget_local": "Remove it from isaacli only",
   "cli.kaggle.accounts.forget_revoke": "Remove it and revoke the token at Kaggle, which cannot be undone",
   "cli.kaggle.session.gone": "The Kaggle kernel {slug} saved in this profile is no longer serving. Its endpoint and profile were removed, because a tunnel URL never comes back.",
+  "cli.kaggle.session.silent": "The Kaggle kernel {slug} saved in this profile did not answer within {seconds} seconds. It was kept, because a slow tunnel and a finished kernel look the same from here. Run isaacli kaggle --stop if you want the quota to stop.",
   "cli.kaggle.session.relaunch": "Push another kernel now? It takes about five minutes and spends GPU quota. [y/N]: ",
   "cli.kaggle.session.declined": "No kernel was pushed and no quota was spent. Use /kaggle or isaacli kaggle when you want one.",
   "cli.kaggle.session.stopping": "Ending the Kaggle session this program started, kernel {slug}.",

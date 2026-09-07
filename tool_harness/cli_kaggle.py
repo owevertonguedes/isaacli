@@ -10,6 +10,7 @@ import re
 import select
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -2185,8 +2186,16 @@ def _probe_url(base_url):
     return (root or profile_base) + "/props"
 
 
+# A Cloudflare quick tunnel is not a fast route, and on 2026-09-07 every single
+# request through one took 39,3 to 39,9 seconds to first byte, measured against a
+# kernel whose own llama-server answered the same call in 874 ms. A ten second
+# probe called that live kernel dead and deleted the profile serving it.
+ENDPOINT_PROBE_TIMEOUT_SECONDS = 90
+
+
 def _endpoint_answers(profile, secret_path=None,
-                      urlopen_fn=urllib.request.urlopen, timeout=10):
+                      urlopen_fn=urllib.request.urlopen,
+                      timeout=ENDPOINT_PROBE_TIMEOUT_SECONDS):
     """Whether the endpoint a saved profile names is serving this key now.
 
     "The endpoint responds" is not the question. A tunnel that is up answers
@@ -2217,12 +2226,52 @@ def _endpoint_answers(profile, secret_path=None,
         debug.note("cli_kaggle._endpoint_answers status",
                    f"saved endpoint refused with HTTP {error.code}")
     except (urllib.error.URLError, OSError, TimeoutError) as error:
-        # A tunnel that is gone is the answer this function exists to give, so
-        # it is named in one line. A traceback here would be printed on every
-        # beat of the heartbeat that calls it.
+        # A traceback would be printed on every beat of the heartbeat that calls
+        # this, so the cause goes out in one line.
         debug.note("cli_kaggle._endpoint_answers probe",
-                   f"the saved endpoint is not answering: {error}")
+                   f"the saved endpoint did not answer in {timeout}s: {error}")
+        if _is_timeout(error):
+            # Ran out of time is not an answer. A refused connection or a name
+            # that no longer resolves is one, and stays the proof it was.
+            return UNREACHABLE
     return False
+
+
+def _is_timeout(error):
+    """Whether this failure is the clock running out rather than a closed door."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, (TimeoutError, socket.timeout)):
+            return True
+        error = getattr(error, "reason", None)
+        if not isinstance(error, BaseException):
+            return False
+    return False
+
+
+class _Unreachable:
+    """Nothing came back in time, which is not the same as an answer of no.
+
+    False is knowledge: the endpoint replied and it is not serving this key.
+    This is the absence of knowledge, and destroying a saved session on it costs
+    half an hour of somebody's quota to rebuild what was still running.
+
+    It is false in a boolean test on purpose. Every caller that only asks "may I
+    use this endpoint" must keep treating it as no, and only the caller that
+    decides to throw the record away is allowed to tell the two apart.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return "UNREACHABLE"
+
+
+UNREACHABLE = _Unreachable()
 
 
 def _existing_executable(which_fn=shutil.which, home_dir=None):
@@ -2490,7 +2539,15 @@ def ensure_profile_session(profile_name, input_fn=None, config_file=None,
     profile = (config.load(config_file).get("profiles") or {}).get(profile_name)
     if not profile or not profile.get("base_url"):
         return None
-    if _endpoint_answers(profile, _secret_path(config_file), urlopen_fn):
+    verdict = _endpoint_answers(profile, _secret_path(config_file), urlopen_fn)
+    if verdict is UNREACHABLE:
+        # Keep the record. A tunnel that did not answer in time may still be
+        # serving, and forgetting it here is what makes the next launch pay for
+        # a kernel that was already running.
+        say(t("cli.kaggle.session.silent", slug=record["slug"],
+              seconds=ENDPOINT_PROBE_TIMEOUT_SECONDS), "warn")
+        return None
+    if verdict:
         if hold_profile_session(profile_name, config_file, pid) is None:
             # The endpoint answered, and between that answer and this claim the
             # window that owns the record started ending it. Reporting it as

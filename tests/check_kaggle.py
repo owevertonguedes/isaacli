@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import socket
 import threading
 import time
 import urllib.error
@@ -2013,6 +2014,49 @@ check(declined_state == "declined"
       and not (declined_state_data.get("kaggle") or {}).get("kernels")
       and "kaggle-one" not in declined_state_data["profiles"],
       "opening the program never pushes a kernel on its own, and forgets the dead one")
+
+# Measured on 2026-09-07: every request through a Cloudflare quick tunnel took
+# around 39,5 seconds to first byte while the kernel's own server answered the
+# same call in 874 ms. The ten second probe called that live kernel dead and
+# deleted the profile pointing at it, so the running kernel became unreachable
+# while still spending quota.
+def slow_endpoint(_request, timeout=None):
+    raise urllib.error.URLError(socket.timeout("timed out"))
+
+
+silent_file = session_config(root / "session-silent" / "config.json")
+# Recorded rather than refused: a check that raises when the wrong thing happens
+# kills this file and takes every check below it with it, which has already cost
+# four separate runs here.
+silent_prompts = []
+silent_launches = []
+
+
+def record_typing(prompt):
+    silent_prompts.append(prompt)
+    return "n"
+
+
+with redirect_stdout(io.StringIO()) as silent_screen:
+    silent_state = cli_kaggle.ensure_profile_session(
+        "kaggle-one", input_fn=record_typing, config_file=silent_file,
+        urlopen_fn=slow_endpoint,
+        run_kaggle_fn=lambda **kwargs: silent_launches.append(kwargs))
+silent_data = config.load(silent_file)
+check(not silent_prompts and not silent_launches,
+      "a silent endpoint asks for nothing and spends nothing")
+check(silent_state is None
+      and (silent_data.get("kaggle") or {}).get("kernels")
+      and "kaggle-one" in silent_data["profiles"],
+      "an endpoint that ran out of time keeps its record, because that is not an answer")
+check("kaggle-one" not in silent_screen.getvalue()
+      or "isaacli-gpu-1" in silent_screen.getvalue(),
+      "the screen names the kernel it kept rather than announcing it as gone")
+check(cli_kaggle._endpoint_answers(
+          {"base_url": "http://x/v1", "credential": "c"},
+          urlopen_fn=slow_endpoint,
+          secret_path=None) is not cli_kaggle.UNREACHABLE,
+      "a probe with no stored key is still a plain no, not an unknown")
 
 relaunch_file = session_config(root / "session-relaunch" / "config.json")
 relaunched = []
