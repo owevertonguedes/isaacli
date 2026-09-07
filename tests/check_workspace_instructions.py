@@ -58,6 +58,34 @@ with tempfile.TemporaryDirectory() as temp:
           == "cli.workspace.instructions.too_large",
           "one byte above the limit is rejected without truncation")
 
+    # A file over the limit used to mean zero instructions, which is what the
+    # repository this program is written in got: the model worked here knowing
+    # none of the house rules, and the warning was all it ever received.
+    filler = "z" * wi.MAX_INSTRUCTIONS_BYTES
+    agents.write_text(
+        f"## Keep me\nshort rule\n"
+        f"## Too long\n{filler}\n"
+        f"### Exception to Too long\nrare case\n"
+        f"## Also keep me\nanother short rule\n", encoding="utf-8")
+    partial = wi.load_workspace_instructions(workspace)
+    check(partial.warning_key == "cli.workspace.instructions.partial"
+          and partial.warning_wrapper
+          == "cli.workspace.instructions_partial_warning",
+          "an oversized file with sections loads in part, and says so as a note")
+    check("short rule" in partial.prompt
+          and "another short rule" in partial.prompt,
+          "the sections that fit are the ones the model receives")
+    check(filler[:200] not in partial.prompt
+          and "## Too long" in partial.warning_values["omitted"],
+          "the section that does not fit is dropped whole and named on screen")
+    # Half a rule can invert the rule, and so can the exception to a rule whose
+    # prohibition was dropped.
+    check("rare case" not in partial.prompt
+          and "### Exception to Too long" in partial.warning_values["omitted"],
+          "a subsection never survives the heading that qualifies it")
+    check("## Too long" in partial.prompt and "left out" in partial.prompt,
+          "the model is told what is missing instead of reading a silent gap")
+
     agents.write_bytes(b"\xff")
     check(wi.load_workspace_instructions(workspace).warning_key
           == "cli.workspace.instructions.invalid_utf8",

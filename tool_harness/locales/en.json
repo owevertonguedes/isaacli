@@ -124,6 +124,8 @@
   "cli.workspace.not_dir": "workspace is not a directory: {path}",
   "cli.workspace.now": "workspace: {path}",
   "cli.workspace.instructions_warning": "warning: could not load {path}: {reason}",
+  "cli.workspace.instructions_partial_warning": "note: {path} was loaded in part: {reason}",
+  "cli.workspace.instructions.partial": "it is larger than the {limit}-byte limit, so the model received the sections that fit and was told the rest was left out. Omitted: {omitted}",
   "cli.workspace.instructions.read_failed": "read failed: {error}",
   "cli.workspace.instructions.outside": "the resolved path is outside the workspace",
   "cli.workspace.instructions.not_file": "not a regular file",

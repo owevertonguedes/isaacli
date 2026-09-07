@@ -324,7 +324,7 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         self._pending_workspace_instruction_warning = ""
         if self.workspace_instructions.warning_key:
             self._pending_workspace_instruction_warning = t(
-                "cli.workspace.instructions_warning",
+                self.workspace_instructions.warning_wrapper,
                 path=root / workspace_instructions.INSTRUCTIONS_NAME,
                 reason=t(self.workspace_instructions.warning_key,
                          **self.workspace_instructions.warning_values),
