@@ -2411,6 +2411,14 @@ def _endpoint_answers(profile, secret_path=None,
         # the stored key does not open it.
         debug.note("cli_kaggle._endpoint_answers status",
                    f"saved endpoint refused with HTTP {error.code}")
+        if error.code >= 500:
+            # 502 and 504 come from the edge, not from the server behind it,
+            # and they say the edge could not reach or could not wait for the
+            # origin. That is the same absence of knowledge a timeout is, and
+            # the same rule applies: it must not destroy a saved session. A 503
+            # from the server itself, still loading its weights, reads the same
+            # way and wants the same answer.
+            return UNREACHABLE
     except (urllib.error.URLError, OSError, TimeoutError) as error:
         # A traceback would be printed on every beat of the heartbeat that calls
         # this, so the cause goes out in one line.

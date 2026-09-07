@@ -2388,6 +2388,36 @@ check(cli_kaggle._endpoint_answers(
           secret_path=None) is not cli_kaggle.UNREACHABLE,
       "a probe with no stored key is still a plain no, not an unknown")
 
+# The timeout was closed and the door beside it was left open. A Cloudflare
+# quick tunnel that cannot reach or cannot wait for the origin answers from the
+# edge, with 502 or 504, and that arrives as an HTTPError rather than as a
+# timeout. Read as a refusal it destroys the same live session all over again.
+def edge_error(code):
+    def answer(_request, timeout=None):
+        raise urllib.error.HTTPError(
+            "http://x/v1/models", code, "edge", {}, None)
+    return answer
+
+
+# A real stored key, because without one the probe answers no before it ever
+# reaches HTTP, and every assertion below would pass without proving anything.
+edge_file = session_config(root / "session-edge" / "config.json")
+edge_profile = config.load(edge_file)["profiles"]["kaggle-one"]
+edge_secrets = edge_file.with_name("secrets.json")
+gateway_verdicts = {
+    code: cli_kaggle._endpoint_answers(
+        edge_profile, edge_secrets, urlopen_fn=edge_error(code))
+    for code in (401, 403, 404, 500, 502, 503, 504)
+}
+check(all(gateway_verdicts[code] is not cli_kaggle.UNREACHABLE
+          for code in (401, 403, 404)),
+      "a refusal from the server itself is still an answer about the key")
+check(all(gateway_verdicts[code] is cli_kaggle.UNREACHABLE
+          for code in (500, 502, 503, 504)),
+      "an error from the edge is an absence of knowledge, not a refusal")
+check(all(not gateway_verdicts[code] for code in gateway_verdicts),
+      "every one of them still reads as false to a caller that only asks to use it")
+
 relaunch_file = session_config(root / "session-relaunch" / "config.json")
 relaunched = []
 with redirect_stdout(io.StringIO()):
