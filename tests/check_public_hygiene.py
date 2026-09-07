@@ -24,6 +24,7 @@ Every failure names the file and, where it applies, the line: a report that
 tells the reader where to look, not a traceback that ends the run instead of
 finishing it.
 """
+import ast
 import re
 import subprocess
 import sys
@@ -281,6 +282,49 @@ def main():
           if not location_hits else
           "found stale private-data location documentation:\n  "
           + "\n  ".join(location_hits))
+
+    # No check may read the real HOME. In 2026-08 one weight landing in the
+    # owner's download folder failed three checks that had nothing to do with
+    # it, because `local_models.available()` scans that folder by default, and
+    # the failure message carried the name of his file. Measured by effect on
+    # 2026-09-07 as well, by planting two decoy weights there and running the
+    # whole suite, which did not move; this is the standing version of that.
+    #
+    # A call is safe when it is told where to look, by any of the arguments
+    # that redirect it. Naming only home_dir and environ reported five calls
+    # that pass root= and target_dir= and were never in danger.
+    scanning = {
+        "local_models": {"available", "data_dir", "download_weight",
+                         "downloaded_dir", "link_ollama_model", "linked_dir",
+                         "linked_models", "ollama_manifests", "ollama_models",
+                         "ollama_root"},
+        "installation": {"custom_ollama_model_paths", "feedback_dir",
+                         "sessions_dir", "uninstall_managed_llamacpp",
+                         "uninstall_official_ollama"},
+    }
+    redirects = {"home_dir", "environ", "root", "target_dir", "path",
+                 "record_path"}
+    ambient = []
+    for path in sorted(HERE.glob("check_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (isinstance(function, ast.Attribute)
+                    and isinstance(function.value, ast.Name)):
+                continue
+            if function.attr not in scanning.get(function.value.id, ()):
+                continue
+            if node.args:
+                continue
+            if not (redirects & {word.arg for word in node.keywords}):
+                ambient.append(f"{path.name}:{node.lineno} "
+                               f"{function.value.id}.{function.attr}()")
+    check(not ambient,
+          "no check reads the real HOME, so nothing in it can change an answer"
+          if not ambient else
+          "these calls fall back to the owner's own folders:\n  "
+          + "\n  ".join(ambient))
 
     # A check file whose failure gate sits above some of its checks reports
     # [FAILED] and still exits zero, so the runner calls it OK and the suite
