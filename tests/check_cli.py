@@ -2702,12 +2702,6 @@ check("".join(_correction_tokens) == "pronto, era so isso",
 check(_attempted not in "".join(_correction_tokens),
       "the call object that armed the correction never reaches the screen")
 
-print()
-if failures:
-    print(f"{len(failures)} FAILURE(S):")
-    for f in failures:
-        print(f"  - {f}")
-    sys.exit(1)
 # Two READMEs are two chances to describe a program that no longer exists. The
 # text cannot be compared, but the shape can: a section added to one and not the
 # other is the way they drift, and it is silent.
@@ -2755,4 +2749,14 @@ missing_targets = sorted(
 check(not missing_targets,
       f"every local link in the READMEs resolves: {missing_targets}")
 
+print()
+# The gate belongs at the end of the file, not in the middle of it. It used to
+# sit above the README checks, so those printed [FAILED] and the file still
+# exited zero, and every check appended after them inherited that silence. Found
+# by planting a failure in one of them and watching the runner call it OK.
+if failures:
+    print(f"{len(failures)} FAILURE(S):")
+    for failure in failures:
+        print(f"  - {failure}")
+    sys.exit(1)
 print("ISAAC CLI OK: workspace, model and basic output without Ollama")

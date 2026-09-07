@@ -282,6 +282,35 @@ def main():
           "found stale private-data location documentation:\n  "
           + "\n  ".join(location_hits))
 
+    # A check file whose failure gate sits above some of its checks reports
+    # [FAILED] and still exits zero, so the runner calls it OK and the suite
+    # shrinks without anyone deciding to shrink it. That is what check_cli.py
+    # was doing: the gate sat above the README checks, and everything appended
+    # after them inherited the silence. Structural rather than by effect,
+    # because proving it by effect means planting a failure in fifteen files.
+    gate = re.compile(r"sys\.exit\(|raise SystemExit\(")
+    call = re.compile(r"\s*check\(")
+    unguarded = []
+    for path in sorted((HERE).glob("check_*.py")):
+        lines = path.read_text(encoding="utf-8").split("\n")
+        calls = [index for index, line in enumerate(lines) if call.match(line)]
+        if not calls:
+            continue
+        gates = [index for index, line in enumerate(lines) if gate.search(line)]
+        if not gates:
+            unguarded.append(f"{path.name}: uses check() and never exits non-zero")
+            continue
+        after = [index + 1 for index in calls if index > gates[-1]]
+        if after:
+            unguarded.append(
+                f"{path.name}: {len(after)} check(s) after the gate, "
+                f"first at line {after[0]}")
+    check(not unguarded,
+          "every check file's failure gate comes after its last check"
+          if not unguarded else
+          "a failure in these would print and still exit zero:\n  "
+          + "\n  ".join(unguarded))
+
     print()
     if failures:
         print(f"PUBLIC HYGIENE: {len(failures)} check(s) failed")
