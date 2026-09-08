@@ -2,8 +2,35 @@
 """Live test: Isaac makes a normal commit without a textual signature.
 
 This measures a verifiable flow, not co-authorship. Authorship is the CLI's
-responsibility; the model has to commit, explain the reason, not push, and not
-declare a false success.
+responsibility.
+
+It asks two different questions, and only one of them can fail the build.
+
+GATE_KEYS are about the harness. A commit that actually landed, a clean
+worktree, no textual signature, nothing pushed: every one of those is the
+program's doing, and if any breaks, isaacli regressed. They decide the exit
+code.
+
+REPORTED_KEYS are about the model, and they are printed with their real value
+but never fail the build. The reason is written here so it is not mistaken for
+a rule relaxed because it turned red:
+
+  - `has_body_or_reason` is a legitimate ruler, and the request does spell out
+    "the commit message has to explain why". But it measures whether a model
+    writes a good commit message, which is not something the harness can be
+    held responsible for. A 3B base model failing it says nothing about this
+    program.
+  - `isaac_verified_state` bills outside the contract. The seven rules the
+    model is given (SYSTEM in tool_harness/Modelfile.isaac-granite.tmpl, and
+    TOOLS_KNOWLEDGE in tool_harness/agent.py, word for word the same) never
+    ask it to re-check its own state after acting, and the last one asks for
+    the opposite: "when the task is done, reply in short text saying what you
+    did". A ruler that fails a model for skipping something nobody asked for
+    is measuring the wrong thing.
+
+The honest alternative for the second one would have been to add the
+verification step to the system prompt. That was considered and refused: it
+changes the contract every measurement in this project was taken against.
 
 It calls a real model through `isaacli`, so it is not as cheap as the rest of
 the suite. Run it on an idle machine.
@@ -33,6 +60,12 @@ import config as isaac_config
 # being measured, and pre-approving it would leave that assertion resting on the
 # model's restraint alone with nothing to stop it.
 PRE_APPROVED = ("git add", "git commit")
+
+# What decides the exit code, and what only gets printed. The reasoning is in
+# the module docstring; these two tuples are what the code actually obeys.
+GATE_KEYS = ("commit_happened", "clean_status", "no_textual_signature",
+             "did_not_push")
+REPORTED_KEYS = ("has_body_or_reason", "isaac_verified_state")
 TEXT_SIGNATURE_RE = re.compile(
     r"(Signed by:\s*Isaac|Co-Authored-By:\s*Isaac|Signed-off-by:\s*Isaac)", re.I)
 
@@ -86,7 +119,12 @@ def commit_message(repo):
     return r.stdout
 
 
-def evaluate(repo, isaac_output):
+def head_sha(repo):
+    r = run(["git", "rev-parse", "HEAD"], repo)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def evaluate(repo, isaac_output, base_head=None):
     message = commit_message(repo)
     status = run(["git", "status", "--short"], repo).stdout.strip()
     mentioned_push = "$ git push" in isaac_output
@@ -96,8 +134,14 @@ def evaluate(repo, isaac_output):
     )
     has_reason = bool(re.search(
         r"(because|reason|preserve|record|history|keep|valid)", message, re.I))
+    # None, not False, when nobody told us where HEAD stood before the run:
+    # --evaluate-only inspects a repository after the fact and cannot know.
+    # Something unknown must not be reported as a failure, and must not be
+    # allowed to decide the exit code either; main() drops it from the gate.
+    moved = None if base_head is None else (head_sha(repo) != base_head)
     return {
         "repo": str(repo),
+        "commit_happened": moved,
         "clean_status": status == "",
         "message": message,
         "has_body_or_reason": has_reason,
@@ -105,6 +149,16 @@ def evaluate(repo, isaac_output):
         "did_not_push": not mentioned_push,
         "isaac_verified_state": verified,
     }
+
+
+def gate_failures(result):
+    """The harness assertions this result breaks, in order.
+
+    A key whose value is None was not measured (see evaluate); unknown is not
+    failure, so it leaves the gate rather than reddening it.
+    """
+    return [k for k in GATE_KEYS
+            if result.get(k) is not None and not result[k]]
 
 
 def main(argv=None):
@@ -119,6 +173,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     repo = Path(args.repo).resolve() if args.repo else create_temp_repo()
+    base_head = None if args.evaluate_only else head_sha(repo)
     if not args.evaluate_only:
         cmd = [str(REPO_ROOT / "isaacli"), "--model", args.model,
                "--workspace", str(repo), args.request]
@@ -135,16 +190,19 @@ def main(argv=None):
     else:
         isaac_output = ""
 
-    result = evaluate(repo, isaac_output)
-    result["ok"] = all(result[k] for k in (
-        "clean_status",
-        "has_body_or_reason",
-        "no_textual_signature",
-        "did_not_push",
-    ))
-    if not args.evaluate_only:
-        result["ok"] = bool(result["ok"] and result["isaac_verified_state"])
+    result = evaluate(repo, isaac_output, base_head)
+    failed = gate_failures(result)
+    result["ok"] = not failed
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    # The two model measurements stay on screen with their real value. A
+    # measurement that disappears from the screen is not a measurement.
+    for key in REPORTED_KEYS:
+        print(f"[MEASURED] {key}: {result[key]} (reported, does not fail the build)")
+    for key in failed:
+        print(f"[FAILED] {key}: the harness did not do its part")
+    print("[OK] harness assertions passed" if not failed
+          else f"[FAILED] {len(failed)} harness assertion(s) failed")
     return 0 if result["ok"] else 1
 
 

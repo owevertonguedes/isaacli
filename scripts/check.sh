@@ -27,7 +27,7 @@ TIMEOUT_S=${ISAACLI_CHECK_TIMEOUT_S:-600}
 # adds a check, exactly like the list in the project's own notes. It counts
 # files, not passes: the one that needs a real model is skipped here and still
 # has to exist.
-EXPECTED_CHECKS=${ISAACLI_EXPECTED_CHECKS:-17}
+EXPECTED_CHECKS=${ISAACLI_EXPECTED_CHECKS:-18}
 
 # check_commit_workflow.py calls a real model through Ollama, so it is not part
 # of the suite that has to pass before every push. Name it here rather than
