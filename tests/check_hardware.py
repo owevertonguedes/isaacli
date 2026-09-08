@@ -135,7 +135,48 @@ check(hardware.recurrent_state_bytes(48, 16, 48, 128, 128, 4, n_seqs=1) * 4
 check(hardware.recurrent_state_bytes(0, 16, 48, 128, 128, 4) == 0,
       "a model with no recurrent layers holds no recurrent state")
 
+# And the dense model, measured the same way on 2026-09-08 so that the
+# correction above rests on more than one shape. Devstral-Small-2507 Q4_K_M on
+# T4 x2: 40 layers, 8 KV heads, head_dim 128, and it declares neither
+# `layer_types` nor `full_attention_interval`, so every layer is billed.
+#
+#   llama_kv_cache: size = 1280.00 MiB (  8192 cells, 40 layers, 4/1 seqs)
+#   llama_kv_cache: size = 5120.00 MiB ( 32768 cells, 40 layers, 4/1 seqs)
+#   load_tensors: offloaded 41/41 layers to GPU
+#   (no llama_memory_recurrent line at all, which is what dense means here)
+#
+# The point of these two is not that the formula works. It is that the 45%
+# overestimate does not repeat on a dense model, so it really was the layer
+# count and nothing else.
+check(hardware.kv_cache_bytes(40, 8, 128, 8192) == 1280 * MIB
+      and hardware.kv_cache_bytes(40, 8, 128, 32768) == 5120 * MIB,
+      "a dense model's cache is predicted exactly at both measured contexts, "
+      "1280.00 and 5120.00 MiB")
+check(hardware.recurrent_state_bytes(40 - 40, 8, 8, 128, 128, 4) == 0,
+      "and it holds no recurrent state, which is what its log not carrying one "
+      "line of llama_memory_recurrent says")
+
 GB = 1024 ** 3
+MB = 1024 ** 2
+# What the reserve is for, checked against a measurement for the first time.
+# DEFAULT_OVERHEAD_MB was a fixed guess; these are the two things it has to
+# cover on a card, read from the same run:
+#
+#   sched_reserve: CUDA0/CUDA1 compute buffer = 292.04 MiB each at 8192,
+#                                               388.04 MiB each at 32768
+#   nvidia-smi minus everything declared     = 247.55 MiB, at both contexts,
+#                                               which is the CUDA context
+#
+# So 831.63 MiB unbilled at 8192 and 1023.63 at 32768, against 1536 MiB of
+# reserve for two cards. It fits, with 512 MiB to spare at the larger context,
+# and the compute buffer is the part that grows with the context.
+for context, unbilled in ((8192, 831.63), (32768, 1023.63)):
+    reserve = hardware.overhead_mb(2)
+    check(unbilled < reserve,
+          f"at context {context} the reserve covers what the estimate does not "
+          f"bill: {unbilled:.0f} MiB measured against {reserve} MiB reserved, "
+          f"{reserve - unbilled:.0f} MiB spare")
+
 # 4 GB card, 768 MB overhead: 3328 MB usable.
 check(hardware.fits(3 * GB, 200 * 1024 * 1024, 4096) is True,
       "3 GB of weights plus 200 MB of cache fit a 4 GB card")
