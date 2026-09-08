@@ -438,6 +438,27 @@ while not serving():
     time.sleep(10)
 report_vram("with the model loaded and answering")
 
+# The switch, checked against the one call this script can be certain of.
+# `serving()` above returns true only because llama-server answered a real HTTP
+# request on this very port, so a switch still unarmed here is one that cannot
+# arm at all: the line it reads is not a line this build writes.
+#
+# Measured on 2026-09-08 against b10502 at its default verbosity, which is what
+# every launch runs. Six GET /v1/models, the shape of the client's own
+# heartbeat, produced not one log line. One chat completion produced seven, all
+# of them `slot ...` lines about the work, and the word `request` appears zero
+# times in the 220 lines the whole session wrote. So the marker this switch
+# greps for is never printed, and the heartbeat that was supposed to hold the
+# switch open is invisible here twice over: wrong marker, and a call this build
+# does not log either way. The ceiling was the only brake this kernel had.
+with last_request_lock:
+    switch_armed = last_request[0] is not None
+if not switch_armed:
+    print("NOTE: this llama-server build does not write the log line this "
+          "session watches for, so the silence switch cannot arm and this "
+          "session will not end itself when its client goes away. Only the "
+          f"{SESSION_SECONDS} s ceiling applies.", flush=True)
+
 # The tunnel is asked for only now, and only under the brakes. cloudflared
 # publishes in seconds while the weights take minutes, so by this point the URL
 # is almost always already sitting in `tunnel_url`; what this covers is the

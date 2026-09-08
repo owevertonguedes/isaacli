@@ -2631,10 +2631,13 @@ check(released == "owner/isaacli-gpu-1"
 check("kaggle-one" in release_state["profiles"],
       "and the profile with the tunnel URL survives, because that URL is how "
       "the next invocation finds the kernel without pushing one")
-check(f"{cli_kaggle.SESSION_IDLE_SECONDS // 60} min" in release_out.getvalue()
-      or str(cli_kaggle.SESSION_IDLE_SECONDS // 60) in release_out.getvalue(),
-      "the screen names the silence the kernel was actually given, read from "
-      "the constant written into it rather than from prose")
+# It used to name the silence the kernel was given, and that promise was
+# measured false on 2026-09-08: the switch reads a log line this llama.cpp
+# build never writes. What is left on the screen are the two brakes that were
+# observed working, the ceiling and the command that ends it now.
+check("--stop" in release_out.getvalue()
+      and str(cli_kaggle.SESSION_IDLE_SECONDS // 60) not in release_out.getvalue(),
+      "stepping out names the brakes that hold, and no longer the one that did not")
 
 # Two single-shot invocations at once. The first one out must not take the
 # kernel the second is still using, and `holders` is what makes that decidable.
@@ -4139,7 +4142,7 @@ class _Clockwork:
         self.now += seconds
 
 
-def run_ceiling(session_seconds, serving_answer, published=True):
+def run_ceiling(session_seconds, serving_answer, published=True, stamped=False):
     """Run the kernel's own shutdown logic against a clock we advance."""
     clock = _Clockwork()
     scope = {
@@ -4148,7 +4151,8 @@ def run_ceiling(session_seconds, serving_answer, published=True):
         "SESSION_ENDS_AT": clock.monotonic() + session_seconds,
         "server": _Child(), "tunnel": _Child(),
         "IDLE_SECONDS": 300,
-        "last_request": [None], "last_request_lock": threading.Lock(),
+        "last_request": [clock.monotonic() if stamped else None],
+        "last_request_lock": threading.Lock(),
         "serving": lambda: serving_answer,
         "report_vram": lambda _moment: None,
         "url": "https://ceiling.trycloudflare.com",
@@ -4178,6 +4182,24 @@ loading_end, loading_screen, loading_scope = run_ceiling(120, False)
 check(loading_end == 0 and "while loading" in loading_screen
       and loading_scope["server"].stopped,
       "a load that runs past the ceiling stops billing too, not only a session")
+
+# The switch that could never arm, and said nothing about it. Proved on
+# 2026-09-08 against a real kernel: llama.cpp b10502 at its default verbosity
+# printed nothing at all for six GET /v1/models, which is the shape of the
+# client's own heartbeat, and for a chat completion printed seven `slot ...`
+# lines instead. The word this switch greps for appears zero times in the 220
+# lines of that session, so the brake was inert start to finish, not only
+# during the load. The kernel now notices, because the readiness probe is one
+# request it can be certain it answered.
+inert_end, inert_screen, _inert = run_ceiling(120, True)
+check("NOTE:" in inert_screen and "cannot arm" in inert_screen,
+      "a server whose log never mentions a request leaves the switch inert, said out loud")
+# The same path on a build that does log its requests: the note is a report of
+# a real state, so it must be absent when that state is absent, or it is noise
+# that teaches everyone to skip it.
+armed_screen = run_ceiling(120, True, stamped=True)[1]
+check("cannot arm" not in armed_screen,
+      "a switch the log did arm draws no warning about being unarmed")
 
 # The gap the 2026-09-08 kernel fell through, from the other side. A tunnel that
 # comes up and never publishes leaves the client with no URL and no way to ask
@@ -4239,20 +4261,21 @@ chosen_seconds = cli_kaggle._choose_session_ceiling(
 check(chosen_seconds == 2 * 3600,
       "the launch screen answers the ceiling in seconds, chosen not inherited")
 # What the screen may promise is bounded by what the kernel can hold. It used to
-# say that closing the terminal already stops the spending, full stop, and that
-# is false for the whole load: the silence switch arms on a request llama-server
-# logs, and a server reading tens of gigabytes off disk has none to log. A
-# kernel of mine went on loading for some fifty minutes after its window died on
-# 2026-09-08, inside its ceiling the entire time. A brake that is promised and
-# does not hold is worse than one that was never promised.
+# lead with the silence switch, saying that closing the terminal already stops
+# the spending. Measured against a real kernel on 2026-09-08: llama.cpp b10502
+# at its default verbosity logged nothing whatsoever for the GET the client's
+# heartbeat is made of, and the line this switch greps for appears nowhere in
+# that session at all, so the brake was inert start to finish. A brake that is promised and does not hold is
+# worse than one that was never promised, because it is the one you stop
+# checking.
 _ceiling_screen = io.StringIO()
 with redirect_stdout(_ceiling_screen):
     cli_kaggle._choose_session_ceiling(lambda _prompt: "1", remaining_hours=25.58)
 _ceiling_text = " ".join(_ceiling_screen.getvalue().split())
-check("loading the weights" in _ceiling_text.lower()
-      and "only brake" in _ceiling_text.lower()
-      and "25.58" in _ceiling_text,
-      "the ceiling screen says the silence switch does not cover the load")
+check("brake that holds" in _ceiling_text.lower()
+      and "closing the terminal does not stop it" in _ceiling_text.lower()
+      and "--stop" in _ceiling_text and "25.58" in _ceiling_text,
+      "the ceiling screen promises only the brake that was measured holding")
 cancelled_ceiling = cli_kaggle._choose_session_ceiling(
     lambda _prompt: str(len(cli_kaggle.SESSION_CEILING_HOURS) + 1))
 check(cancelled_ceiling is None,

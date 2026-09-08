@@ -1382,10 +1382,14 @@ def _choose_session_ceiling(input_fn, remaining_hours=None):
     hours = [hour for hour in SESSION_CEILING_HOURS
              if hour * 3600 <= SESSION_TIMEOUT_SECONDS]
     options = [t("cli.kaggle.ceiling.option", hours=hour) for hour in hours]
-    # The silence the screen promises is the one the kernel is actually given,
-    # read from the constant that is written into it, so the two cannot drift.
-    explanation = t("cli.kaggle.ceiling.explain",
-                    minutes=SESSION_IDLE_SECONDS // 60)
+    # The screen used to lead with the silence switch, and on 2026-09-08 that
+    # promise was measured false: llama.cpp b10502 answered three calls at its
+    # default verbosity and logged none of them, so the switch the kernel reads
+    # that log for cannot arm at all. It stays in the kernel, where a build that
+    # does announce its requests still gets the benefit and one that does not
+    # says so in its own log. It does not stay on a screen where somebody is
+    # deciding how many hours to risk.
+    explanation = t("cli.kaggle.ceiling.explain")
     if remaining_hours is not None:
         explanation += "\n" + t("cli.kaggle.ceiling.remaining",
                                 remaining=f"{remaining_hours:.2f}")
@@ -2979,9 +2983,11 @@ def release_profile_session(profile_name, config_file=None, pid=None):
       - the ceiling agreed at launch, held by the kernel itself and by the
         `-t` on `kernels push`, both carrying the same number;
       - the silence switch inside the kernel, which ends the session after
-        SESSION_IDLE_SECONDS with no request. Stopping this window's heartbeat
-        is what starts that clock, so a kernel forgotten by a single request
-        costs that much and no more;
+        SESSION_IDLE_SECONDS with no request, on a build that announces the
+        requests it serves. Measured on 2026-09-08, b10502 announces none of
+        them at its default verbosity, so on that build this brake is inert and
+        the kernel says as much in its own log. It is counted here as what it
+        is: a brake that may or may not be there, never as one to rely on;
       - `isaacli kaggle --stop`, which reaches the whole account.
 
     What is given up is the one brake that required a window to be open, and
@@ -3004,8 +3010,7 @@ def release_profile_session(profile_name, config_file=None, pid=None):
         say(t("cli.kaggle.session.still_used",
               slug=record["slug"], count=len(holders)))
         return record["slug"]
-    say(t("cli.kaggle.session.released", slug=record["slug"],
-          minutes=SESSION_IDLE_SECONDS // 60))
+    say(t("cli.kaggle.session.released", slug=record["slug"]))
     return record["slug"]
 
 
