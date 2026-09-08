@@ -2898,6 +2898,52 @@ def stop_profile_session(profile_name, config_file=None, run_fn=subprocess.run,
     return record["slug"]
 
 
+def release_profile_session(profile_name, config_file=None, pid=None):
+    """Step out of a live kernel without ending it.
+
+    Closing the REPL means "I am done". Finishing a single request means
+    nothing of the sort, and both used to leave through the same `finally`. So
+    one question deleted a kernel that had taken thirty minutes to come up, and
+    the next question paid those thirty minutes again: measured on 2026-09-07,
+    which is what made the Kaggle path unusable outside the REPL and unusable
+    for any script that runs isaacli more than once.
+
+    This is not giving up the quota brake, because the brake was never one
+    thing. Three of them survive, and two do not need anybody alive:
+
+      - the ceiling agreed at launch, held by the kernel itself and by the
+        `-t` on `kernels push`, both carrying the same number;
+      - the silence switch inside the kernel, which ends the session after
+        SESSION_IDLE_SECONDS with no request. Stopping this window's heartbeat
+        is what starts that clock, so a kernel forgotten by a single request
+        costs that much and no more;
+      - `isaacli kaggle --stop`, which reaches the whole account.
+
+    What is given up is the one brake that required a window to be open, and
+    that is the one that was charging thirty minutes a question.
+
+    The record stays adoptable: no `ending` is claimed, so the next invocation
+    finds it, probes it, and reuses it through the path that already exists.
+    """
+    stop_session_heartbeat(profile_name)
+    record = profile_kernel_record(profile_name, config_file)
+    if record is None:
+        return None
+    pid = os.getpid() if pid is None else int(pid)
+    slug, holders = _update_holders(
+        profile_name, config_file,
+        lambda numbers: [number for number in numbers if number != pid])
+    if slug is None:
+        return None
+    if holders:
+        say(t("cli.kaggle.session.still_used",
+              slug=record["slug"], count=len(holders)))
+        return record["slug"]
+    say(t("cli.kaggle.session.released", slug=record["slug"],
+          minutes=SESSION_IDLE_SECONDS // 60))
+    return record["slug"]
+
+
 def _reactivate_live_profile(live, config_file=None, account=None,
                              urlopen_fn=urllib.request.urlopen):
     """Reactivate a saved profile only when its recorded kernel and API answer."""

@@ -66,6 +66,7 @@ from cli_ollama import (
 )
 from cli_kaggle import (
     ensure_profile_session as _kaggle_ensure_session,
+    release_profile_session as _kaggle_release_session,
     stop_profile_session as _kaggle_stop_session,
     uninstall_managed_kaggle as _uninstall_managed_kaggle,
 )
@@ -1236,9 +1237,22 @@ def main(argv=None):
         # kernel is not. It spends quota by wall clock until it is deleted, so
         # the program that started it ends it, here, on every way out that runs
         # a `finally`, including SIGHUP and SIGTERM.
-        # And not interruptible: a Ctrl+C landing here would leave the kernel
-        # running and the quota draining, which is exactly what this call is for.
-        _without_interruption(lambda: _kaggle_stop_session(cli.kaggle_profile))
+        #
+        # Closing the REPL says "I am done". Finishing a single request says
+        # nothing of the sort, and until now both left through this same line.
+        # So one question deleted a kernel that had taken thirty minutes to come
+        # up, and asking a second question paid those thirty minutes again,
+        # which made this path unusable for a script and for the ordinary way of
+        # asking one thing at a time. A single request now steps out of the
+        # record instead, leaving it adoptable by the next invocation; the
+        # kernel's own ceiling and its silence switch are what stop it, and
+        # neither of them needs a window to be open.
+        #
+        # And not interruptible either way: a Ctrl+C landing here would leave
+        # the record in a state nobody owns, which is exactly what this is for.
+        leave = (_kaggle_release_session if args.request
+                 else _kaggle_stop_session)
+        _without_interruption(lambda: leave(cli.kaggle_profile))
 
 
 def entrypoint(argv=None):

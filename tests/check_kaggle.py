@@ -2548,6 +2548,77 @@ check(ended == "owner/isaacli-gpu-1"
       and "kaggle-one" not in end_state["profiles"],
       "closing the program ends its own kernel and leaves the other one alone")
 
+def kernel_record(config_file, slug):
+    """One kernel record by slug, or None. Never `next()` without a default.
+
+    A lookup that raises StopIteration kills the whole file and takes every
+    check below it along, which turns one red assertion into a suite that
+    quietly got shorter. This is the fourth time that has been the bug.
+    """
+    for item in (config.load(config_file).get("kaggle") or {}).get("kernels") or []:
+        if item.get("slug") == slug:
+            return item
+    return None
+
+
+# Releasing, which is the same way out with a different meaning. Nothing may
+# reach Kaggle, the record has to survive so the next invocation can adopt it,
+# and no `ending` may be claimed, because a record spoken for by an ending that
+# never runs is a kernel nobody can adopt and nobody stops.
+release_file = session_config(root / "session-release" / "config.json")
+release_out = io.StringIO()
+with redirect_stdout(release_out):
+    released = cli_kaggle.release_profile_session(
+        "kaggle-one", config_file=release_file)
+release_state = config.load(release_file)
+release_record = kernel_record(release_file, "owner/isaacli-gpu-1")
+check(release_record is not None,
+      "the record survives, because forgetting it is how the next invocation "
+      "loses a kernel that is still serving and pays to push another")
+release_record = release_record or {}
+check(released == "owner/isaacli-gpu-1"
+      and release_record.get("holders") == []
+      and "ending" not in release_record,
+      f"stepping out empties the holder list and claims no ending, so the "
+      f"record stays adoptable ({release_record.get('holders')}, "
+      f"ending={release_record.get('ending')})")
+check("kaggle-one" in release_state["profiles"],
+      "and the profile with the tunnel URL survives, because that URL is how "
+      "the next invocation finds the kernel without pushing one")
+check(f"{cli_kaggle.SESSION_IDLE_SECONDS // 60} min" in release_out.getvalue()
+      or str(cli_kaggle.SESSION_IDLE_SECONDS // 60) in release_out.getvalue(),
+      "the screen names the silence the kernel was actually given, read from "
+      "the constant written into it rather than from prose")
+
+# Two single-shot invocations at once. The first one out must not take the
+# kernel the second is still using, and `holders` is what makes that decidable.
+shared_file = session_config(root / "session-shared" / "config.json")
+# Two pids that are both really alive, because a holder list is filtered by
+# whether its entries still exist: this process and the one that started it.
+mine, other = os.getpid(), os.getppid()
+cli_kaggle.hold_profile_session("kaggle-one", shared_file, pid=mine)
+cli_kaggle.hold_profile_session("kaggle-one", shared_file, pid=other)
+shared_out = io.StringIO()
+with redirect_stdout(shared_out):
+    cli_kaggle.release_profile_session("kaggle-one", shared_file, pid=mine)
+shared_record = kernel_record(shared_file, "owner/isaacli-gpu-1") or {}
+check(shared_record.get("holders") == [other] and "ending" not in shared_record,
+      f"the first of two invocations to finish leaves the other holding the "
+      f"kernel, and claims no ending ({shared_record.get('holders')})")
+with redirect_stdout(io.StringIO()):
+    cli_kaggle.release_profile_session("kaggle-one", shared_file, pid=other)
+shared_record = kernel_record(shared_file, "owner/isaacli-gpu-1") or {}
+check(shared_record.get("holders") == [] and "ending" not in shared_record,
+      "and the last one out still deletes nothing, because a request ending is "
+      "not a session ending")
+
+quiet_release = []
+with redirect_stdout(io.StringIO()):
+    nothing_released = cli_kaggle.release_profile_session(
+        None, config_file=end_file)
+check(nothing_released is None,
+      "a run with no Kaggle kernel of its own has nothing to step out of")
+
 quiet_commands = []
 with redirect_stdout(io.StringIO()):
     nothing = cli_kaggle.stop_profile_session(
@@ -2557,23 +2628,46 @@ with redirect_stdout(io.StringIO()):
 check(nothing is None and not quiet_commands,
       "a run with no Kaggle kernel of its own never reaches Kaggle on the way out")
 
-# The wiring itself, by effect: a run that opens a Kaggle profile has to end
-# its kernel on the way out, whatever the answer to the question was.
+# The wiring itself, by effect, and the two ways out are not the same way out.
+# Closing the REPL means the person is done, and the kernel goes. Finishing one
+# request means nothing of the sort: it used to leave through the same line, so
+# a single question deleted a kernel that had taken thirty minutes to come up
+# and the next question paid those thirty minutes again.
 wired_file = config.config_path()
 session_config(wired_file)
-wired_stops = []
-original_ensure = cli._kaggle_ensure_session
-original_stop = cli._kaggle_stop_session
-try:
-    cli._kaggle_ensure_session = lambda name, **kwargs: "live"
-    cli._kaggle_stop_session = lambda name: wired_stops.append(name)
-    with redirect_stdout(io.StringIO()):
-        wired_code = cli.main(["say", "something"])
-finally:
-    cli._kaggle_ensure_session = original_ensure
-    cli._kaggle_stop_session = original_stop
-check(wired_code == 1 and wired_stops == ["kaggle-one"],
-      "a run that opened a Kaggle profile ends that kernel when it closes")
+
+
+def wired_exit(argv, repl_result=None):
+    """What one invocation does to its Kaggle kernel on the way out.
+
+    Returns (exit code, kernels stopped, kernels released). Both calls are
+    replaced, so this cannot pass by neither of them being reached.
+    """
+    stops, releases = [], []
+    saved = (cli._kaggle_ensure_session, cli._kaggle_stop_session,
+             cli._kaggle_release_session, cli.IsaacCLI.repl)
+    try:
+        cli._kaggle_ensure_session = lambda name, **kwargs: "live"
+        cli._kaggle_stop_session = lambda name: stops.append(name)
+        cli._kaggle_release_session = lambda name: releases.append(name)
+        cli.IsaacCLI.repl = lambda self: repl_result
+        with redirect_stdout(io.StringIO()):
+            code = cli.main(argv)
+    finally:
+        (cli._kaggle_ensure_session, cli._kaggle_stop_session,
+         cli._kaggle_release_session, cli.IsaacCLI.repl) = saved
+    return code, stops, releases
+
+
+asked_code, asked_stops, asked_releases = wired_exit(["say", "something"])
+check(asked_code == 1 and asked_releases == ["kaggle-one"] and asked_stops == [],
+      f"a single request steps out of its kernel instead of deleting it "
+      f"(stopped {asked_stops}, released {asked_releases})")
+
+repl_code, repl_stops, repl_releases = wired_exit([], repl_result=0)
+check(repl_code == 0 and repl_stops == ["kaggle-one"] and repl_releases == [],
+      f"and closing the REPL still ends it, which is the brake that was never "
+      f"given up (stopped {repl_stops}, released {repl_releases})")
 
 # A delete that fails must not look like a stop that worked: the kernel is
 # still spending, and the record has to stay so the next run can try again.
