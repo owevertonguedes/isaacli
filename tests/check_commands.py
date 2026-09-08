@@ -240,9 +240,17 @@ check(not fell_through,
 # and both of them drew a screen that answered while being wrong. What is
 # asserted here is what can be asserted without picking a row: the command
 # reaches a screen of its own, and that screen is drawn with real text.
+# Named, not counted. A count is a statement about the machine: `/kaggle` opens
+# its screen where the Kaggle CLI is installed and answers with a message where
+# it is not, so `>= 5` passed here and failed on a clean CI runner, which is CI
+# doing its job. These four depend on nothing outside the program, so they must
+# reach a screen wherever this runs.
+ALWAYS_A_SCREEN = {"/config", "/language", "/model", "/setup"}
 opened = sorted(screens)
-check(len(opened) >= 5,
-      f"the commands that own a screen reach it rather than a message: {opened}")
+missing_screen = sorted(ALWAYS_A_SCREEN - set(screens))
+check(not missing_screen,
+      f"the commands that own a screen reach it rather than a message: "
+      f"missing {missing_screen}, opened {opened}")
 
 empty_screens = sorted(
     name for name, screen_opened in screens.items()
