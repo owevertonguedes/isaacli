@@ -64,12 +64,86 @@ per_layer = [0, 0, 8] * 10
 hybrid_keys["lfm2.attention.head_count_kv"] = (
     ARRAY, struct.pack("<I", UINT32) + struct.pack("<Q", len(per_layer))
     + b"".join(struct.pack("<I", value) for value in per_layer))
+# The key that sizes what those 20 layers do hold. A real lfm2 header always
+# carries it, and without it this fixture would now be exercising the branch
+# that declines the discount rather than the one it was written for.
+hybrid_keys["lfm2.shortconv.l_cache"] = (UINT32, struct.pack("<I", 3))
 hybrid = write_gguf(root / "hybrid-Q4_K_M.gguf", hybrid_keys)
 hybrid_shape = gguf.geometry(hybrid)
 check(hybrid_shape["n_layers"] == 10 and hybrid_shape["block_count"] == 30,
       "only the layers that hold a cache are counted as attention layers")
 check(hybrid_shape["n_kv_heads"] == 8,
       "a per-layer head count still yields the one head count the layers share")
+
+# The other half of that same correction, which this path was missing: the 20
+# layers just dropped out of the cache are not free, they hold a fixed state.
+# Sizing them is the difference between an estimate that refuses a profile that
+# would have loaded and one that saves a profile that will not, and only the
+# second costs a session.
+check(hybrid_shape["recurrent_bytes"] == 20 * 4 * 2 * 4096 * 4,
+      f"the 20 layers the discount just dropped are billed for the state they "
+      f"do hold: {hybrid_shape['recurrent_bytes']} bytes")
+
+# And a hybrid whose state cannot be sized from its header declines the
+# discount altogether, which is the pessimistic answer and the safe one: the
+# other direction saves a profile that will not load.
+unsizable_keys = dense_keys(architecture="mystery", layers=30)
+unsizable_keys["mystery.attention.head_count_kv"] = (
+    ARRAY, struct.pack("<I", UINT32) + struct.pack("<Q", len(per_layer))
+    + b"".join(struct.pack("<I", value) for value in per_layer))
+unsizable_shape = gguf.geometry(
+    write_gguf(root / "unsizable-Q4_K_M.gguf", unsizable_keys))
+check(unsizable_shape["n_layers"] == 30
+      and unsizable_shape["recurrent_bytes"] == 0,
+      f"an unsizable hybrid is billed for every layer rather than given a "
+      f"discount with nothing added back: {unsizable_shape['n_layers']}/30, "
+      f"{unsizable_shape['recurrent_bytes']} bytes")
+
+# A short-convolution hybrid, which is the shape that can be sized from the
+# header. The numbers are LFM2-1.2B's own, so the expectation below is what
+# llama.cpp b10865 allocated for that file on 2026-09-08:
+#   llama_memory_recurrent: size = 0.62 MiB (4 cells, 16 layers, 4 seqs)
+shortconv_keys = dense_keys(architecture="lfm2", layers=16, embedding=2048)
+shortconv_per_layer = [0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 8, 0, 8, 0, 8, 0]
+shortconv_keys["lfm2.attention.head_count_kv"] = (
+    ARRAY, struct.pack("<I", UINT32) + struct.pack("<Q", len(shortconv_per_layer))
+    + b"".join(struct.pack("<I", value) for value in shortconv_per_layer))
+shortconv_keys["lfm2.shortconv.l_cache"] = (UINT32, struct.pack("<I", 3))
+shortconv = write_gguf(root / "shortconv-Q4_K_M.gguf", shortconv_keys)
+shortconv_shape = gguf.geometry(shortconv)
+check(shortconv_shape["n_layers"] == 6,
+      f"the six caching layers of a short-convolution hybrid are the six "
+      f"billed for cache: {shortconv_shape['n_layers']}")
+check(shortconv_shape["recurrent_bytes"] == 655360,
+      f"and its ten convolution layers are billed the 0.62 MiB llama.cpp "
+      f"allocates for them, not zero: {shortconv_shape['recurrent_bytes']}")
+
+# The discount is for hybrids and must not reach a dense model, where every
+# block caches and there is no recurrent state to add back. Planting a discount
+# on its own does not reach here, and that is the design working rather than
+# this assertion being dead: a dense architecture cannot be sized, so the branch
+# above declines the discount and hands back the full layer count. It takes both
+# halves of the old defect at once, an escaping discount and a state worth zero,
+# to make this line fail, and that is exactly the state this task found.
+dense_shape = gguf.geometry(dense)
+check(dense_shape["n_layers"] == dense_shape["block_count"] == 28
+      and dense_shape["recurrent_bytes"] == 0,
+      f"a dense model is billed for every layer and holds no recurrent state: "
+      f"{dense_shape['n_layers']}/{dense_shape['block_count']}, "
+      f"{dense_shape['recurrent_bytes']} bytes")
+
+# And the state is resident whatever the context is, so it has to come off the
+# top rather than out of the per-token division. Asserted by effect, through
+# the ceiling the screen itself uses.
+import llama_cpp  # noqa: E402  (only this block needs it)
+
+shortconv_model = dict(shortconv_shape, model_bytes=700 * 1024 * 1024)
+with_state, _reason = llama_cpp.context_ceiling(shortconv_model, vram_mb=2048)
+without_state, _reason = llama_cpp.context_ceiling(
+    dict(shortconv_model, recurrent_bytes=0), vram_mb=2048)
+check(0 < with_state < without_state,
+      f"the recurrent state comes off the memory the context is measured in: "
+      f"{with_state} against {without_state} with the state ignored")
 
 # --- refusing what it cannot read -------------------------------------------
 

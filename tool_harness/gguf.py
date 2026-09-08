@@ -12,6 +12,9 @@ read out of that same file.
 import struct
 from pathlib import Path
 
+import debug
+import hardware
+
 MAGIC = b"GGUF"
 # Versions 1 and 2 exist but differ in how counts are encoded, and no shipping
 # quantization has produced them for years. Refusing by name beats silently
@@ -233,6 +236,30 @@ def _attention_layers(value, block_count):
     return block_count
 
 
+def _recurrent_bytes(key, recurrent_layers, embedding_length):
+    """The fixed state of the layers that keep no KV cache, or None.
+
+    None is not zero, exactly as in `_recurrent_bytes` in model_discovery.py.
+    Zero would say those layers cost nothing, which is the optimistic half of
+    this correction, and the optimistic half is the one that saves a profile
+    that will not load. None says the file is hybrid and this program cannot
+    size it from the header, and the caller answers that by declining the
+    discount rather than by guessing.
+
+    Only the short-convolution shape can be sized from a GGUF header today,
+    because it is the only one whose dimensions this program has both read out
+    of a header and checked against what llama.cpp allocated. A hybrid file
+    written by any other architecture reaches the None branch on purpose.
+    """
+    if recurrent_layers <= 0:
+        return 0
+    conv_kernel = _first_int(key("shortconv.l_cache"))
+    if conv_kernel and embedding_length:
+        return hardware.shortconv_state_bytes(
+            recurrent_layers, conv_kernel, embedding_length)
+    return None
+
+
 def geometry(path):
     """Describe one GGUF file the way the fit calculation needs it.
 
@@ -269,6 +296,22 @@ def geometry(path):
 
     n_layers = (_attention_layers(raw_kv_heads, block_count)
                 if block_count else None)
+    recurrent_bytes = 0
+    if n_layers and block_count:
+        recurrent_bytes = _recurrent_bytes(
+            key, block_count - n_layers, embedding_length)
+        if recurrent_bytes is None:
+            # Hybrid, and the header does not say enough to size the layers the
+            # discount just dropped. Billing every block for KV cache leaves the
+            # model estimated the way it was before any of this existed, which
+            # is pessimistic and therefore safe; taking the discount here would
+            # drop the cache of those layers and add nothing back.
+            debug.note("gguf.geometry",
+                       f"{architecture} declares {block_count - n_layers} "
+                       "layers with no KV cache but not the dimensions to size "
+                       "their state; billing every layer for KV cache instead "
+                       "of taking the discount")
+            n_layers, recurrent_bytes = block_count, 0
 
     return {
         "architecture": architecture,
@@ -280,6 +323,7 @@ def geometry(path):
         "declared_name": (metadata.get("general.name")
                           if isinstance(metadata.get("general.name"), str) else None),
         "n_layers": n_layers,
+        "recurrent_bytes": recurrent_bytes,
         "block_count": block_count,
         "n_kv_heads": n_kv_heads,
         "head_dim": head_dim,

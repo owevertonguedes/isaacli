@@ -194,6 +194,32 @@ def kv_cache_bytes(n_layers, n_kv_heads, head_dim, context, bytes_per_element=2)
     return int(2 * n_layers * n_kv_heads * head_dim * context * bytes_per_element)
 
 
+def shortconv_state_bytes(n_recurrent_layers, conv_kernel, embedding_length,
+                          n_seqs=DEFAULT_PARALLEL_SEQUENCES,
+                          bytes_per_element=4):
+    """The same fixed state, for the other kind of hybrid layer.
+
+    A short-convolution layer (LFM2 here) keeps a rolling window of the last
+    `conv_kernel - 1` positions across the full embedding, per sequence slot,
+    and nothing else. That is a different shape from the gated linear attention
+    `recurrent_state_bytes` sizes, which is why it is a separate function rather
+    than the same one with zeroes passed in: pretending one formula covers both
+    is how a term ends up silently wrong for one of them.
+
+    Measured against llama.cpp b10865 loading LFM2-1.2B-Q4_K_M on 2026-09-08
+    (16 blocks of which 10 are short convolution, l_cache 3, embedding 2048,
+    four slots):
+
+        llama_memory_recurrent: CPU RS buffer size = 0.62 MiB
+        llama_memory_recurrent: size = 0.62 MiB (4 cells, 16 layers, 4 seqs)
+
+    which is 655360 bytes, and this returns 655360.
+    """
+    window = max(0, conv_kernel - 1)
+    return int(n_recurrent_layers * max(1, n_seqs) * window * embedding_length
+               * bytes_per_element)
+
+
 def recurrent_state_bytes(n_recurrent_layers, key_heads, value_heads,
                           key_head_dim, value_head_dim, conv_kernel,
                           n_seqs=DEFAULT_PARALLEL_SEQUENCES,
