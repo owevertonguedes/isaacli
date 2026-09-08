@@ -19,6 +19,23 @@ MACHINE_SHAPE = "__MACHINE_SHAPE__"
 GPU_COUNT = __GPU_COUNT__
 SPLIT_MODE = "__SPLIT_MODE__"
 CONTEXT = __CONTEXT__
+# llama-server's own log level, and 3 is the level it picks for itself. It is a
+# parameter because of what level 4 turns out to contain, measured 2026-09-08 on
+# T4 x2 with Qwen3.8-27B:
+#
+#   Loading the model at 3 prints 61 lines and not one `load_tensors:` among
+#   them. At 4 it prints 290, including `load_tensors: offloaded 66/66 layers to
+#   GPU` and every buffer size llama.cpp allocates. Those are the numbers that
+#   let hardware.py's estimate be checked against something declared rather than
+#   inferred from nvidia-smi.
+#
+#   Serving at 4 costs 36.9 extra lines per request. Two hundred agent steps
+#   would add some 7400 lines to the same stdout the tunnel URL is read from.
+#
+# So 4 is an instrument and 3 is how you work, and the renderer only passes -lv
+# at all when somebody asked for something other than 3: the default has to
+# produce the command line that was already being sent, unchanged.
+SERVER_VERBOSITY = __SERVER_VERBOSITY__
 # The ceiling agreed at the push, in seconds, and the only brake on this
 # session that does not need anybody on the other side to be alive. On
 # 2026-08-23 the window conducting a run was cut off by an API limit while the
@@ -181,6 +198,8 @@ server_command = [
     "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
 ]
+if SERVER_VERBOSITY != 3:
+    server_command.extend(["-lv", str(SERVER_VERBOSITY)])
 if GPU_COUNT > 1:
     # Splitting layers across cards buys capacity, not speed: for one request
     # at a time, one card computes while the other waits. It is asked for only

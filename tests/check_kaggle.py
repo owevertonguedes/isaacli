@@ -272,6 +272,68 @@ check(gpu_metadata["dataset_sources"] == user_assets
 check(self_contained_metadata["dataset_sources"] == [],
       "a user without prepared assets gets a self-contained kernel")
 
+# ------------------------------------------------- llama-server's log level
+#
+# Level 4 is where `load_tensors: offloaded N/N layers to GPU` lives, and it is
+# also 36.9 extra lines per request into the stdout the tunnel URL is read from.
+# So it is a parameter, and the risk of it being a parameter is that the default
+# moves without anybody meaning to. What is checked first, therefore, is that
+# the default changes nothing at all.
+
+
+def rendered_server_command(folder):
+    """The server command the rendered kernel would actually build.
+
+    Not a paraphrase of it: the guard is lifted out of the rendered file and
+    executed, so rewriting the guard in the template rewrites what is tested
+    here rather than leaving this passing on a copy of the old rule.
+    """
+    source = (folder / f"{folder.name}.py").read_text(encoding="utf-8")
+    verbosity = int(re.search(r"^SERVER_VERBOSITY = (\d+)$", source,
+                              re.M).group(1))
+    guard = re.search(
+        r"^if SERVER_VERBOSITY != \d+:\n(?:[ \t]+.*\n)+", source, re.M).group(0)
+    scope = {"SERVER_VERBOSITY": verbosity,
+             "server_command": ["llama-server", "-c", "16384"]}
+    exec(guard, scope)  # noqa: S102 - the template's own line, under test
+    return verbosity, scope["server_command"]
+
+
+verbosity_dir = root / "gpu-verbosity-default"
+verbosity_dir.mkdir()
+cli_kaggle._render_kernel(
+    verbosity_dir, f"account-one/{verbosity_dir.name}", t4_model, "key", False, [])
+default_level, default_command = rendered_server_command(verbosity_dir)
+check(default_level == cli_kaggle.DEFAULT_SERVER_VERBOSITY == 3,
+      f"the rendered default is 3, which is the level llama-server picks for "
+      f"itself ({default_level})")
+check("-lv" not in default_command,
+      f"and it adds nothing to the command line, so no existing session changes "
+      f"verbosity: {' '.join(default_command)}")
+
+loud_dir = root / "gpu-verbosity-4"
+loud_dir.mkdir()
+os.environ[cli_kaggle.SERVER_VERBOSITY_ENV] = "4"
+try:
+    cli_kaggle._render_kernel(
+        loud_dir, f"account-one/{loud_dir.name}", t4_model, "key", False, [])
+finally:
+    del os.environ[cli_kaggle.SERVER_VERBOSITY_ENV]
+loud_level, loud_command = rendered_server_command(loud_dir)
+check(loud_level == 4 and loud_command[-2:] == ["-lv", "4"],
+      f"asking for 4 puts -lv 4 on the command line: {' '.join(loud_command)}")
+
+check(cli_kaggle._server_verbosity({}) == 3
+      and cli_kaggle._server_verbosity({cli_kaggle.SERVER_VERBOSITY_ENV: ""}) == 3
+      and cli_kaggle._server_verbosity(
+          {cli_kaggle.SERVER_VERBOSITY_ENV: "loud"}) == 3
+      and cli_kaggle._server_verbosity(
+          {cli_kaggle.SERVER_VERBOSITY_ENV: "-1"}) == 3,
+      "an absent, empty or unreadable level falls back to 3 rather than failing "
+      "a launch over a log level")
+check(cli_kaggle._server_verbosity({cli_kaggle.SERVER_VERBOSITY_ENV: " 4 "}) == 4,
+      "and a level that reads as a number is used, whitespace and all")
+
 
 def rendered_sources_for_account(username):
     account_file = root / f"authenticated-{username}" / "config.json"

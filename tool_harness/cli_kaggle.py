@@ -1241,6 +1241,7 @@ KERNEL_VALUE_PATTERNS = {
     "__GPU_COUNT__": re.compile(r"[0-9]+"),
     "__SPLIT_MODE__": re.compile(r"[a-z]+"),
     "__CONTEXT__": re.compile(r"[0-9]+"),
+    "__SERVER_VERBOSITY__": re.compile(r"[0-9]+"),
     "__SESSION_SECONDS__": re.compile(r"[0-9]+"),
     "__IDLE_SECONDS__": re.compile(r"[0-9]+"),
 }
@@ -1463,6 +1464,40 @@ def _kernel_value(marker, value):
     return text
 
 
+DEFAULT_SERVER_VERBOSITY = 3
+SERVER_VERBOSITY_ENV = "ISAACLI_SERVER_VERBOSITY"
+
+
+def _server_verbosity(environ=None):
+    """How loudly the kernel's llama-server should log, and 3 is how it works.
+
+    Level 4 is where `load_tensors: offloaded N/N layers to GPU` and every
+    buffer size llama.cpp allocates live: at 3 the model load prints 61 lines
+    and none of that family, at 4 it prints 290. It is also 36.9 extra lines
+    per request served, into the same stdout the tunnel URL is read from, so it
+    is an instrument and not a setting.
+
+    An environment variable rather than a screen, because whoever is measuring
+    is whoever is developing, and a button here would spend interface on a
+    question no user has. Anything unreadable falls back to the default rather
+    than failing a launch over a log level, and says so under --debug.
+    """
+    raw = (environ if environ is not None else os.environ).get(
+        SERVER_VERBOSITY_ENV)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_SERVER_VERBOSITY
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        debug.note(f"cli_kaggle.{SERVER_VERBOSITY_ENV}",
+                   f"{raw!r} is not a log level; using "
+                   f"{DEFAULT_SERVER_VERBOSITY}")
+        return DEFAULT_SERVER_VERBOSITY
+    return value
+
+
 def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
                    dataset_sources=None, session_seconds=SESSION_TIMEOUT_SECONDS):
     template_name = "flow-validation-cpu.py.tmpl" if validation_cpu else "gpu-server.py.tmpl"
@@ -1479,6 +1514,7 @@ def _render_kernel(folder, slug, model, api_key, validation_cpu=False,
         "__GPU_COUNT__": str(model.get("gpu_count", 0)),
         "__SPLIT_MODE__": "layer" if _needs_every_gpu(model) else "none",
         "__CONTEXT__": str(_kernel_context(model)),
+        "__SERVER_VERBOSITY__": str(_server_verbosity()),
     }
     values = {marker: _kernel_value(marker, value)
               for marker, value in values.items()}
