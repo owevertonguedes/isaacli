@@ -24,6 +24,7 @@ Removal has three deliberately separate levels:
 | `isaacli uninstall --purge` | command, configuration, API keys, permissions, sessions, feedback and runtime state | Ollama, its models and the clone |
 | `isaacli uninstall --purge --ollama` | everything above plus a recognised official Linux Ollama installation, its service, models and user data | the clone |
 | `isaacli uninstall --purge --kaggle` | everything in purge plus a Kaggle CLI installed by isaacli and Kaggle authentication files | existing third-party Kaggle installations, remote kernels and the clone |
+| `isaacli uninstall --purge --llamacpp` | everything in purge plus a llama.cpp installed by isaacli | a llama.cpp you installed yourself, model weights, Ollama and the clone |
 
 The two purge forms require the exact confirmation displayed by the command.
 Purge refuses to run while another isaacli session is active. Ollama removal
@@ -43,7 +44,9 @@ Run `isaacli kaggle` when the model should run on Kaggle. The command:
 7. asks for explicit confirmation, pushes a private GPU kernel and follows `kaggle kernels logs -f` until the tunnel URL appears;
 8. stores the generated API key in `secrets.json` and a generic `openai_compatible` profile in `config.json`.
 
-Kaggle has no CLI command to stop a running kernel. The command prints the direct Kaggle page before and after URL discovery so the session can be stopped in the web interface. It uses a unique slug for every push so an older version cannot be hidden behind a newer version of the same slug.
+Kaggle's own CLI has no command that stops a running kernel, only one that deletes it, so `isaacli kaggle --stop` is how a session this program started is ended: it lists the whole selected account, which reaches a kernel with no local record too, and deletes what you confirm. The direct Kaggle page is printed before and after URL discovery as well, so the web interface remains available. Every push uses a unique slug, so an older version cannot be hidden behind a newer version of the same slug.
+
+Closing a REPL session ends the kernel it opened. Finishing a single request does not: the kernel stays up and the next invocation reuses it, because a kernel can take tens of minutes between the push and its URL and paying that per question makes the whole path unusable from a script. What stops a kernel nobody comes back to is the kernel itself, through the ceiling agreed at launch and through the silence timeout it is given.
 
 The versioned GPU notebook is [gpu-server.py.tmpl](../contrib/kaggle/gpu-server.py.tmpl). Prepared datasets are always derived from the authenticated Kaggle username and are private by default. If either input is absent, the same notebook remains self-contained and compiles or downloads the missing input after warning about the measured cost. It is never started by opening an isaacli session.
 
@@ -198,9 +201,15 @@ BASE_MODEL=granite4:micro NUM_CTX=16384 ./scripts/build-model.sh
 When a session starts, isaacli reads `<workspace>/AGENTS.md` before the first
 turn. Version 1 uses that exact filename at the workspace root: it does not walk
 parent directories and does not treat `CLAUDE.md` as an alias. The file must be
-UTF-8, regular, no larger than 32768 bytes and remain inside the workspace after
-symlinks are resolved. A missing file is normal; an invalid or unreadable one
-produces a warning and does not block the session.
+UTF-8, regular, and remain inside the workspace after symlinks are resolved. A
+missing file is normal; an invalid or unreadable one produces a warning and does
+not block the session.
+
+Size is a budget rather than a single limit. Up to 32768 bytes the file goes in
+whole. Past that, whole sections are dropped to fit and the warning names which
+ones, so you learn what the model did not see instead of guessing. A file past
+the general read ceiling of 200000 bytes is refused outright, because deciding
+which sections to keep would cost more memory than the instructions are worth.
 
 The contents are project conventions, not part of isaacli's safety policy. They
 are placed after the built-in tool, approval and sandbox rules and cannot

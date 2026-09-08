@@ -5,9 +5,13 @@ machine, and against a feature that arrived in the code with no way in.
 Four sweeps, all mechanical, all over `git ls-files` (the tracked tree, which
 is what is actually public):
 
-1. A literal pointer to something that is not versioned: `tasks/`,
-   `CONTEXTO.md`, `HANDOFF`, `CLAUDE.md`, or an owner-specific home directory
-   like `/home/weverton`. Task 064 found four of these already published.
+1. A literal pointer to something that is not versioned: the private notes
+   directory, the two note files that used to sit at this repository's root,
+   or a home directory named after a real person. Four of these had already
+   been published before this sweep existed. The exact strings are in
+   FORBIDDEN_SUBSTRINGS below, spelled by concatenation so that this file can
+   name them without tripping its own scan, which is also why this file is
+   scanned like every other one rather than exempting itself.
 2. A relative markdown link that points at a file that does not exist in the
    tree. A reader who clicks it gets nothing.
 3. A third-party program named in the unattended command allowlist
@@ -16,7 +20,7 @@ is what is actually public):
    ever mentions. This is the check task 065 asked for: the `graphify` tool
    lived in the allowlist and the system prompt for months with zero mentions
    in any document, and this comparison would have caught it the day it
-   landed (see commit 9547e7b).
+   landed (removed in commit 9547e7b).
 4. Published storage paths that still present the package directories used by
    old releases as the current destination instead of the XDG data directory.
 
@@ -32,7 +36,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-SELF = Path(__file__).resolve()
 
 failures = []
 
@@ -52,8 +55,11 @@ def tracked_files():
 
 # --- 1. literal pointers to what is not public --------------------------
 
-# Built by concatenation on purpose: written as literals these strings would
-# make this very file trip its own scan.
+# Built by concatenation on purpose, and it is the only reason this file can be
+# scanned like every other one. It used to exempt itself instead, and a guard
+# that skips itself is a guard with one file it cannot see: this docstring was
+# publishing a real home directory and the number of a private note, in the very
+# file whose job is to stop exactly that.
 #
 # `CLAUDE.md` is deliberately NOT in this list: it is a documented, public
 # concept in this project (isaacli recognises a workspace's own CLAUDE.md and
@@ -77,8 +83,6 @@ HOME_PATTERN = re.compile(r"/home/([A-Za-z0-9_.-]+)")
 def scan_forbidden_pointers(files):
     hits = []
     for path in files:
-        if path == SELF:
-            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):

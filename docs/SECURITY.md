@@ -177,7 +177,9 @@ secrets, sessions, feedback and stale runtime state after confirmation.
 `uninstall --purge --ollama` additionally removes a recognised official Ollama
 layout. `uninstall --purge --kaggle` removes only a recorded isaacli-managed
 Kaggle CLI and, after its explicit warning, the known Kaggle authentication
-files. The clone and remote kernels are always preserved. See [INSTALLATION.md](INSTALLATION.md)
+files. `uninstall --purge --llamacpp` removes only a recorded isaacli-managed
+llama.cpp, never one the user installed themselves and never model weights. The
+clone and remote kernels are always preserved. See [INSTALLATION.md](INSTALLATION.md)
 for exact ownership checks, partial-failure behaviour and isolated validation.
 
 Deletion is filesystem deletion, not guaranteed secure erasure: copy-on-write
@@ -209,7 +211,11 @@ highest-value prerequisite before adding cryptographic complexity.
 
 `.github/workflows/checks.yml` runs `./scripts/check.sh`, the same script the
 `pre-push` hook runs on a contributor's own machine, so there is one
-definition of "the checks pass" rather than two that drift.
+definition of "the checks pass" rather than two that drift. CI adds `--strict`,
+which turns a check that skipped part of itself into a failure; the hook does
+not, because a contributor's machine may legitimately be missing something CI
+installs. The difference is in one direction only: CI is the stricter of the
+two, so nothing passes there that would have failed locally.
 
 `tests/check_execution.py` drives the containment described above for real:
 `bwrap` mapping uids into a fresh user namespace, the seccomp filter that
@@ -242,12 +248,19 @@ If a CI run's log ever shows it skipped, that means the runner regressed and
 containment is being proven only on a contributor's own machine again, same
 as before this fix; that is what `pre-push` covers.
 
+`tests/check_commit_workflow.py` needs a real Ollama and a real model, so it is
+not part of `check.sh` and does not stand between a commit and its green tick.
+It runs in its own workflow, `.github/workflows/live-model.yml`, nightly and on
+demand: that job installs Ollama, builds the model, and fails hard in a preflight
+step if any of that is missing, rather than letting an absent input turn into a
+pass on nothing. Its exit code is decided by the harness assertions alone, the
+ones this program is responsible for; what it measures about the model's own
+answers is printed but does not fail the build.
+
 What CI cannot exercise, on any of these runners: the `installation.py` /
-`setup_ollama.py` install-and-uninstall lifecycle against a real system
-(`tests/integration/test-install-lifecycle.sh` needs `podman`/`docker` and a
-disposable container with `systemd`, and is not part of `check.sh`), and
-anything that requires a real Ollama or model server
-(`tests/check_commit_workflow.py`).
+`setup_ollama.py` install-and-uninstall lifecycle against a real system, because
+`tests/integration/test-install-lifecycle.sh` needs `podman`/`docker` and a
+disposable container with `systemd`, and is not part of `check.sh`.
 
 ## Contributor invariants
 

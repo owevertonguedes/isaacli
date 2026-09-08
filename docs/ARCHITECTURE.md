@@ -120,11 +120,31 @@ failed system teardown leaves a usable recovery route. Purge also refuses to
 start while a live Isaac session is
 registered, so it cannot remove the engine underneath another process.
 
+`uninstall --purge --llamacpp` is the same shape for the local engine: it removes
+a llama.cpp only when `llamacpp-install.json` records that isaacli put it there,
+refuses a path outside the directory isaacli installs into, refuses an executable
+the package manager owns, and refuses anything whose removal would need
+administrator rights, because needing `sudo` is proof isaacli did not install it.
+Model weights are never removed by it.
+
 `uninstall --purge --kaggle` is the sibling strong purge. It removes Kaggle only when `kaggle-install.json` records that isaacli created the isolated per-user environment and launcher. A package-managed or changed executable is refused. Kaggle authentication files are removed only after the strong purge warning. Existing third-party Kaggle installations and remote kernels are preserved.
 
 Context on this path is chosen the same way the local setup chooses it, from the same rungs, with one difference in what the ceiling means. On Ollama the ceiling is what the model was trained for and asking for more costs nothing; here it is borrowed accelerator memory, and going over it kills the kernel while allocating the cache, after the load has been paid for out of a weekly budget. So only the rungs that fit are offered, a typed value above the ceiling is refused with the reason, and the chosen number reaches the kernel's `-c` and the profile's `num_ctx` from a single accessor, since a profile promising more than llama-server was started with fails at the end of a long turn.
 
 The normal `isaacli kaggle` path renders the GPU template in `contrib/kaggle/` with a versioned CUDA binary dataset and the exact GGUF dataset attached. The GPU run loads and serves these inputs instead of compiling or downloading the model. Before offering a push, it checks recorded isaacli kernels: a live kernel with a successfully responding saved API endpoint reactivates its existing profile, while a kernel Kaggle no longer runs is forgotten along with the profile it created, since its tunnel URL was minted for a session that is over. Ownership bounds that: only records belonging to the selected account are considered, and a profile is dropped only while it still holds the exact URL that record created it with. The `--prepare-assets` switch runs the preparation half on its own, which is the half that spends no GPU quota, so the reusable CUDA runtime and weight datasets can be built without starting a GPU launch to reach them. Preparation stages its downloads under the XDG cache directory rather than the system temporary directory, because that is a tmpfs on a normal desktop and a model weight staged there is written into RAM; the free space is checked against the file before the transfer starts, and purge removes that directory with the rest of the private state. The separate `--flow-validation-cpu` switch renders a short CPU-only OpenAI-compatible probe for validating push, tunnel discovery, reachability and profile persistence without spending GPU quota. It cannot run a model and is never the default.
+
+Ending a session and finishing a request are two different events, and the way
+out separates them. Closing the REPL is somebody saying they are done, so the
+last window to leave deletes the kernel; a record's `holders` list is what
+decides which window is the last. Finishing a single request says nothing of the
+sort: it drops this process from `holders`, claims no ending, and leaves the
+record and its tunnel URL adoptable, so the next invocation reuses the kernel
+through the same probe-and-hold path. Both ways out stop this window's heartbeat.
+Treating them alike deleted a kernel that had taken thirty minutes to publish its
+URL, over one question. The quota brake survives it because the brake is not one
+thing: the ceiling agreed at launch and the kernel's own silence timeout both act
+without anybody being alive, and `isaacli kaggle --stop` reaches the whole
+account, including a kernel with no local record.
 
 The resume command uses `isaacli` when this installation is on `PATH`;
 otherwise it prints the absolute launcher that is actually executable.
@@ -343,25 +363,34 @@ may stop fitting entirely in the GPU.
 ## Verification
 
 ```bash
-python3 tests/check_cli.py
-python3 tests/check_agent_config.py
-python3 tests/check_setup.py
-python3 tests/check_tools.py
-python3 tests/check_sandbox.py
-python3 tests/check_execution.py
-python3 tests/check_hardware.py
-python3 tests/check_kaggle.py
-python3 tests/check_model_discovery.py
+./scripts/check.sh --strict
 git diff --check
 ```
 
-Everything that is a test lives under `tests/`: the fast checks above at the top
-level, and the ones that need a container or a real model under
-`tests/integration/`. `scripts/` holds development utilities that are not tests.
-The two checks outside the pass above are `tests/check_commit_workflow.py`,
-which calls a real model through `isaacli`, and
-`tests/integration/test-install-lifecycle.sh`, which builds a disposable systemd
-container to exercise install and purge without touching the developer's HOME.
+One command, the same one CI runs. It finds `tests/check_*.py` by glob, so a new
+check joins the suite by being written and no list of file names is kept
+anywhere, here included: a hand-written list existed once, four checks fell out
+of it while they still existed and still passed, and that is how a suite gets
+smaller without anybody deciding to shrink it. `ls tests/check_*.py` answers
+which ones exist and cannot be out of date.
+
+Two things keep that honest. `EXPECTED_CHECKS` in `scripts/check.sh` is a floor
+and fails the run when fewer files than that were accounted for, so deleting,
+renaming or losing one in a merge is caught; it is raised in the same commit that
+adds a check. `--strict` turns a check that skipped part of itself into a
+failure, because a check that quietly runs half of what it claims passes on less
+than it says.
+
+Everything that is a test lives under `tests/`: the fast checks at the top level,
+and the ones that need a container or a real model under `tests/integration/`.
+`scripts/` holds development utilities that are not tests. Two checks sit outside
+`check.sh` on purpose. `tests/check_commit_workflow.py` drives a real model
+through `isaacli` and runs in its own workflow,
+`.github/workflows/live-model.yml`, nightly and on demand, because a model
+download and minutes of CPU inference must not stand between a commit and its
+green tick. `tests/integration/test-install-lifecycle.sh` builds a disposable
+systemd container to exercise install and purge without touching the developer's
+HOME.
 
 The checks are standalone scripts, not pytest modules: they run their assertions
 at import time. That is why they are named `check_*` and not `test_*`: pytest
