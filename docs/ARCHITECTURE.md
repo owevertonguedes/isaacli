@@ -280,6 +280,13 @@ may stop fitting entirely in the GPU.
 - the workspace as the boundary for files and commands;
 - approval before unauthorised mutations, and an explicit warning when the
   command is destructive, so approval does not become a reflex;
+- with no terminal to ask on, the command is refused and the answer says so,
+  naming the absence rather than a person. Refusing is right, because approval
+  cannot be obtained from nobody; calling it a decision by the user was a bug,
+  measured in CI on 2026-09-08, where a model was told three times that its user
+  had refused a commit nobody was ever asked about. Ctrl+C at the prompt IS the
+  user answering and keeps that wording. Headless runs get their approvals from
+  saved permission rules, decided before the run;
 - approval is the decision, not a suggestion. Exactly one thing may still refuse
   after the user says yes: the kernel (`bwrap`, nothing writable outside the
   workspace). The allowlist, the `gh` routes, the force-push flags, the network
