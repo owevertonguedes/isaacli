@@ -19,9 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by commit rather than by tag: a tag is a moving pointer that
+      # whoever owns the action can repoint, so `@v4` is a promise to run
+      # whatever they publish next. This is actions/checkout v4.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: actions/setup-python@v5
+      # actions/setup-python v5, pinned for the same reason.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
 
@@ -59,4 +63,18 @@ jobs:
       - name: Run the check suite
         # Every tests/check_*.py runs here now, check_execution.py included.
         # See docs/SECURITY.md for what that does and does not prove.
+        #
+        # The script refuses to run fewer check files than it expects, so a
+        # check deleted or renamed out of the glob stops the build instead of
+        # shrinking the suite in silence. It also reports, without failing, any
+        # check that skipped part of itself.
+        #
+        # `--strict` turns those partial runs into failures and is deliberately
+        # NOT used yet. Measured on 2026-09-08: this runner has no pytest, so
+        # check_execution.py skips the one assertion that drives pytest under
+        # the seccomp filter, and installing pytest to satisfy it made that same
+        # assertion FAIL, because the sandbox does not bind the site-packages
+        # the installed pytest lives in. Turning --strict on before fixing that
+        # would be trading a quiet gap for a red build that says nothing new.
+        # Task 078 carries the measurement.
         run: ./scripts/check.sh
