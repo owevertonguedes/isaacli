@@ -226,6 +226,69 @@ def _installed_models(installed):
     return [_model_item(model) for model in sorted(installed, key=str.casefold)]
 
 
+def model_menu(recommended_items, installed, current_config, tr,
+               row_machine=None):
+    """The rows of the /model screen, and what each row means.
+
+    Built here rather than inline in the screen, and public for the same reason
+    `model_source_entries` and `_detect_engines` are: a check has to be able to
+    answer this screen by naming a model instead of counting to it. A number
+    typed into a check keeps passing while the row it lands on moves, which is
+    how a green run ends up exercising a different model than it claims.
+
+    Two rows carry no model and are what makes counting fragile: the section
+    headings, which are drawn as disabled rows so nobody can land on them, and
+    which sit at 0, 1 and after the last recommendation. Adding one curated
+    model moves everything below it by one.
+
+    Returns `entries` (what each row is: a heading is None, a model is its dict,
+    and the last two are the markers the screen branches on), `options` (the
+    text drawn), `headers` (the rows that cannot be chosen) and the built table.
+    """
+    catalogued = {
+        item["base_model"].removesuffix(":latest").casefold()
+        for item in recommended_items
+    }
+    configured_derivatives = {
+        profile.get("model", "").removesuffix(":latest").casefold()
+        for profile in ((current_config or {}).get("profiles") or {}).values()
+        if profile.get("provider", "ollama") == "ollama"
+        and profile.get("base_model")
+        and profile.get("model") != profile.get("base_model")
+    }
+    local_items = [
+        item for item in _installed_models(installed)
+        if item["base_model"].removesuffix(":latest").casefold() not in catalogued
+        and item["base_model"].removesuffix(":latest").casefold()
+        not in configured_derivatives
+    ]
+    table = model_discovery.model_table(
+        [_model_cells(item, installed, tr, row_machine)
+         for item in recommended_items],
+        row_machine, translate=tr.t,
+        state_header=tr.t("model.table.installed"))
+    entries = [
+        None, None, *recommended_items, None, *local_items,
+        "__back__", "__other__",
+    ]
+    options = [
+        tr.t("model.section.recommended"),
+        table["header"],
+        *table["rows"],
+        tr.t("model.section.installed", count=len(local_items)),
+        *[item["base_model"] for item in local_items],
+        tr.t("navigation.back"),
+        model_discovery.text("model.discovery.other"),
+    ]
+    # The column headings sit immediately above the rows they name, rather than
+    # in the explanation, because a second section follows and a heading five
+    # lines away heads nothing. They are disabled lines: rows nobody can land on
+    # by mistake.
+    headers = {0, 1, len(recommended_items) + 2}
+    return {"entries": entries, "options": options, "headers": headers,
+            "table": table, "local_items": local_items}
+
+
 def _is_installed(model, installed):
     wanted = model.removesuffix(":latest").casefold()
     return any(item.removesuffix(":latest").casefold() == wanted for item in installed)
@@ -1311,47 +1374,13 @@ def _run_setup(input_fn=input, config_file=None, initial_language=None,
         else:
             screen_task = onboarding_task
         recommended_items = _resolved_local_catalog(screen_task, machine, tr)
-        configured_derivatives = {
-            profile.get("model", "").removesuffix(":latest").casefold()
-            for profile in (current_config.get("profiles") or {}).values()
-            if profile.get("provider", "ollama") == "ollama"
-            and profile.get("base_model")
-            and profile.get("model") != profile.get("base_model")
-        }
         while True:
-            catalogued = {
-                item["base_model"].removesuffix(":latest").casefold()
-                for item in recommended_items
-            }
-            local_items = [
-                item for item in _installed_models(installed)
-                if item["base_model"].removesuffix(":latest").casefold() not in catalogued
-                and item["base_model"].removesuffix(":latest").casefold()
-                not in configured_derivatives
-            ]
-            table = model_discovery.model_table(
-                [_model_cells(item, installed, tr, row_machine)
-                 for item in recommended_items],
-                row_machine, translate=tr.t,
-                state_header=tr.t("model.table.installed"))
-            # The column headings sit immediately above the rows they name,
-            # rather than in the explanation, because a second section follows
-            # and a heading five lines away heads nothing. It is a disabled
-            # line: a row nobody can land on by mistake.
-            entries = [
-                None, None, *recommended_items, None, *local_items,
-                "__back__", "__other__",
-            ]
-            options = [
-                tr.t("model.section.recommended"),
-                table["header"],
-                *table["rows"],
-                tr.t("model.section.installed", count=len(local_items)),
-                *[item["base_model"] for item in local_items],
-                tr.t("navigation.back"),
-                model_discovery.text("model.discovery.other"),
-            ]
-            headers = {0, 1, len(recommended_items) + 2}
+            menu = model_menu(recommended_items, installed, current_config, tr,
+                              row_machine)
+            entries = menu["entries"]
+            options = menu["options"]
+            headers = menu["headers"]
+            table = menu["table"]
             _current_profile, current_item = config.profile(current_config)
             modelo_atual = (
                 (current_item.get("base_model") or current_item.get("model", ""))

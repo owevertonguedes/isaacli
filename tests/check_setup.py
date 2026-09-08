@@ -107,6 +107,18 @@ def context_answer(limit, key):
         return str(len(levels) + 1)
     if key == "back":
         return str(len(levels) + 2)
+    # A rung, named by the number of tokens it stands for. The rungs move for
+    # the same reason the two rows above do: one that does not fit is not drawn,
+    # so "the third row" is 32K under one ceiling and something else under
+    # another, and a check that typed 3 would configure a context it did not
+    # mean while still passing.
+    if isinstance(key, int):
+        for index, (_label, value) in enumerate(levels, 1):
+            if value == key:
+                return str(index)
+        raise AssertionError(
+            f"no {key}-token rung on the context screen under a {limit} ceiling: "
+            f"{[value for _label, value in levels]}")
     raise AssertionError(f"no {key} entry in the context screen")
 
 
@@ -124,6 +136,54 @@ def source_answer(key, config_file, tr=None, which=lambda _name: "/usr/bin/ollam
         if entry == key or (isinstance(entry, tuple) and entry[0] == key):
             return str(index)
     raise AssertionError(f"no {key} entry in the model source screen")
+
+
+def model_answer(key, config_file=None, task=None, tr=None, installed=None):
+    """The model menu's position for one model, resolved by its name.
+
+    The last screen in this file that was still answered by counting, and the
+    worst one to count on. Its rows are two section headings that cannot be
+    landed on, then the curated recommendations, then whatever Ollama reports
+    as installed minus anything already curated or already a configured
+    derivative, then back and other. Adding one curated model, or installing
+    one more tag, moves every row below it, and a check that typed a number
+    would go on passing while configuring a different model than it says.
+
+    Entered through `setup_ollama.model_menu`, which is the function the screen
+    itself builds from, so the two cannot describe different lists. The live
+    size resolution is closed off the same way this file already closes it
+    elsewhere: it reaches the network, and it changes what a row says, never
+    which row a model is on, which is the only thing being asked here.
+
+    `key` is a model's base name, or `__back__` / `__other__` for the two rows
+    at the bottom.
+    """
+    tr = tr or setup_ollama.Translator("pt-BR")
+    names = installed if installed is not None else {
+        entry.get("name", "").removesuffix(":latest") for entry in client.models()}
+    live = setup_ollama._resolve_live
+    setup_ollama._resolve_live = lambda *_a, **_k: None
+    try:
+        machine, _machine_line = setup_ollama._machine_profile(tr)
+        recommended = setup_ollama._resolved_local_catalog(task, machine, tr)
+    finally:
+        setup_ollama._resolve_live = live
+    current = config.load(config_file) if config_file else config.empty_config()
+    menu = setup_ollama.model_menu(
+        recommended, names, current, tr, setup_ollama._row_machine(machine))
+    # The headings are drawn as disabled rows, and a disabled row takes no
+    # number: terminal_ui numbers what can be chosen, so this counts the same.
+    selectable = [entry for entry in menu["entries"] if entry is not None]
+    for index, entry in enumerate(selectable, 1):
+        if entry == key:
+            return str(index)
+        if (isinstance(entry, dict)
+                and entry["base_model"].removesuffix(":latest") == key):
+            return str(index)
+    raise AssertionError(
+        f"no {key} entry in the model screen: "
+        + str([entry if isinstance(entry, str)
+               else entry["base_model"] for entry in selectable]))
 
 
 failures = []
@@ -144,6 +204,16 @@ class FakeClient:
         return [{"name": name} for name in self.installed]
 
     def show(self, model):
+        # Named rather than indexed. A screen that lands on a model this
+        # fixture never described is the interesting failure, and `KeyError:
+        # 'aaa-planted:1b'` says nothing about which screen asked or why. That
+        # is exactly what came out of this file when a row moved under a check
+        # that answered by number: proof the wrong model had been chosen,
+        # delivered as a traceback that took every check below it down too.
+        if model not in self.infos:
+            raise AssertionError(
+                f"a screen chose {model!r}, which this fixture does not "
+                f"describe; it knows {sorted(self.infos)}")
         return self.infos[model]
 
 
@@ -194,7 +264,9 @@ try:
     out = io.StringIO()
     with redirect_stdout(out):
         code = setup_ollama.run_setup(
-            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1", "6", "12K", "1"), config_file=config_file,
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"),
+                    model_answer(qwen36), context_answer(262144, "manual"), "12K",
+                    thinking_answer("low")), config_file=config_file,
         )
     data = json.loads(config_file.read_text())
     qwen_profile = data["profiles"][data["default_profile"]]
@@ -243,7 +315,10 @@ try:
     selector_out = io.StringIO()
     with redirect_stdout(selector_out):
         code = setup_ollama.run_model_selector(
-            answers(engine_answer("ollama"), "6", "1"), config_file=selector_config,
+            answers(engine_answer("ollama"),
+                    model_answer("granite4:micro-h", selector_config),
+                    context_answer(1048576, 8192)),
+            config_file=selector_config,
         )
     _, micro_profile = config.profile(config.load(selector_config))
     check(code == 0 and micro_profile["model"] == "granite4:micro-h",
@@ -286,7 +361,9 @@ try:
 
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "5", "3", "3"), config_file=config_file,
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"),
+                    model_answer("gpt-oss:20b"), context_answer(131072, 32768),
+                    thinking_answer("high")), config_file=config_file,
         )
     data = config.load(config_file)
     gpt_profile = data["profiles"][data["default_profile"]]
@@ -304,7 +381,7 @@ try:
         "model_info": {"qwen3.context_length": 262144},
     }
     with redirect_stdout(io.StringIO()):
-        code = setup_ollama.run_setup(answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1"), config_file=config_file)
+        code = setup_ollama.run_setup(answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), model_answer(qwen36)), config_file=config_file)
     check(code == 1 and config_file.read_text() == before_failure,
           "a model without tools is refused without touching the previous profile")
     client.infos[qwen36] = original_qwen_info
@@ -545,7 +622,9 @@ try:
     back_config = root / "back-config.json"
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
-            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "8", "4", engine_answer("api"), "Server", "https://api.test/v1",
+            answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"),
+                    model_answer("__back__"), task_answer(None), engine_answer("api"), "Server",
+                    "https://api.test/v1",
                     "test-model", "key", "1"),
             config_file=back_config,
         )
@@ -774,7 +853,9 @@ try:
         task_out = io.StringIO()
         with redirect_stdout(task_out):
             code = setup_ollama.run_setup(
-                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"), config_file=task_config,
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"),
+                    model_answer("granite4:micro-h", task="fix_bug"), "12K",
+                    thinking_answer("low")), config_file=task_config,
             )
         task_data = config.load(task_config)
         screen = task_out.getvalue()
@@ -803,7 +884,9 @@ try:
         skip_out = io.StringIO()
         with redirect_stdout(skip_out):
             code = setup_ollama.run_setup(
-                answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"), "1", "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"),
+                    model_answer(qwen36), context_answer(262144, "manual"), "12K",
+                    thinking_answer("low")),
                 config_file=skip_config,
             )
         skip_data = config.load(skip_config)
@@ -843,7 +926,9 @@ try:
         headless_out = io.StringIO()
         with redirect_stdout(headless_out):
             code = setup_ollama.run_setup(
-                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"),
+                    model_answer("granite4:micro-h", task="fix_bug"), "12K",
+                    thinking_answer("low")),
                 config_file=root / "headless-config.json",
             )
         headless = headless_out.getvalue()
@@ -874,7 +959,9 @@ try:
         broken_out = io.StringIO()
         with redirect_stdout(broken_out):
             code = setup_ollama.run_setup(
-                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"), "6", "12K", "1"),
+                answers(language_answer("pt-BR"), task_answer("fix_bug"), engine_answer("ollama"),
+                    model_answer("granite4:micro-h", task="fix_bug"), "12K",
+                    thinking_answer("low")),
                 config_file=root / "broken-detect-config.json",
             )
         check(code == 0 and "Traceback" not in broken_out.getvalue()
