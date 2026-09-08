@@ -41,6 +41,82 @@ def check(condition, description):
         failures.append(description)
 
 
+# ------------------------------------------------------------------ geometry
+#
+# How many layers hold a KV cache, which is the number the whole fit
+# calculation multiplies. Getting it wrong on a hybrid model overstated
+# Qwen3.8-27B's footprint by 45% at a 49152 context; getting it wrong the other
+# way, by handing the discount to a dense model, would offer four times the
+# context a card can hold and only be discovered by a launch that fails. So
+# both directions are checked, and the second one is the one that costs money.
+
+# The real config.json of Qwen3.8-27B, read live on 2026-09-08.
+HYBRID_CONFIG = {
+    "num_hidden_layers": 64, "num_key_value_heads": 4, "head_dim": 256,
+    "full_attention_interval": 4,
+    "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 16,
+    "linear_num_key_heads": 16, "linear_num_value_heads": 48,
+    "linear_key_head_dim": 128, "linear_value_head_dim": 128,
+    "linear_conv_kernel_dim": 4,
+}
+# The real config.json of Qwen/Qwen3-4B, a dense model, read the same day: it
+# declares neither of the two fields. "The field is absent, so bill every
+# layer" is the literal reading of what a dense model says about itself.
+DENSE_CONFIG = {
+    "num_hidden_layers": 36, "num_key_value_heads": 8, "hidden_size": 2560,
+    "num_attention_heads": 32,
+}
+
+hybrid = model_discovery._geometry(HYBRID_CONFIG)
+check(hybrid["n_layers"] == 16 and hybrid["block_count"] == 64,
+      f"a hybrid model is billed for the 16 layers that cache, not all 64 "
+      f"({hybrid['n_layers']} of {hybrid['block_count']})")
+check(hybrid["recurrent_bytes"] == 598 * 1024 ** 2 + 512 * 1024,
+      f"and the other 48 layers are charged their declared 598.50 MiB "
+      f"({hybrid['recurrent_bytes'] / 1024 ** 2:.2f} MiB)")
+
+dense = model_discovery._geometry(DENSE_CONFIG)
+check(dense["n_layers"] == dense["block_count"] == 36,
+      f"a dense model, which declares neither field, keeps the full bill "
+      f"({dense['n_layers']} of {dense['block_count']})")
+check(dense["recurrent_bytes"] == 0,
+      "and holds no recurrent state, because it has no recurrent layers")
+# Two independent gates stand between a dense model and the discount, and that
+# is worth stating because it is what makes the dangerous direction safe.
+# Breaking the layer count alone was planted and changed nothing: a dense model
+# cannot size recurrent layers either, so the sizing gate refuses the discount
+# on its own. It took breaking both at once to get a dense model discounted.
+check(model_discovery._recurrent_bytes(DENSE_CONFIG, 27) is None,
+      "a dense config can never size recurrent layers, so a misread layer "
+      "count alone still cannot hand it the discount")
+
+# Each of the two fields alone reaches the same 16, so a model that declares
+# only one is not silently billed as dense.
+only_types = model_discovery._geometry(
+    {k: v for k, v in HYBRID_CONFIG.items() if k != "full_attention_interval"})
+only_interval = model_discovery._geometry(
+    {k: v for k, v in HYBRID_CONFIG.items() if k != "layer_types"})
+check(only_types["n_layers"] == only_interval["n_layers"] == 16,
+      "layer_types and full_attention_interval are read independently, and "
+      "agree at 16")
+
+# When they disagree the file is not understood, and an unclear file gets the
+# pessimistic reading rather than the convenient one.
+disagreeing = dict(HYBRID_CONFIG, full_attention_interval=2)
+check(model_discovery._geometry(disagreeing)["n_layers"] == 32,
+      "two readings that disagree take the larger, which bills more cache")
+
+# A hybrid this program cannot size does not get the discount at all. Dropping
+# 48 layers of cache while adding nothing back is the one error that ends in a
+# profile that will not load.
+unsizable = {k: v for k, v in HYBRID_CONFIG.items()
+             if not k.startswith("linear_")}
+blind = model_discovery._geometry(unsizable)
+check(blind["n_layers"] == 64 and blind["recurrent_bytes"] == 0,
+      f"a hybrid whose recurrent layers cannot be sized keeps the full bill "
+      f"({blind['n_layers']} of {blind['block_count']})")
+
+
 class FakeResponse:
     def __init__(self, payload=None, length=None, status=200):
         self.payload = payload
@@ -99,8 +175,16 @@ configs = {
     "source/Huge": {
         "num_hidden_layers": 64, "num_key_value_heads": 8, "head_dim": 128,
     },
+    # The real config.json of this model, read live on 2026-09-08. It is hybrid,
+    # and the fixture says so, because a fixture that quietly described it as
+    # dense would let the discount go untested on the one model that needs it.
     "Qwen/Qwen3.8-27B": {
         "num_hidden_layers": 64, "num_key_value_heads": 4, "head_dim": 256,
+        "full_attention_interval": 4,
+        "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 16,
+        "linear_num_key_heads": 16, "linear_num_value_heads": 48,
+        "linear_key_head_dim": 128, "linear_value_head_dim": 128,
+        "linear_conv_kernel_dim": 4,
     },
 }
 sizes = {

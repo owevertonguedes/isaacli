@@ -493,6 +493,10 @@ def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None,
         model["model_bytes"], model["n_layers"], model["n_kv_heads"],
         model["head_dim"], usable_mb, overhead_mb=overhead_mb,
         bytes_per_element=bytes_per_element,
+        # Resident whatever the context is, so it comes off the top rather than
+        # out of the per-token division. Zero unless the model declared itself
+        # hybrid; see _geometry in model_discovery.py.
+        fixed_bytes=int(model.get("recurrent_bytes") or 0),
     )
     if not room:
         return 0, "does_not_fit"

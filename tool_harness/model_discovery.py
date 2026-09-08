@@ -190,6 +190,62 @@ def _select_gguf(files, selector=None):
     raise DiscoveryError(text("model.discovery.error.file_required"))
 
 
+LINEAR_ATTENTION_KEYS = ("linear_num_key_heads", "linear_num_value_heads",
+                         "linear_key_head_dim", "linear_value_head_dim",
+                         "linear_conv_kernel_dim")
+
+
+def _caching_layers(payload, block_count):
+    """How many of a model's layers actually hold a KV cache.
+
+    A dense model caches in every layer, and declares neither of the two fields
+    read here: checked against Qwen/Qwen3-4B, which has no `layer_types` and no
+    `full_attention_interval`. So "the field is absent, bill every layer" is
+    not a precaution somebody invented, it is the literal reading of what a
+    dense model says about itself, and it is also the safe side: overestimating
+    refuses a window that would have fitted, underestimating saves a profile
+    that will not load, and only the second costs GPU quota to discover.
+
+    A hybrid model says it twice, and both are read. Qwen3.8-27B declares
+    `layer_types` with 16 `full_attention` among 64, and
+    `full_attention_interval: 4` over 64 layers, which is the same 16 by
+    division; llama.cpp then reported 16 layers of cache for the same weights.
+    When the two disagree, the larger wins, because a disagreement means the
+    file is not understood and an unclear file gets the pessimistic reading.
+    """
+    counts = []
+    types = payload.get("layer_types")
+    if isinstance(types, list) and types:
+        full = sum(1 for entry in types if entry == "full_attention")
+        if full:
+            counts.append(full)
+    interval = payload.get("full_attention_interval")
+    if isinstance(interval, int) and not isinstance(interval, bool) and interval > 0:
+        counts.append(max(1, block_count // interval))
+    if not counts:
+        return block_count
+    return min(block_count, max(counts))
+
+
+def _recurrent_bytes(payload, recurrent_layers):
+    """The fixed state of the non-attention layers, or None when unreadable.
+
+    None is not zero. Zero would say the layers cost nothing, which is the
+    optimistic error this whole correction exists to avoid; None says the model
+    is hybrid and this program cannot size it, and the caller answers that by
+    declining the discount altogether rather than by guessing.
+    """
+    if recurrent_layers <= 0:
+        return 0
+    try:
+        heads_k, heads_v, dim_k, dim_v, conv = (
+            int(payload[name]) for name in LINEAR_ATTENTION_KEYS)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return hardware.recurrent_state_bytes(
+        recurrent_layers, heads_k, heads_v, dim_k, dim_v, conv)
+
+
 def _geometry(config_payload):
     payload = config_payload.get("text_config") or config_payload
     try:
@@ -212,7 +268,28 @@ def _geometry(config_payload):
             raise DiscoveryError(text("model.discovery.error.experts")) from error
         if not 0 < ratio <= 1:
             raise DiscoveryError(text("model.discovery.error.ratio"))
-    return layers, kv_heads, head_dim, ratio
+
+    caching = _caching_layers(payload, layers)
+    recurrent = _recurrent_bytes(payload, layers - caching)
+    if recurrent is None:
+        # Hybrid, and it did not say enough about its recurrent layers for
+        # them to be sized. Declining the discount leaves the model billed the
+        # way it was before any of this existed, which is pessimistic and
+        # therefore safe; taking the discount here would drop 48 layers of
+        # cache and add nothing back.
+        debug.note("model_discovery._geometry",
+                   f"hybrid model declares {layers - caching} recurrent layers "
+                   "but not the dimensions to size them; billing every layer "
+                   "for KV cache instead of taking the discount")
+        caching, recurrent = layers, 0
+    return {
+        "n_layers": caching,
+        "block_count": layers,
+        "n_kv_heads": kv_heads,
+        "head_dim": head_dim,
+        "active_ratio": ratio,
+        "recurrent_bytes": recurrent,
+    }
 
 
 def _seed_maps(catalog_path):
@@ -291,7 +368,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
     config_repo = upstream or repo
     config_url = f"{HF_ROOT}/{urllib.parse.quote(config_repo, safe='/')}/resolve/main/config.json"
     config_payload = _json_request(config_url, timeout=timeout, urlopen_fn=urlopen_fn)
-    layers, kv_heads, head_dim, active_ratio = _geometry(config_payload)
+    shape = _geometry(config_payload)
     # Geometry may come from the upstream model, because a derivative keeps the
     # architecture. A score may not. An uncensored or otherwise modified build
     # declares the official model as its base, and inheriting the base model's
@@ -315,10 +392,16 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "alias": alias,
         "source": f"{HF_ROOT}/{repo}",
         "model_bytes": model_bytes,
-        "n_layers": layers,
-        "n_kv_heads": kv_heads,
-        "head_dim": head_dim,
-        "active_ratio": active_ratio,
+        # n_layers is the caching count, not the block count: it is what the
+        # KV cache term multiplies. block_count is kept beside it because it is
+        # what a person reads as "how deep is this model", and because the
+        # difference between the two is the thing that made the estimate wrong.
+        "n_layers": shape["n_layers"],
+        "block_count": shape["block_count"],
+        "n_kv_heads": shape["n_kv_heads"],
+        "head_dim": shape["head_dim"],
+        "recurrent_bytes": shape["recurrent_bytes"],
+        "active_ratio": shape["active_ratio"],
         "benchmark": benchmark,
         "benchmark_source": evidence.get("benchmark_source"),
         "scores": evidence.get("scores") or {},
@@ -491,14 +574,21 @@ def fit_report(model, vram_mb, overhead_mb=hardware.DEFAULT_OVERHEAD_MB,
     kv_bytes = hardware.kv_cache_bytes(
         model["n_layers"], model["n_kv_heads"], model["head_dim"], context,
     )
+    # Resident and context-independent: the recurrent layers of a hybrid model.
+    # Zero for every dense model, which is every model that does not say
+    # otherwise, so this term appears in the arithmetic without appearing on
+    # any screen it does not belong on.
+    fixed_bytes = int(model.get("recurrent_bytes") or 0)
     result = dict(model)
     result.update({
         "kv_bytes": kv_bytes,
+        "fixed_bytes": fixed_bytes,
         "context": context,
         "vram_mb": vram_mb,
         "overhead_mb": overhead_mb,
         "fits": hardware.fits(
             model["model_bytes"], kv_bytes, vram_mb, overhead_mb=overhead_mb,
+            fixed_bytes=fixed_bytes,
         ),
         "bytes_per_token": hardware.bytes_read_per_token(
             model["model_bytes"], model.get("active_ratio", 1.0),
@@ -517,7 +607,11 @@ def format_fit(report, translate=None, state_key="model.discovery.fit",
         fits=translate(fit_yes_key) if report["fits"] else translate(fit_no_key),
         weights=units.gib(report["model_bytes"]),
         kv=units.gib(report["kv_bytes"]),
-        total=units.gib(report["model_bytes"] + report["kv_bytes"]),
+        # The total is what the fit verdict was computed from, including the
+        # recurrent state of a hybrid model. A total that does not add up to
+        # the verdict beside it is how a screen argues with itself.
+        total=units.gib(report["model_bytes"] + report["kv_bytes"]
+                        + int(report.get("fixed_bytes") or 0)),
         available=units.gib(available),
     )
 

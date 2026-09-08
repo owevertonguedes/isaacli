@@ -100,6 +100,41 @@ q8 = hardware.kv_cache_bytes(
 check(q8 == 213909504,
       f"q8_0 charges 34 bytes per 32 elements without early truncation ({q8})")
 
+# The hybrid model, against the two figures llama.cpp printed for it on
+# borrowed cards on 2026-09-08. These are not estimates to compare against an
+# estimate: they are what the runtime declared it had allocated.
+#
+#   llama_kv_cache: size = 3072.00 MiB ( 49152 cells, 16 layers, 4/1 seqs)
+#   llama_memory_recurrent: CUDA0 RS buffer size = 311.72 MiB
+#   llama_memory_recurrent: CUDA1 RS buffer size = 286.78 MiB
+#
+# Qwen3.8-27B: 64 layers of which 16 hold a KV cache, 4 KV heads, head_dim 256,
+# and 48 recurrent layers with 16 key heads, 48 value heads, 128/128 head dims
+# and a convolution kernel of 4. Every one of those numbers is read from the
+# model's own config.json, checked live the same day.
+MIB = 1024 ** 2
+hybrid_kv = hardware.kv_cache_bytes(16, 4, 256, 49152)
+check(hybrid_kv == 3072 * MIB,
+      f"the cache of the 16 caching layers is the declared 3072.00 MiB "
+      f"({hybrid_kv / MIB:.2f} MiB)")
+check(hardware.kv_cache_bytes(16, 4, 256, 8192) == 512 * MIB,
+      "and 512.00 MiB at the 8192 context, the other point that was measured")
+# The defect this replaced, kept as a number so the size of it is on record.
+billed_every_layer = hardware.kv_cache_bytes(64, 4, 256, 49152)
+check(billed_every_layer == 4 * hybrid_kv,
+      f"billing all 64 layers overstated it exactly fourfold "
+      f"({billed_every_layer / MIB:.2f} MiB against 3072.00)")
+
+recurrent = hardware.recurrent_state_bytes(48, 16, 48, 128, 128, 4)
+check(abs(recurrent / MIB - 598.50) < 0.01,
+      f"the recurrent state of the other 48 layers is the declared 598.50 MiB "
+      f"({recurrent / MIB:.2f} MiB, 311.72 + 286.78 across the two cards)")
+check(hardware.recurrent_state_bytes(48, 16, 48, 128, 128, 4, n_seqs=1) * 4
+      == recurrent,
+      "it scales with the number of server slots and nothing else")
+check(hardware.recurrent_state_bytes(0, 16, 48, 128, 128, 4) == 0,
+      "a model with no recurrent layers holds no recurrent state")
+
 GB = 1024 ** 3
 # 4 GB card, 768 MB overhead: 3328 MB usable.
 check(hardware.fits(3 * GB, 200 * 1024 * 1024, 4096) is True,
@@ -110,6 +145,31 @@ check(hardware.fits(3 * GB, 700 * 1024 * 1024, 4096, overhead_mb=0) is True,
       "the overhead is what decides that borderline case, and it is a parameter")
 check(hardware.fits(1, 0, 100) is False,
       "a card smaller than the overhead fits nothing instead of going negative")
+
+# fixed_bytes is resident and does not grow with the context, so it has to
+# count against the fit and come off the top of the division, not out of the
+# per-token cost. Both, because getting only one of them right is what would
+# make a hybrid model look like it fits and then not load.
+check(hardware.fits(3 * GB, 200 * MIB, 4096, fixed_bytes=0) is True
+      and hardware.fits(3 * GB, 200 * MIB, 4096, fixed_bytes=200 * MIB) is False,
+      "a resident state large enough to overflow the card makes the fit say no")
+without_state = hardware.max_context_that_fits(2 * GB, 36, 8, 128, 8192)
+with_state = hardware.max_context_that_fits(
+    2 * GB, 36, 8, 128, 8192, fixed_bytes=512 * MIB)
+per_token = 2 * 36 * 8 * 128 * 2
+# Within one token, and the one token is not slack: both ends are floored
+# independently, so the difference of two floors lands on either side of the
+# exact quotient. Demanding equality here failed against correct arithmetic,
+# 3641 against 3640, which is a ruler being wrong rather than a division.
+exact = (512 * MIB) / per_token
+check(0 <= (without_state - with_state) - exact < 1
+      or 0 <= exact - (without_state - with_state) < 1,
+      f"and it costs its own size in context, to within the token that two "
+      f"independent floors can differ by ({without_state} down to {with_state}, "
+      f"{exact:.1f} expected)")
+check(hardware.max_context_that_fits(
+          2 * GB, 36, 8, 128, 8192, fixed_bytes=100 * GB) == 0,
+      "a resident state larger than the card answers no context, not a negative one")
 
 q8_context = hardware.max_context_that_fits(
     2_497_281_120, 36, 8, 128, 4096,

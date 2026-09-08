@@ -3710,19 +3710,34 @@ died_at_65536 = {
     "model_bytes": 25092535456, "n_layers": 48, "n_kv_heads": 4,
     "head_dim": 128,
 }
+# Qwen3.8-27B, and `n_layers` is 16 rather than 64 because 16 is what holds a
+# KV cache: read live from its config.json on 2026-09-08, which declares
+# `layer_types` as 48 linear_attention plus 16 full_attention, and confirmed by
+# llama.cpp reporting `16 layers` for the same weights on borrowed cards. The
+# other 48 layers are recurrent, and their fixed state is the second number.
 served_at_24576 = {
     "alias": "dense-27b-q6-k-l", "machine_shape": "NvidiaTeslaT4",
-    "model_bytes": 24193919904, "n_layers": 64, "n_kv_heads": 4,
-    "head_dim": 256,
+    "model_bytes": 24193919904, "n_layers": 16, "n_kv_heads": 4,
+    "head_dim": 256, "block_count": 64,
+    "recurrent_bytes": model_discovery.hardware.recurrent_state_bytes(
+        48, 16, 48, 128, 128, 4),
 }
 moe_ceiling = cli_kaggle._context_ceiling(died_at_65536)
 dense_ceiling = cli_kaggle._context_ceiling(served_at_24576)
 check(moe_ceiling < 65536,
       "the exact request that died allocating its cache on 2026-08-21 is "
       f"refused before it costs anything: {moe_ceiling} offered, not 65536")
-check(dense_ceiling == 24576,
-      "the exact dense quantization that served 24576 tokens on 2026-08-22 "
-      f"offers that measured floor automatically: {dense_ceiling}")
+# Not equality any more, and the reason is worth writing down. This used to be
+# exactly 24576, and it was: the arithmetic billed all 64 layers for cache,
+# computed 16384, and a hand-entered measured floor pulled it back up to what
+# the launch had actually served. With the cache billed to the 16 layers that
+# hold one, and the recurrent state of the other 48 charged separately, the
+# arithmetic reaches 24576 on its own and keeps going. What still has to hold
+# is the thing the measurement proved: this launch served 24576 tokens, so
+# offering less than that would be refusing a window somebody watched work.
+check(dense_ceiling >= 24576,
+      "the exact quantization that served 24576 tokens on 2026-08-22 is never "
+      f"offered less than that: {dense_ceiling}")
 
 # A model whose weights already exceed the cards asks for a ceiling that has
 # no room for any cache at all, and it must answer the floor rather than a

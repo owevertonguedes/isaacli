@@ -1257,7 +1257,18 @@ MODEL_CONTEXT_LADDER = (16384, 24576, 32768, 49152, 65536, 98304, 131072)
 # byte count in the key so a score or fit measured on one quantization cannot
 # leak to another derivative of the same base model.
 MEASURED_CONTEXT_FLOORS = {
-    ("NvidiaTeslaT4", 24193919904, 64, 4, 256): 24576,
+    # Keyed on the caching-layer count, which for this model is 16 of its 64:
+    # it is hybrid, and `_geometry` in model_discovery.py now says so. The key
+    # used to read 64 here, and leaving it that way would have turned a
+    # measured floor into an entry that matches nothing, which is how a
+    # measurement disappears without anybody deciding to drop it.
+    #
+    # It no longer binds. With the cache billed to the 16 layers that hold one,
+    # the arithmetic offers this model 65536 tokens, so the max() below takes
+    # the computed number and not this one. It stays because it is a thing that
+    # was measured on real cards, and because it is what would still be offered
+    # if the geometry were ever misread back into 64 dense layers.
+    ("NvidiaTeslaT4", 24193919904, 16, 4, 256): 24576,
 }
 # The cache used to be allowed only half of what was free after the weights,
 # and that half was never a measurement. It was compensating, without saying
@@ -1311,7 +1322,12 @@ def _context_ceiling(model):
     usable_per_card = max(
         0, accelerator["vram_mb"] - accelerator["overhead_mb"]) / count
     weights_per_card = model["model_bytes"] / count
-    budget_per_card = usable_per_card * 1024 * 1024 - weights_per_card
+    # The recurrent state of a hybrid model is resident and does not grow with
+    # the context, so it comes out of the budget once rather than out of the
+    # ladder. Zero for a dense model.
+    recurrent_per_card = int(model.get("recurrent_bytes") or 0) / count
+    budget_per_card = (usable_per_card * 1024 * 1024
+                       - weights_per_card - recurrent_per_card)
     best = MODEL_CONTEXT
     for context in MODEL_CONTEXT_LADDER:
         kv_per_card = hardware.kv_cache_bytes(
