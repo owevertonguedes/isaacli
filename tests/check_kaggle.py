@@ -4401,6 +4401,34 @@ check(all(len(cli_kaggle._preparation_slug(slug)) <= cli_kaggle.DATASET_SLUG_LIM
           + ["isaacli-model-" + "x" * 80]),
       "the preparation kernel name stays inside the slug limit")
 
+# The catalogue's n_layers is the number of layers that hold a KV cache, not the
+# number of blocks. The two are the same for a dense model and are not for a
+# hybrid one, and writing the block count there is how the 27B was offered a
+# 48K ceiling while its cache only ever came from 16 of its 64 layers. A hybrid
+# entry therefore has to say both, and has to say what the layers it just
+# stopped billing for cache do hold, because dropping them and adding nothing
+# back is the optimistic error that saves a profile which will not load.
+_hybrid_shape = []
+for _entry in cli_kaggle._load_model_candidates():
+    _blocks = _entry.get("block_count")
+    _caching = _entry.get("n_layers")
+    _state = _entry.get("recurrent_bytes") or 0
+    if _blocks is None:
+        if _state:
+            _hybrid_shape.append(
+                f"{_entry['alias']}: recurrent state with no block_count")
+        continue
+    if not 0 < _caching < _blocks:
+        _hybrid_shape.append(
+            f"{_entry['alias']}: {_caching} caching of {_blocks} blocks")
+    if _state <= 0:
+        _hybrid_shape.append(
+            f"{_entry['alias']}: {_blocks - _caching} layers with no cache and "
+            f"no state sized for them")
+check(not _hybrid_shape,
+      f"every hybrid entry says both how many layers cache and what the rest "
+      f"hold: {_hybrid_shape}")
+
 if failures:
     print(f"\n{len(failures)} check(s) failed")
     raise SystemExit(1)
