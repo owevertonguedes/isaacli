@@ -257,6 +257,7 @@
   "cli.kaggle.dataset.file_missing": "O dataset {ref} não contém o arquivo esperado {name}.",
   "cli.kaggle.push.failed": "kaggle kernels push falhou",
   "cli.kaggle.pushed": "Kernel enviado: {slug}\nPágina no Kaggle: {url}",
+  "cli.kaggle.log_kept": "O que este kernel disser enquanto roda fica guardado em {path}, porque o Kaggle só responde `kernels output` depois que o kernel acaba, e apagar um kernel apaga o log dele.",
   "cli.kaggle.url.stage": "  kernel: {stage}",
   "cli.kaggle.url.expired": "Esperei {minutes} minutos o {slug} publicar a URL do túnel e ele não publicou. O Kaggle ainda informa este kernel como {state}, ou seja ele está vivo e gastando quota de GPU.",
   "cli.kaggle.url.state_unknown": "em estado desconhecido",

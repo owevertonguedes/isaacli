@@ -3558,6 +3558,90 @@ finally:
 check(found == "https://one-two-three.trycloudflare.com" and len(url_attempts) == 3,
       "a log stream that ends while the kernel is queued is reopened, not believed")
 
+# What the kernel says while it is running, kept on this machine. `kernels
+# output` answers empty until a kernel is over and deleting one deletes its log
+# with it, so respecting a ceiling and collecting a log used to exclude each
+# other: on 2026-09-08 a probe was pushed, stopped on time, and produced no
+# measurement at all. These lines were already passing through this process on
+# their way to being dropped.
+kept_attempts = []
+kept_lines = ["[setup] extracting the prepared runtime archive\n",
+              "llama_kv_cache: size = 4608.00 MiB\n",
+              "TUNNEL_URL=https://kept.trycloudflare.com\n"]
+
+
+def kept_popen(command, **kwargs):
+    kept_attempts.append(list(map(str, command)))
+    return _FakeLog(kept_lines if len(kept_attempts) > 1 else [])
+
+
+kept_path = root / "kernel-logs" / "owner-isaacli-gpu-kept.log"
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        kept_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-kept", timeout=60,
+            popen_fn=kept_popen, run_fn=queued_status, log_path=kept_path)
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+kept_text = kept_path.read_text(encoding="utf-8") if kept_path.exists() else ""
+check(kept_url == "https://kept.trycloudflare.com"
+      and "llama_kv_cache: size = 4608.00 MiB" in kept_text
+      and "[setup] extracting the prepared runtime archive" in kept_text,
+      "the kernel's log is written down as it arrives, not left for a dead kernel")
+# The same wait, ending the way it ends when a kernel dies. The tail of that log
+# is the reason it died, and a file the failing path never closed loses it.
+crashed_path = root / "kernel-logs" / "owner-isaacli-gpu-crashed.log"
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-crashed", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog(
+                ["ggml_cuda_host_malloc: failed to allocate\n"]),
+            run_fn=lambda command, **kwargs: SimpleNamespace(
+                returncode=0, stdout='has status "KernelWorkerStatus.ERROR"',
+                stderr=""),
+            log_path=crashed_path)
+except RuntimeError:
+    pass
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+check(crashed_path.exists()
+      and "failed to allocate" in crashed_path.read_text(encoding="utf-8"),
+      "a wait that ends in a dead kernel still leaves its log behind")
+# A log that cannot be written is diagnosis, never a failed launch: the quota is
+# already being spent by the time this file is opened.
+unwritable_url = None
+unwritable_parent = root / "kernel-logs-not-a-directory"
+unwritable_parent.parent.mkdir(parents=True, exist_ok=True)
+unwritable_parent.write_text("this is a file", encoding="utf-8")
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(io.StringIO()):
+        unwritable_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-unwritable", timeout=60,
+            popen_fn=lambda command, **kwargs: _FakeLog(
+                ["TUNNEL_URL=https://unwritable.trycloudflare.com\n"]),
+            run_fn=queued_status, log_path=unwritable_parent / "nope.log")
+except (OSError, RuntimeError) as error:
+    # Reported as a value, never raised: an unopenable log that ends this file
+    # takes every check below it along, which is how a suite shrinks.
+    unwritable_url = f"the launch failed over its log: {error}"
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.select.select = original_select
+check(unwritable_url == "https://unwritable.trycloudflare.com",
+      "a log that cannot be opened costs the log, never the launch")
+
 
 def failed_status(command, check=False, capture_output=False, text=False,
                   env=None, **kwargs):

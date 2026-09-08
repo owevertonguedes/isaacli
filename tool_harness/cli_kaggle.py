@@ -1899,6 +1899,19 @@ def _prepare_assets(executable, username, model, available, input_fn,
     return available
 
 
+def _write_log(sink, text):
+    """Add one line to the kept kernel log, or stop keeping it.
+
+    A full disk must not end a session that is already being paid for, so a
+    write that fails is reported once and the follow goes on without the file.
+    """
+    try:
+        sink.write(text)
+        sink.flush()
+    except OSError as error:
+        debug.note("cli_kaggle.kernel_log", f"writing stopped: {error}")
+
+
 # Lines the rendered kernel prints to name the step it is starting, so a wait
 # that lasts half an hour shows what it is waiting for.
 STAGE_PREFIX = "[setup]"
@@ -1918,10 +1931,54 @@ def _kernel_state(executable, slug, run_fn=subprocess.run, env=None):
     return match.group(1) if match else ""
 
 
+def kernel_log_path(slug, config_file=None):
+    """Where this machine keeps what a kernel said while it was still running.
+
+    `kernels output` is the documented way to read a kernel's log and it is not
+    usable for a session under way: it answers empty while the kernel is
+    RUNNING, and deleting the kernel deletes the output with it, so respecting a
+    ceiling and collecting a log were mutually exclusive. `kernels logs -f`
+    answers during the run, and this program already follows it to find the
+    tunnel URL, so the log was passing through this process and being dropped.
+    It is written down instead, which is the whole difference between measuring
+    a launch and paying for one twice.
+    """
+    home = Path(config_file).parent if config_file else config.config_path().parent
+    return home / "kaggle-logs" / f"{slug.replace('/', '-')}.log"
+
+
 def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                         popen_fn=subprocess.Popen, env=None,
-                        run_fn=subprocess.run):
-    """Wait for the kernel to publish its tunnel URL, for as long as it can.
+                        run_fn=subprocess.run, log_path=None):
+    """Wait for the kernel to publish its tunnel URL, keeping what it says.
+
+    The wait itself is `_follow_for_url` below. This exists to own the log
+    file, because every way that wait can end has to close it: it returns on a
+    URL, and it raises on a kernel Kaggle calls terminal and on a clock that
+    ran out. A file left open by the failing paths would lose exactly the tail
+    that says why they failed.
+    """
+    sink = None
+    if log_path is not None:
+        # Losing this file costs a measurement; failing the launch over it
+        # would cost the quota the launch is already spending, so it is opened
+        # defensively and its absence is diagnosis rather than an error.
+        try:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            sink = Path(log_path).open("a", encoding="utf-8")
+        except OSError as error:
+            debug.note("cli_kaggle.kernel_log",
+                       f"{log_path} could not be opened: {error}")
+    try:
+        return _follow_for_url(executable, slug, timeout, popen_fn, env,
+                               run_fn, sink)
+    finally:
+        if sink is not None:
+            sink.close()
+
+
+def _follow_for_url(executable, slug, timeout, popen_fn, env, run_fn, sink):
+    """Follow the kernel's log until it publishes its tunnel URL.
 
     `kernels logs -f` returns immediately while the kernel is still queued,
     because there is nothing to follow yet. Treating the end of that stream as
@@ -1959,6 +2016,12 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
     stream_env = dict(os.environ if env is None else env)
     stream_env["PYTHONUNBUFFERED"] = "1"
     while time.monotonic() < deadline:
+        if sink is not None:
+            # Reopening replays what Kaggle still holds, so the file carries the
+            # same lines more than once. The boundary is written down rather
+            # than deduplicated: a repeat that is marked can be read past, and a
+            # line dropped because it looked like a repeat cannot be recovered.
+            _write_log(sink, f"--- following {slug} from {time.strftime('%H:%M:%S')} ---\n")
         process = popen_fn(
             [str(executable), "kernels", "logs", "-f", slug],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -1972,6 +2035,8 @@ def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                         break
                     continue
                 line = process.stdout.readline()
+                if line and sink is not None:
+                    _write_log(sink, line)
                 if not line:
                     if process.poll() is not None:
                         break
@@ -3238,9 +3303,11 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         # number chosen above rather than the largest one this program can ask
         # for. Leaving the default here would have this window watching for four
         # hours for a URL from a kernel that ends itself after one.
+        log_file = kernel_log_path(slug, config_file)
+        say(t("cli.kaggle.log_kept", path=log_file))
         url = discover_tunnel_url(
             executable, slug, timeout=session_seconds,
-            popen_fn=popen_fn, env=environment)
+            popen_fn=popen_fn, env=environment, log_path=log_file)
         profile = save_kaggle_profile(
             url, slug, model, api_key, config_file, account=account)
     except KeyboardInterrupt:
