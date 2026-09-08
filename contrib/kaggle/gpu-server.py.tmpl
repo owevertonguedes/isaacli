@@ -289,43 +289,55 @@ tunnel = subprocess.Popen(
     [cloudflared, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
 )
-url = None
-for line in tunnel.stdout:
-    match = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", line)
-    if match:
-        url = match.group(0)
-        break
-if not url:
-    raise RuntimeError("cloudflared did not publish a tunnel URL")
 
-# Everything cloudflared says after it publishes the URL, kept instead of
-# dropped. The pipe still has to be drained or the process blocks on a full
-# buffer, which is what the discard was for, but draining it into nothing threw
-# away the only account of what the transport did: QUIC failing, a retry, a
-# datacenter change. A session was measured at 39 s to first byte while the
-# server behind it answered the same call in 0.874 s, and this file is where the
-# reason for that would have been. /kaggle/working is what `kernels output`
-# returns, so it survives the session; it is never printed, because a screen
-# somebody is watching for a URL is not the place for it.
+# Everything cloudflared says, from its first line, kept instead of dropped.
+# The pipe has to be drained or the process blocks on a full buffer, but
+# draining it into nothing threw away the only account of what the transport
+# did: QUIC failing, a retry, a datacenter change. A session was measured at
+# 39 s to first byte while the server behind it answered the same call in
+# 0.874 s, and this file is where the reason for that would have been.
+# /kaggle/working is what `kernels output` returns, so it survives the session;
+# it is never printed, because a screen somebody is watching for a URL is not
+# the place for it.
 TUNNEL_LOG = Path("/kaggle/working/cloudflared.log")
+# The URL cloudflared publishes, filled in by the reader thread below.
+tunnel_url = [None]
 
 
-def keep_tunnel_log(stream, path):
+def read_tunnel_log(stream, path):
+    """Keep every cloudflared line, and pick the published URL out of it.
+
+    One reader instead of two phases. Reading the URL out of this pipe in the
+    main line and only then starting a keeper thread dropped every line before
+    the URL, and, worse, left the only wait in this script that no brake could
+    end: iterating cloudflared's pipe there blocks until it writes or exits, so
+    a tunnel that came up and never published would bill the whole session with
+    neither the ceiling nor the silence switch ever being polled. The
+    blocking read now lives in a thread nobody waits on, and the main line
+    polls for the URL under the same brakes as every other wait here.
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as sink:
-            for entry in stream:
+        sink = path.open("a", encoding="utf-8")
+    except OSError:
+        # Losing the log costs diagnosis; losing the drain costs the session.
+        sink = None
+    try:
+        for entry in stream:
+            if tunnel_url[0] is None:
+                match = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com",
+                                  entry)
+                if match:
+                    tunnel_url[0] = match.group(0)
+            if sink is not None:
                 sink.write(entry)
                 sink.flush()
-    except OSError:
-        # The drain is what keeps cloudflared from blocking, so it outlives any
-        # failure to write: losing the log costs diagnosis, losing the drain
-        # costs the session.
-        for _entry in stream:
-            pass
+    finally:
+        if sink is not None:
+            sink.close()
 
 
-threading.Thread(target=keep_tunnel_log, args=(tunnel.stdout, TUNNEL_LOG),
+threading.Thread(target=read_tunnel_log, args=(tunnel.stdout, TUNNEL_LOG),
                  daemon=True).start()
 
 
@@ -370,14 +382,31 @@ def idle_reached():
     this same server while the weights load, so by the time the session is
     published the switch has been armed by traffic this script generated
     itself. What the client's heartbeat then does is keep it from firing.
+
+    What that does not cover, and what the screen must therefore not promise,
+    is the load itself. A probe only arms the switch once llama-server answers
+    it in its own log, and a server still reading tens of gigabytes off disk
+    has no log line to stamp, so a window that dies minutes after the push
+    leaves nothing here to notice: on 2026-09-08 a kernel went on loading for
+    some fifty minutes after its window was gone, entirely within its ceiling
+    and entirely without a client. The ceiling is the brake that covers the
+    load, and it is the only one that does.
     """
     with last_request_lock:
         seen = last_request[0]
     return seen is not None and time.monotonic() - seen >= IDLE_SECONDS
 
 
-def end_session(reason):
-    """Stop billing now, and say why, instead of waiting to be deleted."""
+def end_session(reason, code=0):
+    """Stop billing now, and say why, instead of waiting to be deleted.
+
+    Every way this script can stop leaves through here, failures included. A
+    `raise` ends the main line but not the children, and llama-server holding a
+    CUDA context is exactly the thing that bills, so an exception used to end
+    the account of what happened without ending what it cost. The code says
+    whether the session did its job: 0 for a brake that fired as agreed, 1 for
+    a launch that could not deliver what it was pushed for.
+    """
     print(f"[shutdown] {reason}; ending the session", flush=True)
     for child in (server, tunnel):
         try:
@@ -390,19 +419,40 @@ def end_session(reason):
                 child.kill()
             except OSError:
                 pass
-    raise SystemExit(0)
+    raise SystemExit(code)
 
 
-deadline = time.monotonic() + 3600
+# A load that hangs bills exactly like a load that works, and the ceiling is
+# what bounds it. There used to be a second deadline of one hour here, on the
+# theory that a load taking longer than that had hung. That is a calibration,
+# and this project has already paid for one: the same step has been measured at
+# 3 minutes for a 17.28 GiB weight and over 30 for a 22.53 GiB one, so no
+# number invented here separates a slow load from a dead one. The ceiling is
+# the bound the user agreed to, it is checked on every pass below, and it is
+# the only figure in this script that anybody consented to.
 while not serving():
     if server.poll() is not None:
-        raise RuntimeError("the model server exited before it answered")
+        end_session("the model server exited before it answered", 1)
     if ceiling_reached():
         end_session(f"the agreed ceiling of {SESSION_SECONDS} s ran out while loading")
-    if time.monotonic() > deadline:
-        raise RuntimeError("the model server did not answer within an hour")
     time.sleep(10)
 report_vram("with the model loaded and answering")
+
+# The tunnel is asked for only now, and only under the brakes. cloudflared
+# publishes in seconds while the weights take minutes, so by this point the URL
+# is almost always already sitting in `tunnel_url`; what this covers is the
+# case where it is not.
+while tunnel_url[0] is None:
+    if tunnel.poll() is not None:
+        end_session("cloudflared exited before publishing a tunnel URL", 1)
+    if ceiling_reached():
+        end_session(f"the agreed ceiling of {SESSION_SECONDS} s ran out before "
+                    "cloudflared published a URL")
+    if idle_reached():
+        end_session(f"nothing has been asked of this server in {IDLE_SECONDS} s, "
+                    "so the window that launched it is gone")
+    time.sleep(5)
+url = tunnel_url[0]
 print("TUNNEL_URL=" + url, flush=True)
 while server.poll() is None and tunnel.poll() is None:
     # Whichever comes first. They answer different questions: the ceiling caps
@@ -414,4 +464,4 @@ while server.poll() is None and tunnel.poll() is None:
         end_session(f"nothing has been asked of this server in {IDLE_SECONDS} s, "
                     "so the window that launched it is gone")
     time.sleep(30)
-raise RuntimeError("the model server or tunnel exited")
+end_session("the model server or tunnel exited", 1)

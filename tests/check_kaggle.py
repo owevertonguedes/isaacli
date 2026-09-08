@@ -612,19 +612,65 @@ check("/kaggle/working/llama-server.log" in gpu_source,
 check("/kaggle/working/cloudflared.log" in gpu_source
       and "list(tunnel.stdout)" not in gpu_source,
       "the GPU kernel keeps what cloudflared says instead of discarding it")
-check(gpu_source.count("for entry in stream") == 1
-      and "for _entry in stream" in gpu_source,
-      "the pipe is still drained even if the log cannot be written, because "
-      "losing the drain costs the session and losing the log costs diagnosis")
-# Bounded with find() rather than index(): with the drain-and-discard planted
-# back, the function is not there and index() raises, which would end this file
-# and take every check below it along. A missing function fails this check by
+# Bounded with find() rather than index(): with an older shape planted back,
+# the function is not there and index() raises, which would end this file and
+# take every check below it along. A missing function fails this check by
 # reporting, which is the same verdict without the collateral.
-_keeper = gpu_source.find("def keep_tunnel_log")
-_after = gpu_source.find("def serving")
+_keeper = gpu_source.find("def read_tunnel_log")
+_after = gpu_source.find("threading.Thread(target=read_tunnel_log")
 check(_keeper != -1 and _after > _keeper
       and "print" not in gpu_source[_keeper:_after],
       "the tunnel log never reaches the screen the user is watching for a URL")
+# The one wait in this script that no brake could end: reading the URL straight
+# out of the pipe in the main line blocks until cloudflared writes or exits, so
+# a tunnel that came up and never published billed the whole session without
+# the ceiling or the silence switch ever being polled once.
+check("for line in tunnel.stdout" not in gpu_source,
+      "the main line never blocks on cloudflared's pipe, where no brake reaches")
+
+# The drain, proved by effect rather than by the shape of the source: a log that
+# cannot be opened must still leave the pipe empty, because losing the log costs
+# diagnosis and losing the drain costs the session.
+_reader_source = gpu_source[_keeper:_after]
+
+
+class _UnwritableLog:
+    """A /kaggle/working that refuses, which is the case worth testing."""
+
+    @property
+    def parent(self):
+        return self
+
+    def mkdir(self, **_kwargs):
+        raise OSError("read-only")
+
+    def open(self, *_args, **_kwargs):
+        raise OSError("read-only")
+
+
+def run_tunnel_reader(lines, path):
+    scope = {"re": re, "tunnel_url": [None]}
+    exec(compile(_reader_source, "gpu-server-tunnel", "exec"), scope)
+    stream = iter(lines)
+    screen = io.StringIO()
+    with redirect_stdout(screen):
+        scope["read_tunnel_log"](stream, path)
+    return next(stream, None), scope["tunnel_url"][0], screen.getvalue()
+
+
+_tunnel_lines = ["starting\n",
+                 "|  https://probe.trycloudflare.com  |\n",
+                 "connection registered\n"]
+_left, _found, _printed = run_tunnel_reader(_tunnel_lines, _UnwritableLog())
+check(_left is None and _found == "https://probe.trycloudflare.com"
+      and _printed == "",
+      "the pipe is still drained even if the log cannot be written, because "
+      "losing the drain costs the session and losing the log costs diagnosis")
+_written_log = root / "tunnel" / "cloudflared.log"
+_left, _found, _printed = run_tunnel_reader(_tunnel_lines, _written_log)
+check(_left is None and _found == "https://probe.trycloudflare.com"
+      and _written_log.read_text(encoding="utf-8") == "".join(_tunnel_lines),
+      "every cloudflared line is kept, including the ones before the URL")
 check(compile(t4_source, str(t4_code), "exec") is not None,
       "the rendered T4 kernel is valid Python before it ever reaches Kaggle")
 
@@ -4009,7 +4055,7 @@ class _Clockwork:
         self.now += seconds
 
 
-def run_ceiling(session_seconds, serving_answer):
+def run_ceiling(session_seconds, serving_answer, published=True):
     """Run the kernel's own shutdown logic against a clock we advance."""
     clock = _Clockwork()
     scope = {
@@ -4022,6 +4068,8 @@ def run_ceiling(session_seconds, serving_answer):
         "serving": lambda: serving_answer,
         "report_vram": lambda _moment: None,
         "url": "https://ceiling.trycloudflare.com",
+        "tunnel_url": ["https://ceiling.trycloudflare.com"
+                       if published else None],
     }
     source = ceiling_source[ceiling_source.index("def ceiling_reached"):]
     ended = None
@@ -4047,6 +4095,17 @@ check(loading_end == 0 and "while loading" in loading_screen
       and loading_scope["server"].stopped,
       "a load that runs past the ceiling stops billing too, not only a session")
 
+# The gap the 2026-09-08 kernel fell through, from the other side. A tunnel that
+# comes up and never publishes leaves the client with no URL and no way to ask
+# for anything, so the silence switch can never arm: the ceiling has to be
+# polled here too, or this wait is the one place a kernel bills unattended.
+unpublished_end, unpublished_screen, unpublished_scope = run_ceiling(
+    120, True, published=False)
+check(unpublished_end == 0 and "cloudflared published" in unpublished_screen
+      and unpublished_scope["server"].stopped
+      and unpublished_scope["tunnel"].stopped,
+      "a tunnel that never publishes is ended by the ceiling, not billed out")
+
 
 class _StubbornChild(_Child):
     """A child that refuses to terminate, which must not keep the kernel alive."""
@@ -4066,6 +4125,7 @@ stubborn_scope = {
     "last_request": [None], "last_request_lock": threading.Lock(),
     "server": stubborn, "tunnel": _Child(), "serving": lambda: True,
     "report_vram": lambda _moment: None, "url": "https://x.trycloudflare.com",
+    "tunnel_url": ["https://x.trycloudflare.com"],
 }
 try:
     with redirect_stdout(io.StringIO()):
@@ -4094,6 +4154,21 @@ chosen_seconds = cli_kaggle._choose_session_ceiling(
     lambda _prompt: "2", remaining_hours=21.01)
 check(chosen_seconds == 2 * 3600,
       "the launch screen answers the ceiling in seconds, chosen not inherited")
+# What the screen may promise is bounded by what the kernel can hold. It used to
+# say that closing the terminal already stops the spending, full stop, and that
+# is false for the whole load: the silence switch arms on a request llama-server
+# logs, and a server reading tens of gigabytes off disk has none to log. A
+# kernel of mine went on loading for some fifty minutes after its window died on
+# 2026-09-08, inside its ceiling the entire time. A brake that is promised and
+# does not hold is worse than one that was never promised.
+_ceiling_screen = io.StringIO()
+with redirect_stdout(_ceiling_screen):
+    cli_kaggle._choose_session_ceiling(lambda _prompt: "1", remaining_hours=25.58)
+_ceiling_text = " ".join(_ceiling_screen.getvalue().split())
+check("loading the weights" in _ceiling_text.lower()
+      and "only brake" in _ceiling_text.lower()
+      and "25.58" in _ceiling_text,
+      "the ceiling screen says the silence switch does not cover the load")
 cancelled_ceiling = cli_kaggle._choose_session_ceiling(
     lambda _prompt: str(len(cli_kaggle.SESSION_CEILING_HOURS) + 1))
 check(cancelled_ceiling is None,
@@ -4163,6 +4238,7 @@ def run_idle(idle_seconds, beats, patience=200):
         "server": server, "tunnel": _Child(patience=patience),
         "serving": lambda: True, "report_vram": lambda _moment: None,
         "url": "https://idle.trycloudflare.com",
+        "tunnel_url": ["https://idle.trycloudflare.com"],
     }
     source = ceiling_source[ceiling_source.index("def ceiling_reached"):]
     ended, screen = None, io.StringIO()
@@ -4180,7 +4256,10 @@ def run_idle(idle_seconds, beats, patience=200):
 # a user reading or thinking is not a user who left, and the timer is what
 # tells those apart.
 beating_end, beating_screen, _beating = run_idle(300, lambda _now: True)
-check(isinstance(beating_end, RuntimeError) and "[shutdown]" not in beating_screen,
+# It ends here only because the stub children run out of patience, which is the
+# kernel's "the model server or tunnel exited" path and exits 1. What proves the
+# switch stayed unarmed is that the silence is not the reason given.
+check(beating_end == 1 and "nothing has been asked" not in beating_screen,
       "a session whose client keeps beating is never ended for being idle")
 
 # The same session, with the beats stopping partway: the terminal was closed,
@@ -4203,7 +4282,7 @@ check(silent_end == 0 and "nothing has been asked" in silent_screen
 # future llama.cpp whose log line reads differently would otherwise end a
 # session that was paid for, and the wall ceiling already bounds that window.
 unarmed_end, unarmed_screen, _unarmed = run_idle(300, lambda _now: False)
-check(isinstance(unarmed_end, RuntimeError) and "[shutdown]" not in unarmed_screen,
+check(unarmed_end == 1 and "nothing has been asked" not in unarmed_screen,
       "a switch that has never seen a request cannot fire on the silence it never heard")
 
 # The kernel only learns about requests from llama-server's own log, so that
