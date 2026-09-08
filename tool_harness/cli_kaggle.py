@@ -2500,6 +2500,61 @@ def _probe_url(base_url):
 ENDPOINT_PROBE_TIMEOUT_SECONDS = 90
 
 
+def _beat_url(base_url):
+    """The route a heartbeat goes to, which is not the route a probe goes to.
+
+    A probe asks whether the endpoint is there and whether this key opens it,
+    and a GET answers that. A heartbeat has a second job the probe does not:
+    the kernel on the other side has to be able to *see* it, and measured
+    against llama.cpp 10502 / 0adcc3bb5, the build these kernels run, a GET is
+    invisible from inside. Five of them left the server's log at exactly the
+    length it started and every counter in /metrics at zero. One
+    /v1/completions with max_tokens 1 moves n_decode_total by exactly one,
+    twice in a row on an identical prompt, and that counter is what the kernel
+    watches. So a beat is one decode: the cheapest thing this server does that
+    it also counts.
+    """
+    return str(base_url).rstrip("/") + "/completions"
+
+
+def _beat_body():
+    """The smallest request that still produces a decode to be counted."""
+    return json.dumps({
+        "prompt": ".", "max_tokens": 1, "temperature": 0,
+        # A cached prompt is served without decoding, and a beat that stops
+        # being counted is a beat that stops holding the switch open.
+        "cache_prompt": False, "stream": False,
+    }).encode("utf-8")
+
+
+def _beat_reaches(profile, secret_path=None,
+                  urlopen_fn=urllib.request.urlopen,
+                  timeout=ENDPOINT_PROBE_TIMEOUT_SECONDS):
+    """Send one beat, and say whether the kernel could have counted it."""
+    key = config.load_secret(profile.get("credential"), secret_path)
+    if not key:
+        debug.note("cli_kaggle._beat_reaches key",
+                   "the saved profile has no stored key to beat with")
+        return False
+    request = urllib.request.Request(
+        _beat_url(profile["base_url"]), data=_beat_body(),
+        headers={"Authorization": "Bearer " + key,
+                 "Content-Type": "application/json"},
+        method="POST")
+    try:
+        with urlopen_fn(request, timeout=timeout) as answer:
+            if answer.status == 200:
+                return True
+            debug.note("cli_kaggle._beat_reaches status",
+                       f"the beat was answered with HTTP {answer.status}")
+    except urllib.error.HTTPError as error:
+        debug.note("cli_kaggle._beat_reaches status",
+                   f"the beat was refused with HTTP {error.code}")
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as error:
+        debug.note("cli_kaggle._beat_reaches", error)
+    return False
+
+
 def _endpoint_answers(profile, secret_path=None,
                       urlopen_fn=urllib.request.urlopen,
                       timeout=ENDPOINT_PROBE_TIMEOUT_SECONDS):
@@ -2794,6 +2849,13 @@ def start_session_heartbeat(profile_name, config_file=None,
     program to exit while still claiming to be alive. It also beats on a timer
     rather than on inference traffic, which is what keeps a user who is reading
     or thinking for ten minutes from being read as gone.
+
+    The beat itself is one decode of one token, and it costs that on purpose.
+    It used to be the same GET the reuse path probes with, and measured against
+    the build these kernels run, a GET is invisible from inside the kernel:
+    nothing in the log, nothing in any counter. A signal the other side cannot
+    observe is not a heartbeat, it is a habit, and for as long as it was one
+    this switch had never armed in its life.
     """
     profile = (config.load(config_file).get("profiles") or {}).get(profile_name)
     if not profile or not profile.get("base_url"):
@@ -2811,7 +2873,7 @@ def start_session_heartbeat(profile_name, config_file=None,
         # program never waits out a sleep before the process can go.
         while not stop.wait(interval):
             try:
-                answered = _endpoint_answers(profile, secret_path, urlopen_fn)
+                answered = _beat_reaches(profile, secret_path, urlopen_fn)
             except Exception as error:
                 # A heartbeat that can raise is a heartbeat that can take the
                 # session down with it. Nothing here is worth that, and the

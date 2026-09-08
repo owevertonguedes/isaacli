@@ -4142,8 +4142,14 @@ class _Clockwork:
         self.now += seconds
 
 
-def run_ceiling(session_seconds, serving_answer, published=True, stamped=False):
-    """Run the kernel's own shutdown logic against a clock we advance."""
+def run_ceiling(session_seconds, serving_answer, published=True, stamped=False,
+                decodes=None):
+    """Run the kernel's own shutdown logic against a clock we advance.
+
+    `decodes` is what the server answers when asked how many decodes it has
+    run: None is a server that will not say, which is the state the switch
+    cannot watch, and a number is the counter the client's beat moves.
+    """
     clock = _Clockwork()
     scope = {
         "time": clock, "subprocess": subprocess, "SystemExit": SystemExit,
@@ -4154,6 +4160,7 @@ def run_ceiling(session_seconds, serving_answer, published=True, stamped=False):
         "last_request": [clock.monotonic() if stamped else None],
         "last_request_lock": threading.Lock(),
         "serving": lambda: serving_answer,
+        "decodes_served": lambda: decodes,
         "report_vram": lambda _moment: None,
         "url": "https://ceiling.trycloudflare.com",
         "tunnel_url": ["https://ceiling.trycloudflare.com"
@@ -4191,15 +4198,15 @@ check(loading_end == 0 and "while loading" in loading_screen
 # lines of that session, so the brake was inert start to finish, not only
 # during the load. The kernel now notices, because the readiness probe is one
 # request it can be certain it answered.
-inert_end, inert_screen, _inert = run_ceiling(120, True)
-check("NOTE:" in inert_screen and "cannot arm" in inert_screen,
-      "a server whose log never mentions a request leaves the switch inert, said out loud")
+inert_end, inert_screen, _inert = run_ceiling(120, True, decodes=None)
+check("NOTE:" in inert_screen and "will not report how many decodes" in inert_screen,
+      "a server that will not count its decodes leaves the switch blind, said out loud")
 # The same path on a build that does log its requests: the note is a report of
 # a real state, so it must be absent when that state is absent, or it is noise
 # that teaches everyone to skip it.
-armed_screen = run_ceiling(120, True, stamped=True)[1]
-check("cannot arm" not in armed_screen,
-      "a switch the log did arm draws no warning about being unarmed")
+armed_screen = run_ceiling(120, True, stamped=True, decodes=7)[1]
+check("NOTE:" not in armed_screen,
+      "a server that does count them draws no warning, so the note stays a report")
 
 # The gap the 2026-09-08 kernel fell through, from the other side. A tunnel that
 # comes up and never publishes leaves the client with no URL and no way to ask
@@ -4230,6 +4237,7 @@ stubborn_scope = {
     "IDLE_SECONDS": 300,
     "last_request": [None], "last_request_lock": threading.Lock(),
     "server": stubborn, "tunnel": _Child(), "serving": lambda: True,
+    "decodes_served": lambda: 0,
     "report_vram": lambda _moment: None, "url": "https://x.trycloudflare.com",
     "tunnel_url": ["https://x.trycloudflare.com"],
 }
@@ -4322,17 +4330,24 @@ check(discovery_timeouts == [cli_kaggle.SESSION_CEILING_HOURS[0] * 3600],
 # exercised in milliseconds with no kernel and no quota.
 # ----------------------------------------------------------------------
 def run_idle(idle_seconds, beats, patience=200):
-    """Run the kernel's shutdown logic with a client that beats, or stops."""
+    """Run the kernel's shutdown logic with a client that beats, or stops.
+
+    A beat is one decode, so on this side it is the server's own counter going
+    up. That is the whole repair: the switch used to read a line of somebody
+    else's log, which this build never writes, and now it reads a number that
+    only ever increases.
+    """
     clock = _Clockwork()
     stamped = [None]
+    counter = [0]
     server = _Child(patience=patience)
     original_poll = server.poll
 
     def poll_and_maybe_beat():
-        # A beat is a request llama-server logs, which is what stamps the
-        # clock. `beats` decides whether the client is still there.
+        # `beats` decides whether the client is still there; a client that is
+        # there sends a one token completion, and the server counts the decode.
         if beats(clock.monotonic()):
-            stamped[0] = clock.monotonic()
+            counter[0] += 1
         return original_poll()
 
     server.poll = poll_and_maybe_beat
@@ -4343,7 +4358,8 @@ def run_idle(idle_seconds, beats, patience=200):
         "IDLE_SECONDS": idle_seconds,
         "last_request": stamped, "last_request_lock": threading.Lock(),
         "server": server, "tunnel": _Child(patience=patience),
-        "serving": lambda: True, "report_vram": lambda _moment: None,
+        "serving": lambda: True, "decodes_served": lambda: counter[0],
+        "report_vram": lambda _moment: None,
         "url": "https://idle.trycloudflare.com",
         "tunnel_url": ["https://idle.trycloudflare.com"],
     }
@@ -4457,7 +4473,8 @@ beats_sent = []
 
 
 def beat_urlopen(request, timeout=None):
-    beats_sent.append(request.full_url)
+    beats_sent.append((request.full_url, request.get_method(),
+                       (request.data or b"").decode("utf-8")))
     return HealthyAnswer()
 
 
@@ -4469,8 +4486,19 @@ while len(beats_sent) < 3 and time.monotonic() < deadline:
 beating_count = len(beats_sent)
 check(beat_thread is not None and beat_thread.daemon and beating_count >= 3,
       "an open session beats on a timer, from a thread that cannot outlive the program")
-check(all(url.endswith("/props") for url in beats_sent),
-      "the beat is the same authenticated probe the reuse path already uses")
+# It used to be the same GET the reuse path probes with, and that GET is
+# invisible from inside the kernel: measured against llama.cpp 10502, five of
+# them left the log at the length it started and every counter in /metrics at
+# zero, so the switch on the other side had never armed in its life. A beat has
+# to be something the kernel can count, and the cheapest counted thing this
+# server does is one decode of one token.
+check(all(url.endswith("/v1/completions") and method == "POST"
+          for url, method, _body in beats_sent),
+      "a beat is a request the kernel on the other side can actually count")
+_beat_body = json.loads(beats_sent[0][2]) if beats_sent else {}
+check(_beat_body.get("max_tokens") == 1
+      and _beat_body.get("cache_prompt") is False,
+      "the beat costs one token, and refuses the cache that would stop it counting")
 
 cli_kaggle.stop_session_heartbeat("kaggle-beat")
 time.sleep(0.1)

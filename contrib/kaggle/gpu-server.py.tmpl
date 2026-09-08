@@ -197,6 +197,12 @@ server_command = [
     "-c", str(CONTEXT),
     "--host", "127.0.0.1", "--port", str(PORT),
     "--jinja", "--api-key", API_KEY,
+    # The counter behind the dead-man's switch. Without this flag /metrics
+    # answers 501 and the only sign a request ever happened is a log line, and
+    # this build writes none: five GET /v1/models against b10502 on 2026-09-08
+    # left the log at exactly the length it started, and every counter here at
+    # zero, which is why the switch had never once armed.
+    "--metrics",
 ]
 if SERVER_VERBOSITY != 3:
     server_command.extend(["-lv", str(SERVER_VERBOSITY)])
@@ -341,6 +347,30 @@ threading.Thread(target=read_tunnel_log, args=(tunnel.stdout, TUNNEL_LOG),
                  daemon=True).start()
 
 
+# The counter the switch reads, and the reason it is a counter rather than a
+# line of log. A log format belongs to somebody else and can change between two
+# builds without anybody noticing that a brake stopped existing; a number that
+# only goes up is a contract. Measured locally against the same build the kernel
+# runs, 10502 / 0adcc3bb5: five GET /v1/models move nothing at all, and one
+# /v1/completions with max_tokens 1 moves n_decode_total by exactly 1, twice in
+# a row on an identical prompt. So the client's beat is one such call, and this
+# is the kernel seeing it land.
+DECODES = re.compile(r"^llamacpp:n_decode_total\s+([0-9]+)", re.M)
+
+
+def decodes_served():
+    """How many decodes this server has run, or None if it will not say."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/metrics",
+        headers={"Authorization": "Bearer " + API_KEY})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as answer:
+            match = DECODES.search(answer.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        return None
+    return int(match.group(1)) if match else None
+
+
 def serving():
     """True once llama-server answers, which is not the same as being up."""
     request = urllib.request.Request(
@@ -451,13 +481,17 @@ report_vram("with the model loaded and answering")
 # greps for is never printed, and the heartbeat that was supposed to hold the
 # switch open is invisible here twice over: wrong marker, and a call this build
 # does not log either way. The ceiling was the only brake this kernel had.
-with last_request_lock:
-    switch_armed = last_request[0] is not None
-if not switch_armed:
-    print("NOTE: this llama-server build does not write the log line this "
-          "session watches for, so the silence switch cannot arm and this "
-          "session will not end itself when its client goes away. Only the "
-          f"{SESSION_SECONDS} s ceiling applies.", flush=True)
+# What the switch will be watching, established before the session is
+# published. A counter that reads is the whole mechanism; a counter that does
+# not leaves only the log line, and this build writes none, so say it rather
+# than let a brake quietly not exist.
+decodes = [decodes_served()]
+if decodes[0] is None:
+    print("NOTE: this server will not report how many decodes it has run, so "
+          "the silence switch has nothing to watch but a log line this build "
+          "may never write. This session may not end itself when its client "
+          f"goes away, and only the {SESSION_SECONDS} s ceiling applies.",
+          flush=True)
 
 # The tunnel is asked for only now, and only under the brakes. cloudflared
 # publishes in seconds while the weights take minutes, so by this point the URL
@@ -476,6 +510,14 @@ while tunnel_url[0] is None:
 url = tunnel_url[0]
 print("TUNNEL_URL=" + url, flush=True)
 while server.poll() is None and tunnel.poll() is None:
+    # Every beat the client sends is one decode, so the counter moving is the
+    # client saying it is still there. Read on the same tick the ceiling is,
+    # because the switch can only ever notice at the granularity of this loop.
+    served = decodes_served()
+    if served is not None and decodes[0] is not None and served != decodes[0]:
+        decodes[0] = served
+        with last_request_lock:
+            last_request[0] = time.monotonic()
     # Whichever comes first. They answer different questions: the ceiling caps
     # what this can ever cost, and the silence says the cost stopped buying
     # anything the moment the other end went away.
