@@ -1201,6 +1201,28 @@ try:
     denied = cli._approve_and_run("git status")
     check("DENIED BY USER" in denied,
           "authorized-only mode asks even for a read")
+    # No terminal to ask on is not the same event as a user saying no, and the
+    # difference is what the reader does next. Measured in CI on 2026-09-08,
+    # where check_commit_workflow.py drives isaacli through subprocess with no
+    # tty: the model was told three times that the user had refused
+    # `git commit`, and no user was ever there. `input` raising EOFError is
+    # exactly what a closed stdin does.
+    builtins.input = lambda _prompt="": (
+        _ for _ in ()).throw(EOFError())
+    unasked = cli._approve_and_run("git status")
+    check("NOT AUTHORIZED" in unasked and "no terminal" in unasked,
+          f"with no terminal to ask on, the refusal says nobody was asked: "
+          f"{unasked!r}")
+    check("DENIED BY USER" not in unasked,
+          f"and it does not claim a decision the user never made: {unasked!r}")
+    check("(exit code: 126)" in unasked and exec_calls[-1][0] != "git status",
+          f"and the command still did not run: {unasked!r}, {exec_calls[-1]!r}")
+    # Ctrl+C at the prompt IS the user answering, so that one keeps its wording.
+    builtins.input = lambda _prompt="": (
+        _ for _ in ()).throw(KeyboardInterrupt())
+    interrupted = cli._approve_and_run("git status")
+    check("DENIED BY USER" in interrupted,
+          f"Ctrl+C at the prompt stays a decision by the user: {interrupted!r}")
 finally:
     execution.run_command = original_exec
     builtins.input = original_permission_input

@@ -10,6 +10,7 @@ the suite. Run it on an idle machine.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,12 +19,48 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
+sys.path.insert(0, str(REPO_ROOT / "tool_harness"))
+import config as isaac_config
+
+# What this run pre-approves, and what it deliberately does not. isaacli asks a
+# human before a command that changes anything, and this test has no human: run
+# with nothing approved, `git commit` is refused for want of a terminal and the
+# whole flow measures nothing. The mechanism for approving beforehand is the
+# program's own, a saved permission rule, so the test uses that rather than
+# teaching the program a test-only escape.
+#
+# `git push` is NOT on the list, on purpose: "did not push" is one of the things
+# being measured, and pre-approving it would leave that assertion resting on the
+# model's restraint alone with nothing to stop it.
+PRE_APPROVED = ("git add", "git commit")
 TEXT_SIGNATURE_RE = re.compile(
     r"(Signed by:\s*Isaac|Co-Authored-By:\s*Isaac|Signed-off-by:\s*Isaac)", re.I)
 
 
-def run(args, cwd):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
+def run(args, cwd, env=None):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                          check=False, env=env)
+
+
+def isolated_environment():
+    """A config of this run's own, with the approvals it needs already in it.
+
+    Two things at once, and both matter. The approvals: `git commit` waits for a
+    human, this test is a subprocess with no terminal, and without them the run
+    measures a refusal instead of the commit flow. The isolation: nothing here
+    may read or write the real ~/.config/isaacli, so XDG_CONFIG_HOME points at a
+    temporary directory and the rules are written there. The author's own
+    permissions, model profiles and secrets take no part in the result and
+    cannot be changed by it.
+    """
+    config_home = Path(tempfile.mkdtemp(prefix="isaac-commit-workflow-config-"))
+    data = isaac_config.empty_config()
+    for rule in PRE_APPROVED:
+        isaac_config.add_permission(data, rule)
+    isaac_config.save(data, config_home / "isaacli" / "config.json")
+    environment = dict(os.environ)
+    environment["XDG_CONFIG_HOME"] = str(config_home)
+    return environment
 
 
 def create_temp_repo():
@@ -85,7 +122,7 @@ def main(argv=None):
     if not args.evaluate_only:
         cmd = [str(REPO_ROOT / "isaacli"), "--model", args.model,
                "--workspace", str(repo), args.request]
-        r = run(cmd, REPO_ROOT)
+        r = run(cmd, REPO_ROOT, env=isolated_environment())
         isaac_output = (r.stdout or "") + (r.stderr or "")
         print(r.stdout, end="")
         if r.stderr:

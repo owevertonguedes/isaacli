@@ -546,6 +546,9 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
         say(t("cli.permission.scope_note"))
         if _destructive_command(cmd):
             say(_color(t("cli.permission.dangerous"), "bad"))
+        # Whether a human was actually asked. Only the two escapes below can
+        # make it false, and it is what separates a refusal from an absence.
+        asked = True
         try:
             index = terminal_ui.select_inline(
                 [
@@ -558,10 +561,33 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
                 prompt=t("cli.permission.prompt"),
                 chosen_label=t("cli.permission.chosen", option="{option}"),
             )
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
+            # There is no terminal to ask on, so nobody was asked. Refusing is
+            # still right, and it used to be reported as "DENIED BY USER",
+            # naming a decision a user never made. Measured on 2026-09-08 in
+            # CI, where check_commit_workflow.py drives isaacli through
+            # subprocess with no tty: the model was told three times that the
+            # user had refused `git commit`, reasoned correctly from a false
+            # premise, and reported the work as blocked. Which of the two it is
+            # decides what the reader does next, so the two are told apart.
+            asked = False
+            index = 3
+            print()
+        except KeyboardInterrupt:
+            # Ctrl+C at the prompt IS the user, answering.
+            asked = True
             index = 3
             print()
         if index == 3:
+            if not asked:
+                self._log("permission", cmd=cmd, rule=rule,
+                          decision="no-terminal")
+                return (
+                    f"$ {cmd}\nNOT AUTHORIZED: this command needs approval and "
+                    "there is no terminal to ask on, so nobody was asked. It "
+                    "was not run and no user refused it. Approval for it has to "
+                    "exist before the run: a saved permission rule, or a "
+                    "session started from a terminal.\n(exit code: 126)")
             self._log("permission", cmd=cmd, rule=rule, decision="denied")
             return (f"$ {cmd}\nDENIED BY USER: the command was not authorized.\n"
                     "(exit code: 126)")
