@@ -75,6 +75,17 @@ CONTEXT_LEVELS = [
 ]
 MIN_CONTEXT = 8192
 
+# The thinking levels an API profile can carry, in the order the screen draws
+# them, and the empty one first because a provider that was never asked for
+# reasoning is the state a new profile starts in. Both screens that offer this
+# used to spell the list out for themselves, and a list written twice is a list
+# that can disagree with itself; a test answering either of them by position
+# had nothing to derive that position from but the same literal, copied a third
+# time.
+API_THINKING_LEVELS = [None, "low", "medium", "high"]
+API_THINKING_KEYS = ["thinking.disabled", "thinking.low", "thinking.medium",
+                     "thinking.high"]
+
 # The provider_name a local llama.cpp profile carries. Written by
 # setup_llamacpp and read by the screens that have to tell a local engine apart
 # from somebody's remote endpoint, so it is one constant rather than three
@@ -1044,11 +1055,11 @@ def _setup_api(language, input_fn, config_file, tr, onboarding_task=_UNCHANGED):
         break
     index = _select(
         tr, tr.t("thinking.api.title"),
-        [tr.t("thinking.disabled"), tr.t("thinking.low"),
-         tr.t("thinking.medium"), tr.t("thinking.high")], input_fn,
-        tr.t("thinking.api.explain"), initial=2,
+        [tr.t(key) for key in API_THINKING_KEYS], input_fn,
+        tr.t("thinking.api.explain"),
+        initial=API_THINKING_LEVELS.index("medium"),
     )
-    thinking = [None, "low", "medium", "high"][index]
+    thinking = API_THINKING_LEVELS[index]
     autostart = _ask_autostart(base_url, input_fn, tr) if local_endpoint else None
     profile_name = _api_profile_name(name, model)
     credential = f"api:{profile_name}"
@@ -1616,16 +1627,15 @@ def _select_configured_api(input_fn, config_file, language, tr, release_fn=None)
             if novo_nome != name and novo_nome not in data["profiles"]:
                 data["profiles"].pop(name, None)
                 name = novo_nome
-    valores = [None, "low", "medium", "high"]
     current = item.get("thinking")
-    initial = valores.index(current) if current in valores else 0
+    initial = (API_THINKING_LEVELS.index(current)
+               if current in API_THINKING_LEVELS else 0)
     choice = _select(
         tr, tr.t("thinking.api.title"),
-        [tr.t("thinking.disabled"), tr.t("thinking.low"),
-         tr.t("thinking.medium"), tr.t("thinking.high")],
+        [tr.t(key) for key in API_THINKING_KEYS],
         input_fn, tr.t("thinking.api.explain"), initial=initial,
     )
-    item["thinking"] = valores[choice]
+    item["thinking"] = API_THINKING_LEVELS[choice]
     data["profiles"][name] = item
     data["default_profile"] = name
     config.save(data, config_file)

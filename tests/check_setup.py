@@ -90,6 +90,48 @@ def thinking_answer(level):
     return str(levels.index(level) + 1)
 
 
+def api_thinking_answer(level):
+    """The API reasoning screen's position for one level, resolved by name.
+
+    Not the same screen as `thinking_answer`, and that is the whole reason this
+    exists: the local one offers three levels and a way back, this one offers
+    four including an empty, so the same number means a different answer on
+    each. Derived from the list the screen is drawn from, so adding a level
+    moves the checks with it.
+    """
+    levels = setup_ollama.API_THINKING_LEVELS
+    if level not in levels:
+        raise AssertionError(
+            f"no {level!r} level on the API reasoning screen: {levels}")
+    return str(levels.index(level) + 1)
+
+
+def api_model_answer(name, models):
+    """The API model list's position for one model, resolved by its name.
+
+    The list is whatever the endpoint answered, so a position here means
+    nothing on its own: it was two models yesterday and is five today, and a
+    check that typed 2 would swap to a model it never named while still
+    passing.
+    """
+    if name not in models:
+        raise AssertionError(f"no {name!r} in the API model list: {models}")
+    return str(models.index(name) + 1)
+
+
+# The screen offered when an endpoint refuses the data it was just given. Its
+# three rows are written in setup_ollama in this order, and answering it by
+# number is how a check meaning "let me fix it" would silently start meaning
+# "save it unverified" the day a row is added.
+API_RETRY_ROWS = ["retry", "save_unverified", "back"]
+
+
+def api_retry_answer(key):
+    if key not in API_RETRY_ROWS:
+        raise AssertionError(f"no {key!r} row on the API retry screen")
+    return str(API_RETRY_ROWS.index(key) + 1)
+
+
 def context_answer(limit, key):
     """The context screen's position for `manual` or `back`, under one ceiling.
 
@@ -560,7 +602,7 @@ try:
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             answers(language_answer("pt-BR"), task_answer(None), engine_answer("api"), "Groq", "https://api.groq.com/openai/v1",
-                    "openai/gpt-oss-20b", "test-secret", "3"),
+                    "openai/gpt-oss-20b", "test-secret", api_thinking_answer("medium")),
             config_file=api_config,
         )
     api_data = config.load(api_config)
@@ -572,17 +614,27 @@ try:
     check(api_profile["base_url"] == "https://api.groq.com/openai/v1"
           and api_profile["model"] == "openai/gpt-oss-20b",
           "the API endpoint and model are configurable data")
+    # The answer to the reasoning screen was named rather than numbered, so this
+    # is allowed to say what was asked for. Nothing checked it before: the
+    # screen was answered with a bare "3" and no assertion followed, so a screen
+    # that saved the row above the one chosen would have passed.
+    check(api_profile.get("thinking") == "medium",
+          "the level chosen on the API reasoning screen is the level saved")
     check(api_secret == "test-secret" and "test-secret" not in api_config.read_text(),
           "the API key stays out of config.json")
     check(stat.S_IMODE(api_config.with_name("secrets.json").stat().st_mode) == 0o600,
           "the secrets file uses 0600 permissions")
 
+    api_models = ["openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
     setup_ollama._list_api_models = lambda base_url, api_key: (
-        ["openai/gpt-oss-20b", "qwen/qwen3.6-27b"] if api_key == "test-secret" else []
+        api_models if api_key == "test-secret" else []
     )
     with redirect_stdout(io.StringIO()):
         swap_result = setup_ollama._select_configured_api(
-            answers(source_answer("api", api_config), "2", "1"), api_config, "pt-BR", pt,
+            answers(source_answer("api", api_config),
+                    api_model_answer("qwen/qwen3.6-27b", api_models),
+                    api_thinking_answer(None)),
+            api_config, "pt-BR", pt,
         )
     _, swapped_profile = config.profile(config.load(api_config))
     check(swap_result == 0 and swapped_profile["model"] == "qwen/qwen3.6-27b",
@@ -606,8 +658,9 @@ try:
             answers(
                 language_answer("pt-BR"), task_answer(None),
                 engine_answer("api"), "Server", "https://api.test/v1/chat/completions",
-                "test-model", "wrong-key", "1",
-                "Server", "https://api.test/v1", "test-model", "right-key", "1",
+                "test-model", "wrong-key", api_retry_answer("retry"),
+                "Server", "https://api.test/v1", "test-model", "right-key",
+                api_thinking_answer(None),
             ),
             config_file=api_retry_config,
         )
@@ -625,7 +678,7 @@ try:
             answers(language_answer("pt-BR"), task_answer(None), engine_answer("ollama"),
                     model_answer("__back__"), task_answer(None), engine_answer("api"), "Server",
                     "https://api.test/v1",
-                    "test-model", "key", "1"),
+                    "test-model", "key", api_thinking_answer(None)),
             config_file=back_config,
         )
     _, back_profile = config.profile(config.load(back_config))
