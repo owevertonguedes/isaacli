@@ -1,0 +1,103 @@
+name: live model
+
+# The one check that drives a real model, and until now it ran nowhere.
+#
+# tests/check_commit_workflow.py asks a model, through the real isaacli and the
+# real sandbox, to make a commit that explains itself and not to push. It is the
+# only thing in this repository that exercises the whole program end to end
+# rather than its parts. It was skipped by scripts/check.sh for needing Ollama,
+# skipped on the author's machine for the same reason, and skipped in CI, which
+# adds up to a check that has never run since it was written.
+#
+# It is its own workflow rather than a step in `checks`, because it costs a
+# model download and minutes of CPU inference and must not stand between a
+# commit and its green tick. Nightly plus on demand, which is what the cost
+# justifies.
+
+on:
+  schedule:
+    # 03:17 UTC, an odd minute on purpose: every scheduled workflow written on
+    # the hour lands in the same queue.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  commit-workflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # actions/checkout v4, pinned by commit rather than by tag: a tag is a
+      # moving pointer that whoever owns the action can repoint.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # actions/setup-python v5, pinned for the same reason.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install bubblewrap
+        # isaacli runs every command the model asks for inside bwrap. Without
+        # it there is no run at all, so this is a dependency and not an option.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Allow unprivileged user namespaces for this job's VM
+        # Same setting, and the same reason, as the checks workflow: this
+        # runner image ships kernel.apparmor_restrict_unprivileged_userns=1,
+        # which denies bwrap its user namespace. Flipped on this job's own
+        # throwaway VM, gone when the job ends.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama and wait for it to answer
+        # Backgrounded here rather than trusted to the installer's service: a
+        # step that returns before the server answers turns a slow start into a
+        # confusing failure three steps later.
+        run: |
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/version > /dev/null; then
+              echo "ollama answered:"
+              curl -fsS http://127.0.0.1:11434/api/version
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ollama did not answer in 120s; its log follows" >&2
+          cat "$RUNNER_TEMP/ollama.log" >&2
+          exit 1
+
+      - name: Build the model isaacli runs against
+        # scripts/build-model.sh refuses a base that does not report the
+        # `tools` capability, which is the failure that otherwise looks like a
+        # harness bug: the model narrates the work instead of doing it.
+        run: |
+          ollama pull granite4:micro-h
+          ./scripts/build-model.sh
+
+      - name: Preflight, which fails hard rather than letting the run self-skip
+        # The lesson this workflow is copied from: a missing input makes a
+        # self-skipping suite report a false green. Everything the check needs
+        # is asserted here, by name, so an absence stops the build with the
+        # name of what is absent instead of turning into a pass on nothing.
+        run: |
+          set -e
+          command -v ollama > /dev/null || { echo "PREFLIGHT: ollama is not on PATH" >&2; exit 1; }
+          command -v bwrap  > /dev/null || { echo "PREFLIGHT: bwrap is not on PATH" >&2; exit 1; }
+          ollama show isaac-granite > /dev/null 2>&1 \
+            || { echo "PREFLIGHT: the isaac-granite model was not created" >&2; exit 1; }
+          echo "PREFLIGHT ok: ollama, bwrap and the isaac-granite model are all here"
+
+      - name: Commit workflow against a real model
+        # Not part of scripts/check.sh and deliberately not added to it: that
+        # script is what has to pass before a push, and this takes minutes of
+        # CPU inference. What matters is that it now runs SOMEWHERE.
+        run: python3 tests/check_commit_workflow.py
+
+      - name: Ollama's log, whatever happened
+        if: always()
+        run: cat "$RUNNER_TEMP/ollama.log" || true
