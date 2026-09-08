@@ -66,6 +66,17 @@ where `cargo` keeps the crates.io token. The toolchain is appended to the jail's
 PATH after the system directories, so an allowlisted name cannot be captured by
 a shim.
 
+One directory joins them that no PATH can declare: the user's Python
+site-packages, the `~/.local/lib/pythonX.Y/site-packages` that `pip install
+--user` writes into. A Python tool installed that way is two things in two
+places, a launcher on the PATH and the package it imports, and mounting only the
+first gives the jail a launcher that starts and then cannot import itself. It is
+mounted read-only like everything else, it goes through the same refusals, and
+the jail's `PYTHONPATH` names it, because `HOME` inside the jail is the
+workspace and the interpreter would otherwise compute a user site that does not
+exist in there. The path comes from Python's own `site.getusersitepackages()`,
+never from a version spelled out here.
+
 ### Which PATH, and why isaacli runs your login shell once
 
 "The user's PATH" is not one thing. `os.environ["PATH"]` is the PATH of whatever

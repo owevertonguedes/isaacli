@@ -142,6 +142,7 @@ import re
 import shlex
 import shutil
 import signal
+import site
 import subprocess
 from pathlib import Path
 
@@ -263,8 +264,11 @@ RUNTIME_LAYOUT_DIRS = frozenset({
 # Names the jail sets itself. A variable of the user's with one of these names
 # never rides along, whatever its value, so forwarding cannot overwrite the
 # identity, the working directory or the search path the jail decided on.
+# PYTHONPATH is on the list for the same reason PATH is: the jail computes it
+# from the one directory it decided to mount for imports, and a value inherited
+# from outside would point at directories that do not exist in here.
 JAIL_OWNED_ENV = frozenset({
-    "PATH", "HOME", "PWD", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND",
+    "PATH", "PYTHONPATH", "HOME", "PWD", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND",
     "GH_CONFIG_DIR", "GH_PAGER", "PAGER",
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
     "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
@@ -704,6 +708,56 @@ def _path_snapshot_note():
     ]
 
 
+def _user_site_packages():
+    """Where `pip install --user` puts the modules this interpreter imports.
+
+    PATH cannot reveal this one. A Python tool installed for the user is two
+    separate things in two separate places: a launcher in `~/.local/bin`, which
+    the PATH walk above already mounts, and the package itself under
+    `~/.local/lib/pythonX.Y/site-packages`, which is on nobody's PATH and holds
+    no executable, so every rule in `_toolchain_mounts` correctly declines it.
+    The result was a launcher that starts and then cannot import itself.
+
+    Measured on 2026-09-08, with the module installed for the user and readable
+    in the user's own terminal:
+
+        $ python3 -c "import aiohttp; print(aiohttp.__version__)"
+        ModuleNotFoundError: No module named 'aiohttp'
+
+    That is the criterion of this whole module ("what the user can run in their
+    own terminal, this jail can run too") failing, and it is why the check that
+    runs pytest under the seccomp filter could only ever be skipped: install
+    pytest and the assertion went red, on the mount policy rather than on the
+    filter it was written to test.
+
+    The declaration is Python's own, `site.getusersitepackages()`, not a path
+    spelled out here: the version component moves with every interpreter
+    upgrade. It is the interpreter isaacli itself runs under, which is the
+    system `python3` the jail resolves; a pyenv or uv interpreter that came in
+    from PATH carries its own site-packages inside the install tree already
+    mounted behind it.
+
+    Returns the directory, or None when there is none to mount.
+    """
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        # Not a shape anyone has seen; a virtualenv without the user site
+        # configured is the plausible one. It costs the mount, not the jail.
+        debug.swallowed("execution._user_site_packages")
+        return None
+    if not user_site:
+        return None
+    # `getusersitepackages` answers with a string on every interpreter here, but
+    # it is documented to be able to answer with a list of them.
+    if isinstance(user_site, (list, tuple)):
+        user_site = user_site[0] if user_site else ""
+    if not user_site:
+        return None
+    resolved = Path(os.path.realpath(user_site))
+    return resolved if resolved.is_dir() else None
+
+
 def _toolchain_mounts(root):
     """Read-only mounts that let the jail run the toolchain the user has.
 
@@ -813,6 +867,31 @@ def _toolchain_mounts(root):
                 binds.append(tree)
                 mounted.append(tree)
 
+    # The one import directory PATH cannot declare. Mounted last so that every
+    # `_mountable` guard sees the toolchain mounts already decided, and refused
+    # by the same rules as everything else rather than by an exception for it.
+    user_site = _user_site_packages()
+    python_path = None
+    if user_site is None:
+        refused.append("the user site-packages directory (there is none)")
+    else:
+        refusal = _mountable(user_site, home, xdg_bases, root, system + mounted)
+        if refusal == ALREADY_COVERED:
+            # Reachable already, but still has to be NAMED: HOME inside the jail
+            # is the workspace, so the interpreter computes a user site that
+            # does not exist and never adds this one to sys.path on its own.
+            python_path = str(user_site)
+        elif refusal is not None:
+            refused.append(f"{user_site} ({refusal}; the user site-packages "
+                           f"directory)")
+        elif _over_argument_budget(binds, budget):
+            refused.append("the user site-packages directory (the bwrap "
+                           "argument list would go past the kernel's limit)")
+        else:
+            binds.append(user_site)
+            mounted.append(user_site)
+            python_path = str(user_site)
+
     # A variable rides along only when its value IS one of the directories we
     # just mounted. That is what makes forwarding safe without a list of names:
     # `RUSTUP_HOME` pointing at a mounted toolchain gets through, and a secret
@@ -824,6 +903,10 @@ def _toolchain_mounts(root):
             continue
         if value in mounted_paths:
             env_pass[name] = value
+    if python_path is not None:
+        # Set after the forwarding loop, and PYTHONPATH is jail-owned, so this
+        # is the only thing that can decide it.
+        env_pass["PYTHONPATH"] = python_path
 
     snapshot_dirs, snapshot_failure = _login_shell_path()
     snapshot_state = (snapshot_failure if snapshot_failure
@@ -831,10 +914,15 @@ def _toolchain_mounts(root):
     # A PATH directory carries the origin that put it there; a directory pulled
     # in behind one (an install tree, a launcher home) carries the PATH entry it
     # came with, which is the only honest answer for it.
+    # The user site-packages directory came from the interpreter, not from a
+    # PATH entry, so it is named on its own rather than counted among the trees
+    # carried in behind an executable.
     from_path = {origin.split(" <- ")[0] for origin in origins}
+    from_path.add(python_path)
     carried = [str(path) for path in binds if str(path) not in from_path]
     debug.note("execution.toolchain",
                f"login shell PATH: {snapshot_state}"
+               f" | user site-packages: {python_path or 'nothing'}"
                f" | mounted read-only, each with where the directory came from: "
                f"{'; '.join(origins) or 'nothing'}"
                f" | mounted behind them (install trees, launcher homes): "

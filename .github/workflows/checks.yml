@@ -60,21 +60,32 @@ jobs:
         # even an empty one) is missing. An empty directory is enough.
         run: mkdir -p ~/.config/gh
 
+      - name: Install pytest for the user
+        # Not a test dependency: no check imports pytest. It is the FIXTURE for
+        # the one assertion that drives the heaviest importer the agent runs
+        # under the seccomp filter, and without it that assertion skips itself
+        # and the containment proof runs incomplete while the badge stays green.
+        # `--user` on purpose, because the shape being exercised is a tool the
+        # user installed for themselves: a launcher on the PATH plus a package
+        # under the user site-packages, which is what execution.py has to mount
+        # for the launcher to be able to import itself.
+        run: python3 -m pip install --user pytest
+
       - name: Run the check suite
         # Every tests/check_*.py runs here now, check_execution.py included.
         # See docs/SECURITY.md for what that does and does not prove.
         #
         # The script refuses to run fewer check files than it expects, so a
         # check deleted or renamed out of the glob stops the build instead of
-        # shrinking the suite in silence. It also reports, without failing, any
-        # check that skipped part of itself.
+        # shrinking the suite in silence.
         #
-        # `--strict` turns those partial runs into failures and is deliberately
-        # NOT used yet. Measured on 2026-09-08: this runner has no pytest, so
-        # check_execution.py skips the one assertion that drives pytest under
-        # the seccomp filter, and installing pytest to satisfy it made that same
-        # assertion FAIL, because the sandbox does not bind the site-packages
-        # the installed pytest lives in. Turning --strict on before fixing that
-        # would be trading a quiet gap for a red build that says nothing new.
-        # Task 078 carries the measurement.
-        run: ./scripts/check.sh
+        # `--strict` makes a check that skipped part of itself fail the build.
+        # It stayed off until 2026-09-08 for one reason, now removed: the
+        # pytest assertion skipped here for want of pytest, and installing
+        # pytest made it FAIL, because the jail never mounted the user
+        # site-packages the installed pytest imports from. That was a real
+        # defect in the mount policy, not a test problem, and the module's own
+        # criterion said so: what the user can run in their own terminal, this
+        # jail can run too. With the mount in place the assertion passes and
+        # the suite has no partial run left to hide behind.
+        run: ./scripts/check.sh --strict

@@ -673,6 +673,65 @@ check(str(refused_checkout) not in
       "and the snapshot does not widen what may be mounted: a git checkout it "
       "names is refused exactly as one on the process PATH is")
 
+print("\n=== 7e. a Python tool installed for the user can import itself ===")
+# The one import directory PATH cannot declare, and the reason the pytest
+# assertion further down could only ever be skipped. `pip install --user` lands
+# a launcher in ~/.local/bin, which the PATH walk mounts, and the package under
+# ~/.local/lib/pythonX.Y/site-packages, which is on nobody's PATH and holds no
+# executable, so every mount rule correctly declined it. Measured on 2026-09-08
+# with the module readable in the user's own terminal:
+#     ModuleNotFoundError: No module named 'aiohttp'
+#
+# Planted rather than read off this machine: what is installed for the user here
+# is not what is installed on a CI runner, and a check must not assert either.
+# The marker is COMPUTED inside the jail, so the echoed command line cannot
+# contain it whether or not the import ever happened.
+planted_site = base / "planted_user_site"
+planted_site.mkdir()
+(planted_site / "isaacli_probe_module.py").write_text(
+    "VALUE = 6 * 7\n")
+# A sibling of the site directory, standing in for the rest of ~/.local/lib:
+# mounting the site directory must not bring its parent along.
+sibling_secret = planted_site.parent / "planted_user_site_sibling"
+sibling_secret.mkdir()
+(sibling_secret / "token").write_text("tok-sibling-must-not-leak")
+
+original_user_site = execution._user_site_packages
+try:
+    execution._user_site_packages = lambda: planted_site
+    out_import = execution.run_command(
+        'python3 -c "import isaacli_probe_module as m; '
+        'print(\'user site\', m.VALUE)"')
+    out_sibling = execution.run_command(
+        f"cat {sibling_secret / 'token'}", authorized=True)
+    _, _, site_forwarded = execution._toolchain_mounts(root)
+    execution._user_site_packages = lambda: None
+    out_without = execution.run_command(
+        'python3 -c "import isaacli_probe_module as m; '
+        'print(\'user site\', m.VALUE)"')
+    _, _, none_forwarded = execution._toolchain_mounts(root)
+finally:
+    execution._user_site_packages = original_user_site
+
+check("user site 42" in out_import,
+      f"a module installed only in the user's site-packages imports inside the "
+      f"jail: {out_import[:300]!r}")
+check(site_forwarded.get("PYTHONPATH") == str(planted_site),
+      f"PYTHONPATH names that one directory, because HOME inside the jail is the "
+      f"workspace and the interpreter would compute a user site that does not "
+      f"exist: {site_forwarded!r}")
+check("tok-sibling-must-not-leak" not in out_sibling,
+      f"a sibling of the site-packages directory does not ride in behind it: "
+      f"{out_sibling[:300]!r}")
+# The failing half, so the two checks above are not satisfied by something else
+# on the line: with no user site to mount, the same import has to fail and
+# PYTHONPATH has to be absent rather than empty.
+check("user site 42" not in out_without and "(exit code: 0)" not in out_without,
+      f"with no user site-packages to mount, that import fails, which is what "
+      f"makes the pass above mean the mount: {out_without[:300]!r}")
+check("PYTHONPATH" not in none_forwarded,
+      f"and nothing sets PYTHONPATH then: {none_forwarded!r}")
+
 print("\n=== 8. no network for what the user was never shown ===")
 # Careful writing this assert: looking for a sentinel word in the output does not
 # work, because the ECHOED command contains the word too. The exit code is what counts.
