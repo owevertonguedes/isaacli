@@ -1382,14 +1382,16 @@ def _choose_session_ceiling(input_fn, remaining_hours=None):
     hours = [hour for hour in SESSION_CEILING_HOURS
              if hour * 3600 <= SESSION_TIMEOUT_SECONDS]
     options = [t("cli.kaggle.ceiling.option", hours=hour) for hour in hours]
-    # The screen used to lead with the silence switch, and on 2026-09-08 that
-    # promise was measured false: llama.cpp b10502 answered three calls at its
-    # default verbosity and logged none of them, so the switch the kernel reads
-    # that log for cannot arm at all. It stays in the kernel, where a build that
-    # does announce its requests still gets the benefit and one that does not
-    # says so in its own log. It does not stay on a screen where somebody is
-    # deciding how many hours to risk.
-    explanation = t("cli.kaggle.ceiling.explain")
+    # Both numbers come from the constants the kernel is actually given, so the
+    # screen cannot drift from the mechanism. The promise itself was off this
+    # screen for one day: the switch read a log line llama.cpp stopped writing,
+    # so it had never once armed, and a brake that is promised and does not hold
+    # is worse than one that was never promised. It is back because it was
+    # measured working end to end through the tunnel on 2026-09-09, at 5.2
+    # minutes from the last beat to the kernel ending itself.
+    explanation = t("cli.kaggle.ceiling.explain",
+                    seconds=HEARTBEAT_SECONDS,
+                    minutes=SESSION_IDLE_SECONDS // 60)
     if remaining_hours is not None:
         explanation += "\n" + t("cli.kaggle.ceiling.remaining",
                                 remaining=f"{remaining_hours:.2f}")
@@ -3072,7 +3074,8 @@ def release_profile_session(profile_name, config_file=None, pid=None):
         say(t("cli.kaggle.session.still_used",
               slug=record["slug"], count=len(holders)))
         return record["slug"]
-    say(t("cli.kaggle.session.released", slug=record["slug"]))
+    say(t("cli.kaggle.session.released", slug=record["slug"],
+          minutes=SESSION_IDLE_SECONDS // 60))
     return record["slug"]
 
 
@@ -3401,4 +3404,10 @@ def run_kaggle(validation_cpu=False, input_fn=None, run_fn=subprocess.run,
         return 1
     say(t("cli.kaggle.ready", profile=profile, url=url + "/v1"))
     say(t("cli.kaggle.stop", url=f"https://www.kaggle.com/code/{slug}"))
+    # This command pushes a kernel and then exits, so the beat that holds the
+    # switch open dies with it. That was harmless while the switch was inert.
+    # Now that it works, a launch nobody opens a session against is gone in five
+    # minutes, and the person who walked away to make coffee has to be told
+    # before they come back to a kernel that is not there.
+    say(t("cli.kaggle.unheld", minutes=SESSION_IDLE_SECONDS // 60))
     return 0

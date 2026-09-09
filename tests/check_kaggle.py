@@ -2636,8 +2636,8 @@ check("kaggle-one" in release_state["profiles"],
 # build never writes. What is left on the screen are the two brakes that were
 # observed working, the ceiling and the command that ends it now.
 check("--stop" in release_out.getvalue()
-      and str(cli_kaggle.SESSION_IDLE_SECONDS // 60) not in release_out.getvalue(),
-      "stepping out names the brakes that hold, and no longer the one that did not")
+      and str(cli_kaggle.SESSION_IDLE_SECONDS // 60) in release_out.getvalue(),
+      "stepping out names both brakes, with the silence read from the kernel's own constant")
 
 # Two single-shot invocations at once. The first one out must not take the
 # kernel the second is still using, and `holders` is what makes that decidable.
@@ -4280,10 +4280,33 @@ _ceiling_screen = io.StringIO()
 with redirect_stdout(_ceiling_screen):
     cli_kaggle._choose_session_ceiling(lambda _prompt: "1", remaining_hours=25.58)
 _ceiling_text = " ".join(_ceiling_screen.getvalue().split())
-check("brake that holds" in _ceiling_text.lower()
-      and "closing the terminal does not stop it" in _ceiling_text.lower()
+# A launch this command pushes and walks away from is now gone in five minutes,
+# because the beat that holds the switch open dies with the process that pushed
+# it. That is the switch working, and it is also a way to lose a load somebody
+# paid twenty minutes for, so the screen has to say it.
+unheld_file = root / "unheld" / "config.json"
+add_account(unheld_file)
+unheld_answers = iter(["1", "1", "1", "n", "1", "y"])
+unheld_out = io.StringIO()
+original_discover = cli_kaggle.discover_tunnel_url
+try:
+    cli_kaggle.discover_tunnel_url = (
+        lambda *args, **kwargs: "https://unheld.trycloudflare.com")
+    with redirect_stdout(unheld_out):
+        cli_kaggle.run_kaggle(
+            input_fn=lambda _prompt: next(unheld_answers),
+            run_fn=push_run, which_fn=lambda _name: "/fake/kaggle",
+            config_file=unheld_file, home_dir=home)
+finally:
+    cli_kaggle.discover_tunnel_url = original_discover
+unheld_text = " ".join(unheld_out.getvalue().split())
+check(str(cli_kaggle.SESSION_IDLE_SECONDS // 60) in unheld_text
+      and ("holding" in unheld_text or "segurando" in unheld_text),
+      "a push that leaves nothing holding the kernel says so, on the screen that ends the launch")
+check(str(cli_kaggle.SESSION_IDLE_SECONDS // 60) in _ceiling_text
+      and str(cli_kaggle.HEARTBEAT_SECONDS) in _ceiling_text
       and "--stop" in _ceiling_text and "25.58" in _ceiling_text,
-      "the ceiling screen promises only the brake that was measured holding")
+      "the ceiling screen names both brakes with the numbers the kernel is given")
 cancelled_ceiling = cli_kaggle._choose_session_ceiling(
     lambda _prompt: str(len(cli_kaggle.SESSION_CEILING_HOURS) + 1))
 check(cancelled_ceiling is None,
