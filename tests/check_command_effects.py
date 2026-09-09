@@ -496,17 +496,62 @@ check(selector.model == "remote/other-model",
 check(selector.thinking == "high",
       f"with the reasoning level chosen on the screen after it: {selector.thinking}")
 
-# The four that only report are still driven, because a report that raises is a
-# command that does not work, and because each has to reach real state.
-sessions_out = run("/sessions")
-check(previous_path.name in sessions_out or previous_id in sessions_out,
-      f"/sessions lists a session that exists on disk: {previous_id}")
-history_out = run("/history")
-check(history_out.strip() != "", "/history answers with something")
-feedback_out = run("/feedback")
-check(feedback_out.strip() != "", "/feedback answers with something")
-show_out = run("/show")
-check(show_out.strip() != "", "/show answers with something even when nothing ran")
+# --- the four that only report, given something real to report on ----------
+#
+# They were the weakest entries here for one honest reason: what they print
+# comes from a conversation, and this file had none. So one is written. A turn
+# is logged the way the program logs it, a command is recorded the way the
+# program records it, and then each of the four has to show it back. Asserting
+# that they "answer with something" was true of a command that printed the
+# wrong thing, or nothing but a heading.
+teller = app.IsaacCLI("probe-model", workspace, 4, autostart_ollama=False,
+                      config_file=config_file)
+teller._log("user", content="count the files in this folder")
+teller._log("tool_start", name="run_command", cmd="ls -la /tmp/probe-folder")
+teller._log("tool_result", result="total 0")
+# `assistant_final` rather than `assistant`, because that is the event the
+# program writes when a turn ends, and a transcript check that invents its own
+# event name proves the reader can read the checker's log rather than the
+# program's. Caught by this file failing on the answer while showing the
+# question, the command and its output.
+teller._log("assistant_final", content="there are no files in it")
+teller.commands.append({"id": 1, "cmd": "ls -la /tmp/probe-folder",
+                        "result": "total 0"})
+teller.last_answer = "there are no files in it"
+
+history_out = run("/history", cli=teller)
+check("count the files in this folder" in history_out,
+      "/history shows what was asked")
+check("there are no files in it" in history_out,
+      "and what was answered")
+check("ls -la /tmp/probe-folder" in history_out,
+      "and the command that ran in between, which is the part a transcript is for")
+check("total 0" in history_out,
+      "and what that command returned")
+
+show_out = run("/show", cli=teller)
+check("ls -la /tmp/probe-folder" in show_out and "total 0" in show_out,
+      "/show brings back the last command in full, with its output")
+missing_out = run("/show 99", cli=teller)
+check("99" in missing_out and "total 0" not in missing_out,
+      f"and a number that names no command says so instead of showing another: "
+      f"{missing_out.strip()[:80]}")
+
+# The help for feedback has to name the commands that exist, or it is a help
+# that teaches something the program does not answer to.
+feedback_out = run("/feedback", cli=teller)
+missing_help = [name for name in ("/good", "/bad", "/score")
+                if name not in feedback_out]
+check(not missing_help,
+      f"/feedback names every command it is the help for: missing {missing_help}")
+
+sessions_out = run("/sessions", cli=teller)
+check(teller.session_id in sessions_out,
+      f"/sessions lists the session being written right now: {teller.session_id}")
+check(previous_id in sessions_out,
+      f"and the ones finished before it: {previous_id}")
+check(Translator("en").t("cli.sessions.current").strip() in sessions_out,
+      "and marks which one is current, because that is the one being appended to")
 
 
 print()
