@@ -407,6 +407,95 @@ check(plain.session_id in status_out and str(plain.session_path) in status_out,
 check("probe-model" in status_out,
       "and the model actually in use")
 
+# --- /model <name>: the branch with no screen and the most to lose ---------
+#
+# `/model` with an argument never draws anything, so the sweep that stops at the
+# first selector was never going to reach it, and it is the branch that decides
+# where the next question is sent. The contract apply_profile states is that the
+# five fields move together or not at all: a profile that carries a temperature
+# and a path that does not read it is a setting the user chose and the program
+# silently ignores.
+switch = app.IsaacCLI("probe-model", workspace, 4, autostart_ollama=False,
+                      config_file=config_file)
+# The engine is not brought up here. Starting a server is what this command does
+# for a living and it is exactly what a check must not do on somebody's machine.
+switch.prewarm_engine = lambda *args, **kwargs: None
+remote = {
+    "provider": "openai_compatible", "provider_name": "Server",
+    "base_url": "https://api.test/v1", "credential": "api:probe",
+    "model": "remote/model", "thinking": "high", "num_ctx": 32768,
+    "temperature": 0.3, "max_output_tokens": 4096,
+}
+profiles = saved()
+profiles.setdefault("profiles", {})["probe-remote"] = remote
+config.save(profiles, config_file)
+
+run("/model probe-remote", cli=switch)
+carried = (switch.model, switch.thinking, switch.num_ctx, switch.temperature,
+           switch.max_output_tokens)
+check(carried == ("remote/model", "high", 32768, 0.3, 4096),
+      f"/model with a saved profile takes every field that profile chose: {carried}")
+check(switch.provider.get("base_url") == "https://api.test/v1",
+      f"including the endpoint, so the next question goes where the profile says: "
+      f"{switch.provider.get('base_url')}")
+
+# And the other half, which is the one that can send a question to the wrong
+# machine: a bare name is a profile that chose nothing but the model, so
+# everything the replaced profile chose has to go with it.
+run("/model some-local-model", cli=switch)
+kept = (switch.thinking, switch.num_ctx, switch.temperature,
+        switch.max_output_tokens)
+check(switch.model == "some-local-model",
+      f"/model with a bare name switches to it: {switch.model}")
+check(kept == (None, None, None, None),
+      f"and drops what the previous profile chose, rather than lending its "
+      f"settings to a model that never chose them: {kept}")
+check(switch.provider.get("base_url") != "https://api.test/v1",
+      f"and above all stops pointing at the replaced profile's endpoint: "
+      f"{switch.provider.get('base_url')}")
+
+# --- /model with no argument, driven through the screen to the session ------
+#
+# The expensive rows on this screen install software or spend GPU quota, and
+# they are driven in check_setup where every cost is a stub. The row that costs
+# nothing is an endpoint already configured, and following it is what closes the
+# loop this task is about: the screen writes the configuration, and the session
+# has to pick it up. A profile saved and not applied leaves the panel naming the
+# model that was replaced and the next question going to the old one.
+import setup_ollama  # noqa: E402
+
+selector = app.IsaacCLI("probe-model", workspace, 4, autostart_ollama=False,
+                        config_file=config_file)
+selector.prewarm_engine = lambda *args, **kwargs: None
+offered_models = ["remote/model", "remote/other-model"]
+original_list = setup_ollama._list_api_models
+original_validate = setup_ollama._validate_api
+try:
+    # The network is the one thing this screen reaches on its own, and it is
+    # stubbed rather than allowed: the suite promises to stay offline.
+    setup_ollama._list_api_models = lambda base_url, api_key: offered_models
+    setup_ollama._validate_api = lambda url, key, model: None
+    _session, selector_out, selector_error = drive(
+        "/model",
+        # The row is named as the screen draws it, provider and model, which is
+        # not the key the profile is stored under.
+        Chooser("Server · remote/model", "remote/other-model", "high"),
+        cli=selector)
+finally:
+    setup_ollama._list_api_models = original_list
+    setup_ollama._validate_api = original_validate
+check(selector_error is None,
+      f"/model reaches its screen, and the rows are answered by name: {selector_error}")
+_name, chosen = config.profile(saved())
+check((chosen or {}).get("model") == "remote/other-model",
+      f"the model picked on the screen is the model written to the config: "
+      f"{(chosen or {}).get('model')}")
+check(selector.model == "remote/other-model",
+      f"and the session picks it up, rather than answering with the one it had: "
+      f"{selector.model}")
+check(selector.thinking == "high",
+      f"with the reasoning level chosen on the screen after it: {selector.thinking}")
+
 # The four that only report are still driven, because a report that raises is a
 # command that does not work, and because each has to reach real state.
 sessions_out = run("/sessions")
