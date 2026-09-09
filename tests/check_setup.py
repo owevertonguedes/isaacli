@@ -260,8 +260,33 @@ class FakeClient:
 
 
 def answers(*values):
+    """A scripted keyboard, which says so when the script runs out.
+
+    A flow that draws one screen more than the script has answers for used to
+    end this file with a bare StopIteration from inside `next`, which names
+    neither the screen that asked nor the answers that were prepared. That is
+    how a planted defect gets reported as a traceback instead of as a verdict:
+    changing what the model menu offers changes how many answers it needs, so
+    the plant that should say "the screen lost two models" says nothing at all
+    and takes every check below it with it.
+    """
     items = iter(values)
-    return lambda _prompt="": next(items)
+    given = []
+
+    def answer(prompt=""):
+        try:
+            value = next(items)
+        except StopIteration:
+            raise AssertionError(
+                f"a screen asked for answer {len(given) + 1} and the script "
+                f"prepared {len(values)}. The flow drew a screen this check did "
+                f"not expect, which usually means the screen before it offered "
+                f"something different. Answers so far: {given}. The screen "
+                f"asking: {str(prompt).strip()[:120]!r}") from None
+        given.append(value)
+        return value
+
+    return answer
 
 
 original_which = setup_ollama.shutil.which
@@ -339,11 +364,46 @@ try:
     check(any(item["base_model"] == "granite4:micro-h" for item in local_menu)
           and "granite4:micro-h" not in CURATED_REFERENCES,
           "Micro H shows up because it is installed, with no recommendation badge")
-    check(pt.t("model.section.recommended") in out.getvalue()
-          and pt.t("model.section.installed", count=len(local_menu)).split("(")[0]
-          in out.getvalue()
-          and "test-model:7b" in out.getvalue(),
-          "the menu shows recommendations and every installed model on one screen")
+    # Closed against the inventory Ollama was made to report, rather than
+    # spot-checked against one name out of it. This assertion said "every
+    # installed model" while proving that one of four was there, which is the
+    # exact shape of the defect this task was opened for: a list of ten came
+    # back holding one and every check on it stayed green.
+    #
+    # The independent inventory is `client.installed`, and the screen accounts
+    # for a model in one of two ways, so both are counted. A model that is also
+    # a recommendation stays in the recommendations, under the display name that
+    # section uses, with its last cell saying it is on disk. Everything else is
+    # listed by name in the installed section. Nothing may fall between the two.
+    screen_text = out.getvalue()
+    curated_installed = [name for name in client.installed
+                         if name in CURATED_REFERENCES]
+    listed_installed = [name for name in client.installed
+                        if name not in CURATED_REFERENCES]
+    absent = sorted(name for name in listed_installed if name not in screen_text)
+    # Counted where the table writes it, at the end of a row, and not anywhere
+    # in the text: the label is the word "sim", three letters that also occur
+    # inside ordinary prose on the same screen, and counting those made this
+    # assertion survive an _is_installed that always answered no.
+    on_disk = pt.t("model.table.installed_yes")
+    on_disk_cells = sum(1 for line in screen_text.splitlines()
+                        if line.rstrip().endswith(on_disk))
+    # The header is rendered with the count the screen believes, so asking for
+    # it with the count the inventory says is what makes the two disagree out
+    # loud. `local_menu` is not that inventory: it is every installed model
+    # before the screen drops the ones already recommended, so comparing
+    # against it would compare the screen with itself.
+    expected_header = pt.t("model.section.installed", count=len(listed_installed))
+    check(pt.t("model.section.recommended") in screen_text
+          and expected_header in screen_text
+          and not absent,
+          f"every installed model that is not already a recommendation is listed "
+          f"by name, and counted: missing {absent}, "
+          f"expected header {expected_header!r}")
+    check(on_disk_cells == len(curated_installed),
+          f"and every installed model that is a recommendation is marked on disk "
+          f"there instead of vanishing: {on_disk_cells} rows say yes for "
+          f"{len(curated_installed)} installed recommendations")
 
     selector_config = root / "selector-config.json"
     client.installed.append("isaac-qwen-legacy-16k")
