@@ -4091,6 +4091,16 @@ check("SESSION_SECONDS = 5400" in ceiling_source
       "the ceiling agreed at the push is what the kernel carries, not the maximum")
 
 
+# Read out of the rendered kernel rather than repeated here: these two decide
+# how early the kernel's own ceiling fires, and a copy of them in the checks
+# would go on agreeing with a template that had changed.
+_ceiling_constants = {
+    name: int(re.search(rf"^{name} = (.+)$", ceiling_source, re.M).group(1)
+              .replace("2 * 30", "60"))
+    for name in ("CEILING_POLL_SECONDS", "CEILING_SHUTDOWN_SECONDS")
+}
+
+
 class _Child:
     """A server or tunnel that keeps running until it is told to stop.
 
@@ -4160,6 +4170,7 @@ def run_ceiling(session_seconds, serving_answer, published=True, stamped=False,
         "last_request": [clock.monotonic() if stamped else None],
         "last_request_lock": threading.Lock(),
         "serving": lambda: serving_answer,
+        **_ceiling_constants,
         "decodes_served": lambda: decodes,
         "report_vram": lambda _moment: None,
         "url": "https://ceiling.trycloudflare.com",
@@ -4220,6 +4231,41 @@ check(unpublished_end == 0 and "cloudflared published" in unpublished_screen
       "a tunnel that never publishes is ended by the ceiling, not billed out")
 
 
+# Both sides of the ceiling carry the same figure, and on 2026-09-09 Kaggle's
+# side won by four seconds: its log stops mid-sentence at 120 minutes and 4
+# seconds, with no [shutdown] line, and the kernel ends CANCEL_ACKNOWLEDGED
+# instead of COMPLETE. The two hours were spent as agreed and the record of why
+# they ended is a gap, which is the part that matters, because the in-kernel
+# brake is the only one of the two that writes down its reason. So it has to
+# fire first, and by more than the time it can be asleep plus the time ending
+# takes.
+# Read with ast rather than with a regex: the expression spans two lines and
+# holds a call of its own, so the first closing parenthesis a pattern finds
+# belongs to time.monotonic() and not to the statement. The first attempt at
+# this check matched exactly that and compared nothing.
+_ceiling_deadline = next(
+    (ast.unparse(node.value) for node in ast.walk(ast.parse(ceiling_source))
+     if isinstance(node, ast.Assign)
+     and any(getattr(target, "id", "") == "SESSION_ENDS_AT"
+             for target in node.targets)),
+    "")
+_margin = (_ceiling_constants["CEILING_POLL_SECONDS"]
+           + _ceiling_constants["CEILING_SHUTDOWN_SECONDS"])
+check("- CEILING_POLL_SECONDS" in _ceiling_deadline
+      and "- CEILING_SHUTDOWN_SECONDS" in _ceiling_deadline
+      and _margin > _ceiling_constants["CEILING_POLL_SECONDS"],
+      f"the kernel's own ceiling fires {_margin} s before the one Kaggle holds, "
+      f"so the session that ends always says why it ended")
+
+# And the margin has to be the periods it is derived from, not a number that
+# drifted away from them. The serving loop sleeps one, and ending the session
+# gives each of two children half the other.
+check(f"time.sleep(CEILING_POLL_SECONDS)" in ceiling_source
+      and "child.wait(timeout=CEILING_SHUTDOWN_SECONDS // 2)" in ceiling_source,
+      "and the two periods it subtracts are the ones the loop and the shutdown "
+      "actually use, read from the same constants")
+
+
 class _StubbornChild(_Child):
     """A child that refuses to terminate, which must not keep the kernel alive."""
 
@@ -4237,6 +4283,7 @@ stubborn_scope = {
     "IDLE_SECONDS": 300,
     "last_request": [None], "last_request_lock": threading.Lock(),
     "server": stubborn, "tunnel": _Child(), "serving": lambda: True,
+    **_ceiling_constants,
     "decodes_served": lambda: 0,
     "report_vram": lambda _moment: None, "url": "https://x.trycloudflare.com",
     "tunnel_url": ["https://x.trycloudflare.com"],
@@ -4382,6 +4429,7 @@ def run_idle(idle_seconds, beats, patience=200):
         "last_request": stamped, "last_request_lock": threading.Lock(),
         "server": server, "tunnel": _Child(patience=patience),
         "serving": lambda: True, "decodes_served": lambda: counter[0],
+        **_ceiling_constants,
         "report_vram": lambda _moment: None,
         "url": "https://idle.trycloudflare.com",
         "tunnel_url": ["https://idle.trycloudflare.com"],

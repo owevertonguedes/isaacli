@@ -43,7 +43,24 @@ SERVER_VERBOSITY = __SERVER_VERBOSITY__
 # The clock starts here, at the top of the script, because loading tens of
 # gigabytes bills exactly like serving does.
 SESSION_SECONDS = __SESSION_SECONDS__
-SESSION_ENDS_AT = time.monotonic() + SESSION_SECONDS
+# How long a poll can leave this script asleep past the moment the ceiling was
+# reached, plus how long ending the session is allowed to take. Both are the
+# figures used further down rather than numbers chosen here: the serving loop
+# sleeps this long between checks, and end_session gives each of its two
+# children this long to go quietly.
+CEILING_POLL_SECONDS = 30
+CEILING_SHUTDOWN_SECONDS = 2 * 30
+# The same ceiling as `kernels push -t`, minus the time it takes to notice and
+# to act on it. Measured on 2026-09-09: with both sides carrying the identical
+# figure, Kaggle's server-side timeout won by four seconds. Its log stops
+# mid-sentence at 120 minutes and 4 seconds, there is no [shutdown] line, and
+# the kernel is left CANCEL_ACKNOWLEDGED instead of COMPLETE, so the one record
+# of why a two hour session ended is a gap. Whoever fires first is otherwise
+# decided by nothing but polling granularity. Ending slightly early is strictly
+# cheaper than the ceiling that was agreed and it is the only one of the two
+# that writes down its reason, so it is the one that should win.
+SESSION_ENDS_AT = (time.monotonic() + SESSION_SECONDS
+                   - CEILING_POLL_SECONDS - CEILING_SHUTDOWN_SECONDS)
 # The other half of the same brake, and the one the incident actually called
 # for. The wall ceiling answers "this may never cost more than N hours"; this
 # answers "and it stops as soon as nobody is on the other end". The client
@@ -441,7 +458,7 @@ def end_session(reason, code=0):
     for child in (server, tunnel):
         try:
             child.terminate()
-            child.wait(timeout=30)
+            child.wait(timeout=CEILING_SHUTDOWN_SECONDS // 2)
         except (OSError, subprocess.SubprocessError):
             # A child that will not go quietly must not keep the script alive:
             # the point of this path is that the kernel stops billing.
@@ -526,5 +543,7 @@ while server.poll() is None and tunnel.poll() is None:
     if idle_reached():
         end_session(f"nothing has been asked of this server in {IDLE_SECONDS} s, "
                     "so the window that launched it is gone")
-    time.sleep(30)
+    # The same period the ceiling reserves for being asleep, read from the same
+    # constant, so shortening one without the other cannot happen quietly.
+    time.sleep(CEILING_POLL_SECONDS)
 end_session("the model server or tunnel exited", 1)

@@ -243,7 +243,7 @@
   "cli.kaggle.ceiling.explain": "Um kernel gasta quota de GPU por relógio de parede, e começa a gastar no instante em que o Kaggle o aloca. Dois freios o param sozinhos, sem depender de janela aberta, e os dois foram medidos em 2026-09-09. Este teto é o de fora: o kernel olha o próprio relógio e o Kaggle segura o mesmo número, com esta janela aberta ou não. O de dentro é o silêncio: enquanto uma sessão está aberta, esta janela bate no kernel a cada {seconds} segundos, e um kernel que passa {minutes} minutos sem nada ser pedido a ele se encerra sozinho, medido em 5,2 minutos desde o último batimento. Ou seja fechar o terminal para o gasto em minutos, e `isaacli kaggle --stop` para agora.",
   "cli.kaggle.ceiling.remaining": "Esta conta tem {remaining} horas de GPU restantes nesta semana.",
   "cli.kaggle.ceiling.option": "{hours} h",
-  "cli.kaggle.ceiling.chosen": "O kernel vai se encerrar sozinho depois de {hours} h, e o Kaggle segura o mesmo limite.",
+  "cli.kaggle.ceiling.chosen": "O kernel se encerra sozinho dentro de {hours} h, um pouco antes do mesmo limite que o Kaggle segura, então quem para a sessão é quem deixa escrito por quê.",
   "cli.kaggle.username.failed": "o nome de usuário do Kaggle não apareceu em kaggle config view",
   "cli.kaggle.username.error": "kaggle config view falhou: {error}",
   "cli.kaggle.username.silent": "sem saída",
