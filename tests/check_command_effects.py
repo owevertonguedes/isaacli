@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slash commands driven past the screen they open, to the effect they have.
+"""Slash commands driven to the effect they have, not to the moment they answer.
 
 `check_commands.py` sweeps every command and stops the moment one draws a
 selector. That was deliberate and it is still right for a sweep: there is no row
@@ -15,9 +15,15 @@ changed on disk or in the session afterwards. A row picked by number is not an
 answer to a screen whose rows come from somewhere else, and every check here
 would keep passing while pointing at the wrong row.
 
+The commands that draw no screen at all are here for the same reason and are
+worse off without it: a sweep that stops at the first selector could never say
+anything about them, and "it returned handled" is what a command that reaches
+nothing returns too. So they are driven for their effect as well, which for most
+of them is a line written to a file.
+
 Where it stops, and why: nothing here picks a row that would install anything,
 spend anybody's GPU quota, or reach the network. Those rows are named in the
-table with the reason, so what is left out is visible instead of implied.
+file with the reason, so what is left out is visible instead of implied.
 """
 import builtins
 import io
@@ -272,8 +278,150 @@ check(flipped in {"safe", "authorized_only"},
 # check, because a check that reads another file to see whether it mentions a
 # helper proves nothing about either.
 
+# --- the commands that draw nothing, and write something ------------------
+#
+# Fourteen of them, and until now the only thing asserted about any of them was
+# that they returned handled, which is also what a command that reaches nothing
+# returns. Each one here is driven for the mark it leaves.
+plain = app.IsaacCLI("probe-model", workspace, 4, autostart_ollama=False,
+                     config_file=config_file)
+
+
+def run(command, cli=plain):
+    """One command, with no screen expected, returning what it printed."""
+    return drive(command, Chooser(), cli=cli)[1]
+
+
+# /tools is the only list the user ever sees of what the model may do on their
+# machine, so a tool the agent exposes and this screen omits is a capability
+# nobody was told about. Closed against the schema the agent is actually given.
+import tools as tool_schema  # noqa: E402
+import execution  # noqa: E402
+
+tools_out = run("/tools")
+missing_tools = sorted(
+    schema["function"]["name"] for schema in tool_schema.SCHEMA
+    if schema["function"]["name"] not in tools_out)
+check(not missing_tools,
+      f"/tools names every tool the model is given, so none is hidden from the "
+      f"person whose machine it runs on: missing {missing_tools}")
+missing_commands = sorted(name for name in execution.ALLOWED if name not in tools_out)
+check(not missing_commands,
+      f"and every terminal command the sandbox allows: missing {missing_commands}")
+
+# /good, /bad and /score are the only commands that write a file the program
+# reads back later, and none of them was checked past returning handled.
+feedback_path = Path(plain.feedback_path)
+before_lines = (feedback_path.read_text(encoding="utf-8").splitlines()
+                if feedback_path.exists() else [])
+run("/good it did the thing")
+run("/bad it did not")
+run("/score 7 about right")
+written = [json.loads(line) for line in
+           feedback_path.read_text(encoding="utf-8").splitlines()[len(before_lines):]]
+check(len(written) == 3,
+      f"three feedback commands write three records: {len(written)}")
+check([record.get("score") for record in written] == [10, 0, 7],
+      f"and each writes the score it stands for: "
+      f"{[record.get('score') for record in written]}")
+check([record.get("feedback_kind") for record in written] == ["good", "bad", "score"],
+      f"named as what they are: {[record.get('feedback_kind') for record in written]}")
+check(all(record.get("session_id") == plain.session_id for record in written),
+      "each tied to the session it was given in, which is what makes it readable later")
+check(written[0].get("comment") == "it did the thing",
+      f"and the comment typed after the command is kept: {written[0].get('comment')}")
+
+# A score that is not a number must not be filed as one. The file is what proves
+# it: a refusal that still writes is indistinguishable on screen from one that
+# does not.
+before_junk = feedback_path.read_text(encoding="utf-8").splitlines()
+junk_out = run("/score not-a-number")
+after_junk = feedback_path.read_text(encoding="utf-8").splitlines()
+check(len(after_junk) == len(before_junk),
+      f"a score that is not a number writes nothing: "
+      f"{len(after_junk) - len(before_junk)} line(s) added")
+check(Translator("en").t("cli.score.not_integer").strip() in junk_out,
+      "and refuses it by name rather than with any message at all")
+# The same door on the other side: a number outside the scale is not a score.
+before_range = feedback_path.read_text(encoding="utf-8").splitlines()
+range_out = run("/score 44")
+check(len(feedback_path.read_text(encoding="utf-8").splitlines()) == len(before_range)
+      and Translator("en").t("cli.score.out_of_range").strip() in range_out,
+      "a score outside the scale is refused and not filed either")
+
+# /log is one line of output and it is a promise about the disk: the path it
+# prints has to be the session actually being written.
+log_out = run("/log").strip()
+check(log_out == str(plain.session_path),
+      f"/log prints the session path this session is writing: {log_out}")
+check(Path(log_out).exists(),
+      f"and that file is really there: {log_out}")
+
+# /new has to move the session on, and must not take the old one with it.
+previous_path = Path(plain.session_path)
+previous_id = plain.session_id
+run("/new")
+check(plain.session_id != previous_id and Path(plain.session_path) != previous_path,
+      f"/new starts a session that is not the one before it: "
+      f"{previous_id} to {plain.session_id}")
+check(previous_path.exists(),
+      "and leaves the finished one on disk, because that is the record")
+
+# /clear rebuilds the history rather than emptying it: the workspace
+# instructions have to survive, or the next answer is given by a model that no
+# longer knows where it is.
+plain.history.append({"role": "user", "content": "something to forget"})
+crowded = len(plain.history)
+run("/clear")
+check(len(plain.history) < crowded,
+      f"/clear drops the conversation: {crowded} to {len(plain.history)}")
+check(any(message.get("role") == "system" for message in plain.history),
+      "and keeps the system message, so the model still knows where it is")
+
+# /workspace with no argument reports, and with one moves. Both matter: the
+# reporting form is what somebody types when they are not sure.
+here = run("/workspace").strip()
+check(here == str(plain.workspace),
+      f"/workspace with nothing says where it is: {here}")
+moved_to = root / "other-project"
+moved_to.mkdir(exist_ok=True)
+run(f"/workspace {moved_to}")
+check(Path(plain.workspace) == moved_to,
+      f"/workspace with a path really moves there: {plain.workspace}")
+run(f"/workspace {workspace}")
+
+# /permissions reads the config, so a rule saved there has to appear.
+rules = saved()
+rules.setdefault("permissions", {}).setdefault("global", []).append("ls")
+config.save(rules, config_file)
+permissions_out = run("/permissions", cli=app.IsaacCLI(
+    "probe-model", workspace, 4, autostart_ollama=False, config_file=config_file))
+check("ls" in permissions_out,
+      "/permissions shows a rule that is in the config, rather than a fixed list")
+
+# /status is the screen somebody reads when something is wrong, so the values on
+# it have to be this session's rather than defaults.
+status_out = run("/status")
+check(plain.session_id in status_out and str(plain.session_path) in status_out,
+      "/status names this session and its log, not a placeholder")
+check("probe-model" in status_out,
+      "and the model actually in use")
+
+# The four that only report are still driven, because a report that raises is a
+# command that does not work, and because each has to reach real state.
+sessions_out = run("/sessions")
+check(previous_path.name in sessions_out or previous_id in sessions_out,
+      f"/sessions lists a session that exists on disk: {previous_id}")
+history_out = run("/history")
+check(history_out.strip() != "", "/history answers with something")
+feedback_out = run("/feedback")
+check(feedback_out.strip() != "", "/feedback answers with something")
+show_out = run("/show")
+check(show_out.strip() != "", "/show answers with something even when nothing ran")
+
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed")
     raise SystemExit(1)
-print("all command screen checks passed")
+print("all command effect checks passed")
