@@ -1908,6 +1908,40 @@ check(any("abc-123" in line for line in panel)
       and len(panel) == len(panel_without) + 1,
       "the welcome panel shows the session id, and omits the row when there is none")
 
+# A server that dies while loading says why on stderr, and that line is what
+# the screen has to show: "exited with code 1" alone sent the user guessing at a
+# model that simply did not fit the card. Driven through a real process.
+dying_server = root / "dying-server.py"
+dying_server.write_text(
+    "import sys\n"
+    "print('W common_fit_params: failed to fit params', file=sys.stderr)\n"
+    "print('0.02.209.488 E llama_model_load: error loading model: unable to allocate Vulkan1 buffer', file=sys.stderr)\n"
+    "print('0.02.209.940 E srv  llama_server: exiting due to model loading error', file=sys.stderr)\n"
+    "sys.exit(1)\n")
+original_runtime_dying = os.environ.get("ISAACLI_RUNTIME_DIR")
+try:
+    os.environ["ISAACLI_RUNTIME_DIR"] = str(root / "runtime-dying")
+    cli_ollama._probe_health = lambda url, timeout=2: None
+    dying = app.IsaacCLI(
+        "model", sub, 2, config_file=root / "cfg-dying.json",
+        provider=dict(AUTOSTART_PROFILE, autostart={
+            "cmd": [sys.executable, str(dying_server)],
+            "health_url": "http://127.0.0.1:9/v1/models", "timeout": 10}))
+    out = io.StringIO()
+    with redirect_stdout(out):
+        dying_result = dying.ensure_ollama(warn=True)
+    screen = out.getvalue()
+    check(dying_result is None
+          and "unable to allocate Vulkan1 buffer" in screen
+          and "runtime-dying" in screen,
+          f"a local server that dies while loading shows its error line and the log path ({screen!r})")
+finally:
+    if original_runtime_dying is None:
+        os.environ.pop("ISAACLI_RUNTIME_DIR", None)
+    else:
+        os.environ["ISAACLI_RUNTIME_DIR"] = original_runtime_dying
+    cli_ollama._probe_health = original_probe
+
 # A server that failed to start is not a missing credential. Sending the user
 # to /setup to repair something that is not broken is worse than no message.
 failed_autostart = app.IsaacCLI(

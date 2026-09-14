@@ -176,11 +176,16 @@ def _fit_label(item, tr, vram_mb, overhead_mb, gpu_count):
         return _t(tr, "model.fit.unknown")
     if not gpu_count:
         return _t(tr, "llamacpp.model.fit.cpu")
-    ceiling, _reason = llama_cpp.context_ceiling(
-        item, vram_mb, overhead_mb=overhead_mb)
+    ceiling, reason = llama_cpp.context_ceiling(
+        item, vram_mb, overhead_mb=overhead_mb,
+        ram_mb=hardware.ram_available_mb())
     item["context_ceiling"] = ceiling
+    item["partial_offload"] = reason == "partial"
     if not ceiling:
         return _t(tr, "model.fit.does_not_fit")
+    if item["partial_offload"]:
+        return _t(tr, "llamacpp.model.fit.partial",
+                  context=_short_context(ceiling))
     # Short on purpose. The sentence that spells out weights, cache and total
     # belongs after the choice and in --debug; on the row it has to leave space
     # for the four other fields, and a row nobody can read is worse than a row
@@ -207,8 +212,10 @@ def _row(item, tr, vram_mb, overhead_mb, gpu_count, machine=None):
         # A card that holds no context of this model holds no weights of it
         # either, so it will not decode at this card's bandwidth and there is
         # nothing to estimate. Unknown geometry is unknown, not a no.
+        # Partly on the processor, it will not decode at the card's bandwidth.
         fits=(None if not gpu_count or item.get("geometry_missing")
-              else bool(item.get("context_ceiling"))),
+              else bool(item.get("context_ceiling"))
+              and not item.get("partial_offload")),
         # The last column answers where the weights are, which on this screen
         # is the same question as "is it installed" and additionally says whose
         # copy it is: choosing an Ollama one is what creates the link.
@@ -606,19 +613,22 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
     outside this repository froze -c 8192, which falsified two of this
     project's own measurements before anybody noticed it was there.
 
-    Returns (context, cache_type), or None if the user backed out at either
-    step.
+    Returns (context, cache_type, partial), or None if the user backed out at
+    either step. `partial` means the weights exceed the card, and the server
+    must be started without -ngl so llama.cpp splits the layers itself.
     """
     from setup_ollama import _choose_context
 
     vram_mb, gpu_count = model_discovery.local_vram()
     overhead_mb = hardware.overhead_mb(gpu_count)
+    ram_mb = hardware.ram_available_mb()
     ceilings = {}
     reasons = {}
     for cache_type in llama_cpp.CACHE_TYPES:
         ceiling, reason = llama_cpp.context_ceiling(
             model, vram_mb, overhead_mb=overhead_mb,
-            device_free_mb=device_free_mb, cache_type=cache_type)
+            device_free_mb=device_free_mb, cache_type=cache_type,
+            ram_mb=ram_mb)
         ceilings[cache_type] = ceiling
         reasons[cache_type] = reason
 
@@ -632,7 +642,7 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
     # check exists precisely to catch a string that no screen appears to ask
     # for; hiding from it would mean a missing translation ships unnoticed.
     shown = f"{ceiling:,}".replace(",", " ")
-    if reason == "does_not_fit":
+    if reason in ("does_not_fit", "partial"):
         say(_t(tr, "llamacpp.context.does_not_fit", name=model["name"]))
     elif reason == "memory":
         say(_t(tr, "llamacpp.context.capped.memory", context=shown))
@@ -641,7 +651,7 @@ def choose_context(tr, input_fn, model, device_free_mb=None):
     context = _choose_context(ceiling or None, input_fn, tr)
     if context is None:
         return None
-    return context, cache_type
+    return context, cache_type, reason == "partial"
 
 
 # --- saving the profile -----------------------------------------------------
@@ -652,7 +662,7 @@ def _profile_name(model):
 
 
 def save_profile(data, model, executable, context, device, port, alias=None,
-                 cache_type=None):
+                 cache_type=None, partial=False):
     """Write the profile, with the launch command this program decided.
 
     Saved as openai_compatible with an autostart, which is the same shape the
@@ -671,7 +681,8 @@ def save_profile(data, model, executable, context, device, port, alias=None,
     cache_type = cache_type or llama_cpp.DEFAULT_CACHE_TYPE
     command = llama_cpp.server_command(
         executable, model["path"], context, device=device, port=port,
-        alias=alias, cache_type_k=cache_type, cache_type_v=cache_type)
+        alias=alias, cache_type_k=cache_type, cache_type_v=cache_type,
+        gpu_layers=None if partial else 99)
     base_url = f"http://127.0.0.1:{port}/v1"
     name = _profile_name(model)
     data.setdefault("profiles", {})[name] = {
@@ -729,7 +740,7 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
     chosen = choose_context(tr, input_fn, model, device_free_mb=free_mb)
     if chosen is None:
         return "__engine__"
-    context, cache_type = chosen
+    context, cache_type, partial = chosen
     port = free_port()
     if port is None:
         say(_t(tr, "llamacpp.port.none", base=BASE_PORT))
@@ -740,6 +751,6 @@ def run(language, input_fn, config_file, tr, onboarding_task=None,
         _store_onboarding(data, onboarding_task)
     remember_folder(data, model)
     save_profile(data, model, executable, context, device, port,
-                cache_type=cache_type)
+                cache_type=cache_type, partial=partial)
     config.save(data, config_file)
     return 0

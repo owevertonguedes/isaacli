@@ -641,6 +641,7 @@
   "cli.uninstall.llamacpp.removed": "llama.cpp removido de {path}.",
   "cli.uninstall.weights_kept": "Mantido: {count} peso(s) de modelo, {size} GiB, em {path}. Pesos nunca são apagados aqui. Remova essa pasta à mão quando não precisar mais deles.",
   "llamacpp.model.fit.context": "{context} ctx",
+  "llamacpp.model.fit.partial": "{context} ctx, parte na CPU",
   "llamacpp.model.fit.tight": "{context} ctx, curto",
   "model.row.size": "{size} GiB",
   "model.row.rank.measured": "HumanEval {humaneval}",

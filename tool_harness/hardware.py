@@ -163,6 +163,22 @@ def ram_mb():
     return 0
 
 
+def ram_available_mb():
+    """RAM the kernel says it can hand out now, in MB, 0 when unreadable.
+
+    MemAvailable rather than MemTotal: a desktop session already holds half of
+    a 15 GB machine, and the layers that spill off the card land in the rest.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        debug.swallowed("hardware.ram_available_mb")
+    return 0
+
+
 def cpu_cores():
     return os.cpu_count() or 0
 

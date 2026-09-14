@@ -460,13 +460,18 @@ def preferred_device(devices, gpus=None):
 
 
 def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None,
-                    cache_type=DEFAULT_CACHE_TYPE):
+                    cache_type=DEFAULT_CACHE_TYPE, ram_mb=None):
     """How much context this machine can actually hold for this model.
 
     Returns (ceiling, reason). The ceiling is the smaller of what the weights
     leave room for and what the model was trained for, and the reason names
     which of the two won, because those are different problems: one is solved
     by a smaller quantization and the other cannot be solved at all.
+
+    `ram_mb` is system memory available for the layers the card cannot take.
+    Given, weights too large for the card yield reason "partial" with a ceiling
+    measured against card plus RAM, and the caller must drop -ngl. Left None,
+    such a model is "does_not_fit".
 
     `cache_type` is the KV cache precision this ceiling is measured at, one of
     the keys in `CACHE_TYPES`. A quantized cache spends fewer bytes per token,
@@ -498,6 +503,18 @@ def context_ceiling(model, vram_mb, overhead_mb=None, device_free_mb=None,
         # hybrid; see _geometry in model_discovery.py.
         fixed_bytes=int(model.get("recurrent_bytes") or 0),
     )
+    if not room and ram_mb:
+        # Weights larger than the card still load when llama.cpp is left to
+        # split the layers itself, with the rest held in system RAM. Measured
+        # on a 4 GB card: a 5.8 GB model died at -ngl 99 and served without it.
+        room = hardware.max_context_that_fits(
+            model["model_bytes"], model["n_layers"], model["n_kv_heads"],
+            model["head_dim"], usable_mb + ram_mb, overhead_mb=overhead_mb,
+            bytes_per_element=bytes_per_element,
+            fixed_bytes=int(model.get("recurrent_bytes") or 0),
+        )
+        if room:
+            return (min(trained, room) if trained else room), "partial"
     if not room:
         return 0, "does_not_fit"
     if trained and trained <= room:
@@ -527,10 +544,11 @@ def server_command(executable, model_path, context, device=None, host="127.0.0.1
         command += ["--alias", str(alias)]
     if device:
         command += ["-dev", str(device)]
-    command += [
-        "-ngl", str(gpu_layers),
-        "-c", str(int(context)),
-    ]
+    if gpu_layers is not None:
+        # None leaves the split to llama.cpp, which is the only way a model
+        # larger than the card loads: a fixed -ngl disables its own fitting.
+        command += ["-ngl", str(gpu_layers)]
+    command += ["-c", str(int(context))]
     if cache_type_k:
         command += ["--cache-type-k", str(cache_type_k)]
     if cache_type_v:

@@ -516,6 +516,23 @@ ceiling, reason = llama_cpp.context_ceiling(
 check((ceiling, reason) == (0, "does_not_fit"),
       "weights that do not fit at all report that, rather than a context of zero with no reason")
 
+# Ornith-1.5-9B Q4_K_M on the GTX 1650, geometry read from the real file. The
+# weights are larger than the card, and setup used to hand this to the context
+# menu as "no limit" and save -ngl 99 -c 65536, which died out of VRAM. With RAM
+# known it is a partial offload with a real ceiling.
+ornith_9b = {"model_bytes": 5_780_090_816, "n_layers": 33, "n_kv_heads": 4,
+             "head_dim": 256, "context_length": 262144}
+check(llama_cpp.context_ceiling(ornith_9b, vram_mb=4096) == (0, "does_not_fit"),
+      "weights larger than the card, with no RAM figure, still do not fit")
+ceiling, reason = llama_cpp.context_ceiling(ornith_9b, vram_mb=4096, ram_mb=8000)
+check(reason == "partial" and 32768 <= ceiling < 262144,
+      f"with RAM beside the card the 9B is a partial offload with a finite ceiling ({ceiling}, {reason})")
+check(llama_cpp.context_ceiling(ornith_9b, vram_mb=4096, ram_mb=1000) == (0, "does_not_fit"),
+      "RAM too small for the spill is still does_not_fit, not a partial with no room")
+check("-ngl" not in llama_cpp.server_command(
+          "/bin/llama-server", "/m.gguf", 32768, gpu_layers=None),
+      "a partial offload leaves -ngl out, so llama.cpp fits the layers itself")
+
 ceiling, reason = llama_cpp.context_ceiling(
     {"model_bytes": 1, "context_length": 8192}, vram_mb=4096)
 check((ceiling, reason) == (8192, "unknown_geometry"),
@@ -887,6 +904,7 @@ measured_after = []
 original_ensure = setup_llamacpp.ensure_server
 original_choose_model = setup_llamacpp.choose_model
 original_choose_device = setup_llamacpp.choose_device
+original_choose_context = setup_llamacpp.choose_context
 try:
     setup_llamacpp.ensure_server = lambda *_a, **_k: ("llama-server", "user")
     setup_llamacpp.choose_model = lambda *_a, **_k: None
@@ -908,9 +926,44 @@ finally:
     setup_llamacpp.ensure_server = original_ensure
     setup_llamacpp.choose_model = original_choose_model
     setup_llamacpp.choose_device = original_choose_device
+    setup_llamacpp.choose_context = original_choose_context
 check(released_before == [0] and measured_after == ["measured"],
       f"and once a model is chosen the outgoing server is released before the "
       f"card is measured, not after ({released_before}, {measured_after})")
+
+# From the context screen to the saved command: weights larger than the card
+# reach the profile without -ngl and with the context the menu was capped at,
+# not the "no limit" menu that let 65536 through.
+import setup_ollama
+offered = []
+originals = (hardware.ram_available_mb, model_discovery.local_vram,
+             setup_ollama._choose_context, setup_llamacpp._choose_cache_type)
+try:
+    hardware.ram_available_mb = lambda: 8000
+    model_discovery.local_vram = lambda: (4096, 1)
+    setup_ollama._choose_context = (
+        lambda limit, _input, _tr: offered.append(limit) or limit)
+    setup_llamacpp._choose_cache_type = lambda *_a: "f16"
+    chosen = original_choose_context(
+        tr, lambda _prompt="": "", dict(ornith_9b, name="Ornith-1.5-9B"))
+finally:
+    (hardware.ram_available_mb, model_discovery.local_vram,
+     setup_ollama._choose_context, setup_llamacpp._choose_cache_type) = originals
+check(chosen is not None and chosen[2] is True and offered and offered[0]
+      and chosen[0] == offered[0] < 262144,
+      f"the context menu for a model larger than the card is capped, and marked partial ({offered}, {chosen})")
+partial_profile = {}
+setup_llamacpp.save_profile(
+    partial_profile, dict(ornith_9b, name="Ornith-1.5-9B", path="/m.gguf"),
+    "/bin/llama-server", chosen[0] if chosen else 32768, "Vulkan1", 8080,
+    partial=True)
+full_profile = {}
+setup_llamacpp.save_profile(
+    full_profile, dict(ornith_9b, name="Ornith-1.5-9B", path="/m.gguf"),
+    "/bin/llama-server", 32768, "Vulkan1", 8080)
+saved = lambda data: next(iter(data["profiles"].values()))["autostart"]["cmd"]
+check("-ngl" not in saved(partial_profile) and "-ngl" in saved(full_profile),
+      "the saved command drops -ngl for a partial offload and keeps it otherwise")
 
 print()
 if failures:

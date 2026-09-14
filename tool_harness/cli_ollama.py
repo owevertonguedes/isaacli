@@ -42,6 +42,35 @@ def _runtime_ollama_dir():
     return Path("/tmp") / f"isaacli-{os.getuid()}"
 
 
+LLAMA_ERROR_LINE = re.compile(r"^(?:[\d.]+ )?E ")
+ERROR_WORD = re.compile(r"error|fail", re.IGNORECASE)
+
+
+def _last_error_line(path, tail_bytes=65536):
+    """The line of a server log most likely to name why it died.
+
+    llama.cpp marks errors with "E " after a timestamp, and the first one is
+    the cause: the ones after it are the same failure retold on the way out
+    ("exiting due to model loading error"). Other servers just say "error",
+    and there the last such line is taken. None when there is no log.
+    """
+    try:
+        with open(path, "rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - tail_bytes))
+            lines = [line.strip() for line in
+                     log.read().decode("utf-8", "replace").splitlines()]
+    except OSError as error:
+        debug.note("cli_ollama._last_error_line", str(error))
+        return None
+    lines = [line for line in lines if line]
+    marked = [line for line in lines if LLAMA_ERROR_LINE.search(line)]
+    worded = [line for line in lines if ERROR_WORD.search(line)]
+    if marked:
+        return marked[0]
+    return (worded or lines or [None])[-1]
+
+
 def _autostart_key(provider):
     """Filesystem-safe key so two autostart profiles never share a lock or a
     state file with each other, or with Ollama's own "ollama" key."""
@@ -285,14 +314,17 @@ class OllamaMixin:
 
             if warn:
                 say(_color(t("cli.ollama.starting"), "warn"))
+            # Same reason as the autostart branch below: stderr is the only
+            # place the server says why it died.
+            log_path = _runtime_ollama_dir() / "ollama.log"
             try:
-                self.ollama_proc = subprocess.Popen(
-                    [exe, "serve"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+                with log_path.open("wb") as log:
+                    self.ollama_proc = subprocess.Popen(
+                        [exe, "serve"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=log, stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
             except Exception as e:
                 self._log("error", error=f"ollama_autostart: {e}")
                 if warn:
@@ -314,9 +346,13 @@ class OllamaMixin:
                     self._ollama_registered = True
                     return version
                 if self.ollama_proc.poll() is not None:
-                    self._log("error", error=(
-                        f"ollama serve exited with code {self.ollama_proc.returncode}"
-                    ))
+                    reason = f"exited with code {self.ollama_proc.returncode}"
+                    last = _last_error_line(log_path)
+                    if last:
+                        reason += f": {last} ({log_path})"
+                    self._log("error", error=f"ollama serve {reason}")
+                    if warn:
+                        say(_color(t("cli.ollama.start_failed", error=reason), "bad"))
                     return None
             version = _ollama_ok(timeout=1)
             if version:
@@ -375,12 +411,17 @@ class OllamaMixin:
                 return None
             if warn:
                 say(_color(t("cli.local_server.starting", name=name), "warn"))
+            # The server says why it died on stderr, and nowhere else. Sent to
+            # DEVNULL, an out-of-memory load reached the screen as "exited with
+            # code 1". Truncated at every start, so it never outgrows one run.
+            log_path = _runtime_ollama_dir() / f"{key}.log"
             try:
-                self.autostart_proc = subprocess.Popen(
-                    autostart["cmd"], stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+                with log_path.open("wb") as log:
+                    self.autostart_proc = subprocess.Popen(
+                        autostart["cmd"], stdin=subprocess.DEVNULL,
+                        stdout=log, stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
             except Exception as e:
                 self._log("error", error=f"autostart: {e}")
                 if warn:
@@ -411,6 +452,9 @@ class OllamaMixin:
                     return version
                 if self.autostart_proc.poll() is not None:
                     reason = f"exited with code {self.autostart_proc.returncode}"
+                    last = _last_error_line(log_path)
+                    if last:
+                        reason += f": {last} ({log_path})"
                     self._log("error", error=f"autostart {key} {reason}")
                     if warn:
                         say(_color(t("cli.local_server.start_failed",
