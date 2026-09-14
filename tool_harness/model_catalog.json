@@ -10,7 +10,8 @@
         "swebench_pro": 49.5,
         "livecodebench_v6": 80.4,
         "gpqa_diamond": 86.0
-      }
+      },
+      "benchmark_owner": "Qwen"
     },
     {
       "name": "hf.co/unsloth/North-Mini-Code-1.0-GGUF:IQ3_S",
@@ -21,7 +22,8 @@
         "swebench_verified": 67.6,
         "swebench_pro": 40.2,
         "livecodebench_v6": 70.3
-      }
+      },
+      "benchmark_owner": "Cohere Labs"
     },
     {
       "name": "hf.co/ibm-granite/granite-4.1-3b-GGUF:Q4_K_M",
@@ -72,6 +74,19 @@
         "swebench_verified": 53.2,
         "aider_polyglot": 26.6,
         "gpqa_diamond": 66.0
+      },
+      "benchmark_owner": "OpenAI"
+    },
+    {
+      "name": "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
+      "reference": "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M",
+      "benchmark": "SWE-bench Verified 70.6, SWE-bench Pro 47.5 (OpenHands harness, 256K context), Terminal-Bench 2.1 46.2 (Terminus-2 harness, 128K context), GPQA Diamond 86.4",
+      "benchmark_source": "https://huggingface.co/ornith-ai/Ornith-1.5-9B",
+      "benchmark_owner": "ornith-ai",
+      "scores": {
+        "swebench_verified": 70.6,
+        "swebench_pro": 47.5,
+        "gpqa_diamond": 86.4
       }
     }
   ],
@@ -95,7 +110,8 @@
         "gpqa_diamond": 89.2,
         "swebench_pro": 61.7
       },
-      "active_ratio": 1.0
+      "active_ratio": 1.0,
+      "benchmark_owner": "Qwen"
     },
     {
       "name": "Qwen3 Coder 30B A3B Instruct, Q4_K_M",
@@ -129,7 +145,8 @@
         "livecodebench_v6": 45.2,
         "gpqa_diamond": 68.4
       },
-      "active_ratio": 0.1
+      "active_ratio": 0.1,
+      "benchmark_owner": "Qwen"
     },
     {
       "name": "Devstral Small 1.1 24B, Q4_K_S",
@@ -145,6 +162,51 @@
       "benchmark_source": "https://huggingface.co/mistralai/Devstral-Small-2507",
       "scores": {
         "swebench_verified": 53.6
+      },
+      "active_ratio": 1.0,
+      "benchmark_owner": "Mistral AI"
+    },
+    {
+      "name": "Ornith-1.5-35B-A3B, Q4_K_M",
+      "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "file": "Ornith-1.5-35B-Q4_K_M.gguf",
+      "alias": "ornith15-35b-a3b",
+      "source": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "model_bytes": 21713463040,
+      "n_layers": 10,
+      "block_count": 40,
+      "recurrent_bytes": 263454720,
+      "n_kv_heads": 2,
+      "head_dim": 256,
+      "benchmark": "SWE-bench Verified 79, SWE-bench Pro 59.6 (OpenHands harness, 256K context), Terminal-Bench 2.1 67.8 (Terminus-2 harness, 128K context), GPQA Diamond 89.2",
+      "benchmark_source": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B",
+      "benchmark_owner": "ornith-ai",
+      "scores": {
+        "swebench_verified": 79,
+        "swebench_pro": 59.6,
+        "gpqa_diamond": 89.2
+      },
+      "active_ratio": 0.03125
+    },
+    {
+      "name": "Ornith-1.5-9B, Q6_K",
+      "repo": "ornith-ai/Ornith-1.5-9B-GGUF",
+      "file": "Ornith-1.5-9B-Q6_K.gguf",
+      "alias": "ornith15-9b",
+      "source": "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF",
+      "model_bytes": 7558901696,
+      "n_layers": 8,
+      "block_count": 32,
+      "recurrent_bytes": 210763776,
+      "n_kv_heads": 4,
+      "head_dim": 256,
+      "benchmark": "SWE-bench Verified 70.6, SWE-bench Pro 47.5 (OpenHands harness, 256K context), Terminal-Bench 2.1 46.2 (Terminus-2 harness, 128K context), GPQA Diamond 86.4",
+      "benchmark_source": "https://huggingface.co/ornith-ai/Ornith-1.5-9B",
+      "benchmark_owner": "ornith-ai",
+      "scores": {
+        "swebench_verified": 70.6,
+        "swebench_pro": 47.5,
+        "gpqa_diamond": 86.4
       },
       "active_ratio": 1.0
     }

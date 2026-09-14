@@ -558,6 +558,7 @@ def curated_gguf_models(task=None):
         models.append({**live, "curated": True,
                        "benchmark": catalog["benchmark"],
                        "benchmark_source": catalog["benchmark_source"],
+                       "benchmark_owner": catalog.get("benchmark_owner"),
                        "scores": catalog["scores"]})
     return models
 
@@ -588,6 +589,7 @@ def _resolved_local_catalog(task, profile, tr):
             resolved.update({
                 "benchmark": catalog["benchmark"],
                 "benchmark_source": catalog["benchmark_source"],
+                "benchmark_owner": catalog.get("benchmark_owner"),
                 "scores": catalog["scores"],
             })
         measured = model_discovery.carried_measurement(

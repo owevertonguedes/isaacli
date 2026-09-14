@@ -300,7 +300,21 @@ try:
     # entry, then the download confirmation. The engine is answered by name
     # rather than by position: the menu is built from what the machine has, so
     # a fixed number would quietly start meaning a different engine.
-    answers = iter(["1", "4", engine_answer("ollama"), "7", "1", "1"])
+    # The "other model" row is found by name too: it sits below the curated
+    # list, so every curated model added moves it.
+    _tr = setup_ollama.Translator("pt-BR")
+    _live = setup_ollama._resolve_live
+    setup_ollama._resolve_live = lambda *_a, **_k: None
+    try:
+        _machine, _line = setup_ollama._machine_profile(_tr)
+        _menu = setup_ollama.model_menu(
+            setup_ollama._resolved_local_catalog(None, _machine, _tr), set(),
+            setup_ollama.config.empty_config(), _tr, setup_ollama._row_machine(_machine))
+    finally:
+        setup_ollama._resolve_live = _live
+    other_answer = str([entry for entry in _menu["entries"]
+                        if entry is not None].index("__other__") + 1)
+    answers = iter(["1", "4", engine_answer("ollama"), other_answer, "1", "1"])
     with redirect_stdout(io.StringIO()):
         code = setup_ollama.run_setup(
             lambda _prompt="": next(answers),
@@ -352,7 +366,7 @@ finally:
     setup_ollama.terminal_ui.select = original_ui_select
 
 check(result is None and "network disabled by test" in offline_title
-      and len(setup_ollama.LOCAL_CATALOG) == 5,
+      and len(setup_ollama.LOCAL_CATALOG) == 6,
       "discovery that returned nothing puts the cause on the screen, not behind it")
 check("Q4_K_M" not in screens[-1][0] and "Q4_K_M" not in quiet_out.getvalue()
       and len(screens[-1][1]) == 3,
@@ -529,11 +543,13 @@ check(local_order(None) == local_curated
       and local_order("explain_code") != local_curated
       and local_order("fix_bug") != local_curated,
       "the declared task really reorders the local list, not only the Kaggle one")
-# fix_bug and build_new coincide today, and that is a fact about the data rather
-# than a broken ruler: the same model leads both, and the only model scored on
-# Aider is behind both models scored on LiveCodeBench. Pinning it means a future
-# catalogue edit that separates them is a visible change, not a silent one.
-check(local_order("fix_bug") == local_order("build_new")
+# fix_bug and build_new coincided until Ornith-1.5-9B joined on 2026-09-14: it
+# publishes SWE-bench but neither Aider nor LiveCodeBench, so it is second when
+# fixing and last when building. A fact about the data, pinned so the next
+# catalogue edit that changes it is a visible change, not a silent one.
+check(local_order("fix_bug") != local_order("build_new")
+      and local_order("fix_bug")[1] == "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M"
+      and local_order("build_new")[-1] == "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M"
       and local_order("explain_code") != local_order("fix_bug"),
       "reading code selects a different local order than fixing or building does")
 
@@ -902,6 +918,18 @@ unsourced = [item["name"] for section in catalogue.values() for item in section
 check(not unsourced,
       "no row carries a number without a source to check it against"
       + (f" (found {', '.join(unsourced)})" if unsourced else ""))
+
+# The number belongs to whoever published it, and the list is where the choice
+# is made, so the owner is on the row and not only on the line after it.
+unowned = [item["name"] for section in catalogue.values() for item in section
+           if item.get("scores") and not item.get("benchmark_owner")]
+check(not unowned,
+      "every scored catalogue row names who published the number"
+      + (f" (found {', '.join(unowned)})" if unowned else ""))
+owned_row = model_discovery.ranking_cell(
+    {"scores": {"swebench_verified": 70.6}, "benchmark_owner": "ornith-ai"})
+check("70.6" in owned_row and "ornith-ai" in owned_row,
+      f"the row shows the score together with its owner ({owned_row})")
 
 # A SWE-bench number is not a property of the weights. Measured against the
 # public submissions on 2026-08-23: Devstral Small 2507 scores 53.6 on the

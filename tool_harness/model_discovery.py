@@ -311,6 +311,7 @@ def _seed_maps(catalog_path):
         evidence = {
             "benchmark": item.get("benchmark") or "",
             "benchmark_source": source or None,
+            "benchmark_owner": item.get("benchmark_owner"),
             "upstream_repo": upstream or None,
             "scores": item.get("scores") or {},
         }
@@ -424,6 +425,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "active_ratio": shape["active_ratio"],
         "benchmark": benchmark,
         "benchmark_source": evidence.get("benchmark_source"),
+        "benchmark_owner": evidence.get("benchmark_owner"),
         "scores": evidence.get("scores") or {},
         "benchmark_scope": "original weights, not quantized GGUF",
         "upstream_repo": upstream,
@@ -772,6 +774,11 @@ def ranking_cell(model, translate=None):
     if not scores:
         return ""
     ruler, value = next(iter(scores.items()))
+    owner = model.get("benchmark_owner")
+    if owner:
+        return translate("model.row.rank.public.owned",
+                         ruler=RULER_LABELS.get(ruler, ruler), score=value,
+                         owner=owner)
     return translate("model.row.rank.public",
                      ruler=RULER_LABELS.get(ruler, ruler), score=value)
 

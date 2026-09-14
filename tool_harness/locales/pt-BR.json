@@ -645,6 +645,7 @@
   "llamacpp.model.fit.tight": "{context} ctx, curto",
   "model.row.size": "{size} GiB",
   "model.row.rank.measured": "HumanEval {humaneval}",
+  "model.row.rank.public.owned": "{ruler} {score}, por {owner}",
   "model.row.rank.public": "{ruler} {score}",
   "llamacpp.model.fit.cpu": "só CPU",
   "model.table.name": "MODELO",

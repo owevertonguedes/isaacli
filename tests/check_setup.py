@@ -752,10 +752,11 @@ try:
     # to it: a report is about one file with one digest. The two rows that now
     # carry a measurement taken on this machine had to become file-exact to
     # carry it.
-    check(len(CURATED_REFERENCES) == 5
+    check(len(CURATED_REFERENCES) == 6
           and "hf.co/unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M"
-          in CURATED_REFERENCES,
-          "the official Phi-4 Mini is among the five recommendations, by file")
+          in CURATED_REFERENCES
+          and "hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q4_K_M" in CURATED_REFERENCES,
+          "the official Phi-4 Mini and Ornith-1.5-9B are among the six recommendations, by file")
     floating = [item["reference"] for item in setup_ollama.LOCAL_CATALOG
                 if item.get("measured_here")
                 and not item["reference"].startswith("hf.co/")]
