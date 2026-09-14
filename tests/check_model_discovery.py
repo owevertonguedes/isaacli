@@ -198,9 +198,28 @@ sizes = {
 }
 
 
+# The live leaderboards, empty unless a check below fills them. Keyed by the
+# dataset path; a value of None answers HTTP 500.
+leaderboards = {}
+eval_results = {}
+
+
 def fake_urlopen(request, timeout=None):
     url = request.full_url
     calls.append((url, request.get_method(), timeout))
+    if url.startswith(model_discovery.HF_ROOT + "/api/datasets/"):
+        dataset = url.split("/api/datasets/", 1)[1].rsplit("/leaderboard", 1)[0]
+        rows = leaderboards.get(dataset, [])
+        if rows is None:
+            raise urllib.error.HTTPError(url, 500, "fake", {}, None)
+        return FakeResponse(rows)
+    if "?expand[]=evalResults" in url:
+        model_id = url.split("/api/models/", 1)[1].split("?", 1)[0]
+        return FakeResponse({"id": model_id, "evalResults": eval_results.get(model_id, [])})
+    if url.startswith(model_discovery.HF_API + "?filter=base_model"):
+        base = urllib.parse.unquote(url.split("quantized%3A", 1)[1].split("&", 1)[0])
+        return FakeResponse([{"id": repo} for repo, payload in repos.items()
+                             if (payload.get("cardData") or {}).get("base_model") == base])
     if url.startswith(model_discovery.HF_API + "?"):
         return FakeResponse([
             {"id": "test/Dense-20B-GGUF", "downloads": 999999},
@@ -208,9 +227,13 @@ def fake_urlopen(request, timeout=None):
         ])
     prefix = model_discovery.HF_API + "/"
     if url.startswith(prefix):
+        if url[len(prefix):] not in repos:
+            raise urllib.error.HTTPError(url, 404, "fake", {}, None)
         return FakeResponse(repos[url[len(prefix):]])
     if url.endswith("/config.json"):
         repo = url.split("huggingface.co/", 1)[1].split("/resolve/", 1)[0]
+        if repo not in configs:
+            raise urllib.error.HTTPError(url, 404, "fake", {}, None)
         return FakeResponse(configs[repo])
     if request.get_method() == "HEAD":
         return FakeResponse(length=sizes[url.rsplit("/", 1)[-1]])
@@ -239,6 +262,79 @@ check(by_repo["test/MoE-30B-GGUF"]["benchmark"] == ""
       and by_repo["test/MoE-30B-GGUF"]["benchmark_source"] is None,
       "an uncurated model reports no public accepted score instead of inventing one")
 
+
+# A model released next month reaches the list through the live leaderboards,
+# not through somebody typing it into the catalogue. Its owner's GGUF declares
+# no base model (as ornith-ai's does), a 400B model is never resolved for a
+# 12 GiB machine, and the score keeps its owner, source and harness note.
+repos["source/Leader-9B-GGUF"] = {
+    "id": "source/Leader-9B-GGUF", "downloads": 5,
+    "siblings": [{"rfilename": "Leader-9B-Q4_K_M.gguf"}],
+}
+configs["source/Leader-9B"] = {
+    "num_hidden_layers": 32, "num_key_value_heads": 4, "head_dim": 128,
+}
+sizes["Leader-9B-Q4_K_M.gguf"] = int(5.4 * GB)
+leader_source = {"url": "https://huggingface.co/source/Leader-9B", "name": "Model Card"}
+leaderboards.update({
+    "SWE-bench/SWE-bench_Verified": [
+        {"modelId": "source/Giant-400B", "value": 90.0, "num_parameters": 400e9,
+         "author": {"fullname": "Giant"}, "source": {"url": "https://x", "name": "Model Card"}},
+        {"modelId": "source/Leader-9B", "value": 70.6, "num_parameters": 9.7e9,
+         "author": {"fullname": "Source Org"}, "source": leader_source},
+        {"modelId": "source/Dense-20B", "value": 60.0, "num_parameters": 1_469_680,
+         "author": {"fullname": "Dense Org"}, "source": {"url": "https://y", "name": "Model Card"}},
+    ],
+    "ScaleAI/SWE-bench_Pro": [
+        {"modelId": "source/Leader-9B", "value": 47.5, "num_parameters": 9.7e9,
+         "author": {"fullname": "Source Org"}, "source": leader_source},
+    ],
+})
+eval_results["source/Leader-9B"] = [{"data": {
+    "dataset": {"id": "SWE-bench/SWE-bench_Verified"}, "value": 70.6,
+    "notes": "OpenHands harness, 256K context"}}]
+calls.clear()
+led, led_errors = model_discovery.discover_models(
+    catalog, urlopen_fn=fake_urlopen, memory_bytes=11 * GB)
+leader = led[0] if led else {}
+check(leader.get("repo") == "source/Leader-9B-GGUF"
+      and leader.get("scores") == {"swebench_verified": 70.6, "swebench_pro": 47.5}
+      and leader.get("benchmark_owner") == "Source Org"
+      and leader.get("self_reported") is True
+      and leader.get("benchmark_source") == leader_source["url"]
+      and "OpenHands harness" in leader.get("benchmark", ""),
+      f"a leaderboard model leads the list with its scores, owner, source and harness ({leader}, {led_errors})")
+check("Source Org" in model_discovery.ranking_cell(leader),
+      f"and its row names the owner ({model_discovery.ranking_cell(leader)})")
+check(not any(item["repo"] == "test/Dense-20B-GGUF" and item.get("self_reported") for item in led)
+      and any("Dense-20B-GGUF" in error and "GiB" in error for error in led_errors),
+      f"a leaderboard model that declares too few parameters is still dropped by its real file size ({led_errors})")
+check(not any("Giant" in url for url, _m, _t in calls),
+      "a leaderboard model whose weights cannot fit the memory is never resolved")
+check([item["repo"] for item in led][1:] == ["test/Dense-20B-GGUF", "test/MoE-30B-GGUF"],
+      "the GGUF search still follows the leaderboard models")
+# The live score passes only to a plain quantization of the model that was run.
+repos["someone/Leader-9B-Uncensored-GGUF"] = {
+    "id": "someone/Leader-9B-Uncensored-GGUF", "downloads": 9,
+    "cardData": {"base_model": "source/Leader-9B"},
+    "siblings": [{"rfilename": "Leader-9B-Q4_K_M.gguf"}],
+}
+uncensored = model_discovery.resolve_hf_model(
+    "someone/Leader-9B-Uncensored-GGUF", catalog_path=catalog,
+    urlopen_fn=fake_urlopen,
+    live_evidence=model_discovery._live_evidence(
+        {"model_id": "source/Leader-9B", "scores": {"swebench_verified": 70.6},
+         "sources": {"swebench_verified": leader_source["url"]}, "owner": "Source Org"}))
+check(uncensored["scores"] == {} and not uncensored["self_reported"],
+      f"a modified build of a leaderboard model does not inherit its score ({uncensored['scores']})")
+leaderboards["SWE-bench/SWE-bench_Verified"] = None
+leaderboards["ScaleAI/SWE-bench_Pro"] = None
+down, down_errors = model_discovery.discover_models(
+    catalog, urlopen_fn=fake_urlopen, memory_bytes=12 * GB)
+check([item["repo"] for item in down] == ["test/Dense-20B-GGUF", "test/MoE-30B-GGUF"]
+      and len(down_errors) == 2 and all("500" in error for error in down_errors),
+      f"leaderboards that cannot be reached leave the GGUF list and say why ({down_errors})")
+leaderboards.clear()
 
 # A model split into shards was sized by its first shard (36 GiB for a
 # 240 GiB model) and would be fetched as one file. Refused, with the reason.
@@ -676,6 +772,8 @@ check(model_discovery._is_plain_quantization("unsloth/Model-X-GGUF", "org/Model-
 # ----------------------------------------------------------------------
 def suggestion_urlopen(request, timeout=None):
     url = request.full_url
+    if "/api/datasets/" in url:
+        return FakeResponse([])
     if url.startswith(model_discovery.HF_API + "?"):
         return FakeResponse([{"id": official_gguf}, {"id": derivative}])
     return attribution_urlopen(request, timeout)

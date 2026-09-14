@@ -20,6 +20,23 @@ from cli_i18n import t
 
 HF_ROOT = "https://huggingface.co"
 HF_API = HF_ROOT + "/api/models"
+# The benchmark leaderboards Hugging Face builds from what model repositories
+# declare in `.eval_results`. Every row is self-reported by the model's owner
+# (on 2026-09-14 none of the 111 rows was `verified`), and every row links the
+# source it came from, which is what lets a model released next month reach the
+# list without anybody typing it into the catalogue.
+LEADERBOARDS = {
+    "swebench_verified": "SWE-bench/SWE-bench_Verified",
+    "swebench_pro": "ScaleAI/SWE-bench_Pro",
+}
+# Weight bytes per parameter of a Q4_K_M file, the precision the rows are sized
+# at. Measured from two files: Ornith-1.5-9B 5780090816 B over 9.7B parameters
+# and Ornith-1.5-35B-A3B 21713463040 B over 36.0B, both about 0.60. Only a
+# pre-filter: the fit shown on screen is computed from the real file.
+Q4_K_M_BYTES_PER_PARAMETER = 0.6
+# How many leaderboard models are resolved per screen, best score first. Each
+# costs about five requests, and the screen has to draw in seconds.
+LEADERBOARD_CANDIDATES = 12
 DEFAULT_TIMEOUT = 8
 DEFAULT_CONTEXT = 16384
 # A benchmark string is a proper noun and a number and stays as published. The
@@ -358,8 +375,133 @@ def _is_plain_quantization(repo, upstream):
     return name.casefold() == str(upstream).split("/")[-1].casefold()
 
 
+def leaderboard_evidence(urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT):
+    """Scores from the live leaderboards, keyed by the model they were run on.
+
+    Returns (evidence, errors). One leaderboard failing leaves the other; the
+    error says which, for --debug. A model with several rows (gpt-oss-20b has
+    three, one per reasoning effort) keeps its best one, and `benchmark` names
+    the note of that row when the model card gives one.
+    """
+    evidence = {}
+    errors = []
+    for ruler, dataset in LEADERBOARDS.items():
+        url = f"{HF_ROOT}/api/datasets/{dataset}/leaderboard"
+        try:
+            rows = _json_request(url, timeout=timeout, urlopen_fn=urlopen_fn)
+        except DiscoveryError as error:
+            errors.append(str(error))
+            continue
+        if not isinstance(rows, list):
+            errors.append(text("model.discovery.error.search_json"))
+            continue
+        for row in rows:
+            model_id = row.get("modelId") if isinstance(row, dict) else None
+            value = row.get("value") if isinstance(row, dict) else None
+            if not isinstance(model_id, str) or not isinstance(value, (int, float)):
+                continue
+            entry = evidence.setdefault(model_id.casefold(), {
+                "model_id": model_id, "scores": {}, "sources": {},
+                "num_parameters": row.get("num_parameters") or 0,
+                "owner": _row_owner(row),
+            })
+            if value > entry["scores"].get(ruler, float("-inf")):
+                entry["scores"][ruler] = value
+                entry["sources"][ruler] = (row.get("source") or {}).get("url")
+    return evidence, errors
+
+
+def _row_owner(row):
+    """Who published a leaderboard number: the model's org for its own card."""
+    author = row.get("author") or {}
+    source = row.get("source") or {}
+    org = author.get("fullname") or author.get("name") or ""
+    name = str(source.get("name") or "")
+    url = str(source.get("url") or "")
+    if (not name or "card" in name.casefold()
+            or f"huggingface.co/{row.get('modelId')}".casefold() in url.casefold()):
+        return org or name
+    return name
+
+
+def _live_evidence(entry, notes=None):
+    """The fields a catalogue row carries, built from one leaderboard entry."""
+    labels = {"swebench_verified": "SWE-bench Verified",
+              "swebench_pro": "SWE-bench Pro"}
+    parts = []
+    for ruler, value in entry["scores"].items():
+        note = (notes or {}).get((ruler, value))
+        parts.append(f"{labels[ruler]} {value:g}" + (f" ({note})" if note else ""))
+    sources = [url for url in entry["sources"].values() if url]
+    return {
+        "benchmark": text("model.discovery.self_reported",
+                          scores=", ".join(parts), owner=entry["owner"]),
+        "benchmark_source": sources[0] if sources else None,
+        "benchmark_owner": entry["owner"],
+        "upstream_repo": entry["model_id"],
+        "scores": dict(entry["scores"]),
+        "self_reported": True,
+    }
+
+
+def _eval_notes(model_id, urlopen_fn, timeout):
+    """The harness notes the model card attached to each leaderboard value."""
+    datasets = {dataset: ruler for ruler, dataset in LEADERBOARDS.items()}
+    try:
+        payload = _json_request(
+            f"{HF_API}/{urllib.parse.quote(model_id, safe='/')}?expand[]=evalResults",
+            timeout=timeout, urlopen_fn=urlopen_fn)
+    except DiscoveryError as error:
+        debug.note("model_discovery._eval_notes", str(error))
+        return {}
+    notes = {}
+    for result in payload.get("evalResults") or []:
+        data = result.get("data") or {}
+        ruler = datasets.get((data.get("dataset") or {}).get("id"))
+        if ruler and data.get("notes") and isinstance(data.get("value"), (int, float)):
+            notes[(ruler, data["value"])] = str(data["notes"])
+    return notes
+
+
+def _resolve_upstream(entry, catalog_path, urlopen_fn, timeout):
+    """A plain Q4_K_M quantization of one leaderboard model, with its scores.
+
+    The owner's own `<model>-GGUF` is tried first, because the owner's GGUF
+    often declares no base model and so never appears under the quantized
+    filter (ornith-ai's does not). Then the most downloaded GGUFs that declare
+    this model as their base and keep its name: an Uncensored or MTP build is a
+    different model and never inherits the score.
+    """
+    upstream = entry["model_id"]
+    notes = _eval_notes(upstream, urlopen_fn, timeout)
+    live = _live_evidence(entry, notes)
+    repos = [f"{upstream}-GGUF"]
+    try:
+        payload = _json_request(
+            HF_API + "?" + urllib.parse.urlencode([
+                ("filter", f"base_model:quantized:{upstream}"),
+                ("filter", "gguf"), ("sort", "downloads"), ("limit", "10")]),
+            timeout=timeout, urlopen_fn=urlopen_fn)
+        repos += [repo for repo in (_model_id(item) for item in payload
+                                    if isinstance(item, dict))
+                  if repo and _is_plain_quantization(repo, upstream)
+                  and repo.casefold() != repos[0].casefold()]
+    except DiscoveryError as error:
+        debug.note("model_discovery._resolve_upstream", str(error))
+    last = None
+    for repo in repos[:3]:
+        try:
+            return resolve_hf_model(repo, catalog_path=catalog_path,
+                                    urlopen_fn=urlopen_fn, timeout=timeout,
+                                    live_evidence=live)
+        except DiscoveryError as error:
+            last = error
+    raise last or DiscoveryError(text("model.discovery.error.no_plain_gguf", repo=upstream))
+
+
 def resolve_hf_model(reference, file_name=None, catalog_path=None,
-                     urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT):
+                     urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT,
+                     live_evidence=None):
     """Resolve one exact GGUF without downloading its body."""
     repo, selector = parse_hf_reference(reference, file_name)
     if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
@@ -428,7 +570,15 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
     file_url = (f"{HF_ROOT}/{quoted_repo}/resolve/main/"
                 f"{urllib.parse.quote(selected_file, safe='/')}")
     model_bytes = _content_length(file_url, timeout=timeout, urlopen_fn=urlopen_fn)
-    evidence = evidence or by_upstream.get((upstream or "").casefold()) or {}
+    evidence = evidence or by_upstream.get((upstream or "").casefold())
+    if (evidence is None and live_evidence
+            and _is_plain_quantization(repo, live_evidence["upstream_repo"])):
+        # The catalogue stays the authority for the models it names; the live
+        # leaderboard scores the rest, and only a plain quantization of the
+        # exact model that was run.
+        evidence = live_evidence
+        upstream = live_evidence["upstream_repo"]
+    evidence = evidence or {}
     benchmark = evidence.get("benchmark") or ""
     alias = re.sub(
         r"[^a-z0-9]+", "-", f"{repo}-{Path(selected_file).stem}".casefold(),
@@ -453,6 +603,7 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         "benchmark": benchmark,
         "benchmark_source": evidence.get("benchmark_source"),
         "benchmark_owner": evidence.get("benchmark_owner"),
+        "self_reported": bool(evidence.get("self_reported")),
         "scores": evidence.get("scores") or {},
         "benchmark_scope": "original weights, not quantized GGUF",
         "upstream_repo": upstream,
@@ -575,40 +726,77 @@ def origin_label(model, translate=None):
 
 def discover_models(catalog_path, search=None, limit=6,
                     urlopen_fn=urllib.request.urlopen, timeout=DEFAULT_TIMEOUT,
-                    include_derived=False):
-    """Discover and resolve live candidates while preserving search order."""
+                    include_derived=False, memory_bytes=None):
+    """Discover and resolve live candidates while preserving search order.
+
+    Without a search, the best-scoring leaderboard models whose Q4_K_M could
+    fit `memory_bytes` come first, then what Hugging Face lists as GGUF. A
+    leaderboard that cannot be reached leaves the GGUF list, with the cause in
+    the errors.
+    """
+    errors = []
+    leaders = []
+    if not search:
+        evidence, errors = leaderboard_evidence(urlopen_fn, timeout)
+        ranked = sorted(evidence.values(), key=lambda entry: -max(entry["scores"].values()))
+        leaders = [entry for entry in ranked
+                   if not memory_bytes or not entry["num_parameters"]
+                   or entry["num_parameters"] * Q4_K_M_BYTES_PER_PARAMETER <= memory_bytes
+                   ][:LEADERBOARD_CANDIDATES]
     query = {"filter": "gguf", "limit": str(limit)}
     if search:
         query["search"] = search
-    payload = _json_request(
-        HF_API + "?" + urllib.parse.urlencode(query),
-        timeout=timeout, urlopen_fn=urlopen_fn,
-    )
-    if not isinstance(payload, list):
-        raise DiscoveryError(text("model.discovery.error.search_json"))
+    try:
+        payload = _json_request(
+            HF_API + "?" + urllib.parse.urlencode(query),
+            timeout=timeout, urlopen_fn=urlopen_fn,
+        )
+        if not isinstance(payload, list):
+            raise DiscoveryError(text("model.discovery.error.search_json"))
+    except DiscoveryError:
+        if search or not leaders:
+            raise
+        payload = []
     resolved = {}
-    errors = []
     repos = [_model_id(item) for item in payload if isinstance(item, dict)]
     repos = [repo for repo in repos if repo]
-    with ThreadPoolExecutor(max_workers=min(6, len(repos) or 1)) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         pending = {
+            executor.submit(
+                _resolve_upstream, entry, catalog_path, urlopen_fn, timeout,
+            ): entry["model_id"]
+            for entry in leaders
+        }
+        pending.update({
             executor.submit(
                 resolve_hf_model, repo, catalog_path=catalog_path,
                 urlopen_fn=urlopen_fn, timeout=timeout,
             ): repo
             for repo in repos
-        }
+        })
         for future in as_completed(pending):
-            repo = pending[future]
+            key = pending[future]
             try:
-                resolved[repo] = future.result()
+                resolved[key] = future.result()
             except DiscoveryError as error:
-                errors.append(f"{repo}: {error}")
+                errors.append(f"{key}: {error}")
+    leader_ids = {entry["model_id"] for entry in leaders}
+    order = [entry["model_id"] for entry in leaders] + repos
+    seen = set()
     models = []
-    for repo in repos:
-        model = resolved.get(repo)
-        if model is None:
+    for key in order:
+        model = resolved.get(key)
+        if model is None or model["repo"].casefold() in seen:
             continue
+        if (key in leader_ids and memory_bytes
+                and model["model_bytes"] > memory_bytes):
+            # The parameter count a leaderboard row declares can be wrong
+            # (Ornith-1.0-35B says 1.5 million), so the real file decides.
+            errors.append(text("model.discovery.error.too_big", repo=model["repo"],
+                               size=units.gib(model["model_bytes"])))
+            continue
+        seen.add(model["repo"].casefold())
+        repo = model["repo"]
         if model.get("derived") and not include_derived:
             errors.append(text(
                 "model.discovery.error.derived", repo=repo,
@@ -1122,14 +1310,15 @@ def rank_against_machine(models, translate=None):
 
 
 def live_candidates(catalog_path, translate=None, urlopen_fn=urllib.request.urlopen,
-                    search=None, limit=6):
+                    search=None, limit=6, memory_bytes=None):
     """rank_against_machine over what Hugging Face is publishing right now.
 
     Returns (models, rows, header, legend, errors).
     """
     try:
         models, errors = discover_models(
-            catalog_path, search=search, limit=limit, urlopen_fn=urlopen_fn)
+            catalog_path, search=search, limit=limit, urlopen_fn=urlopen_fn,
+            memory_bytes=memory_bytes)
     except DiscoveryError as error:
         return [], [], "", "", [str(error)]
     return (*rank_against_machine(models, translate), errors)

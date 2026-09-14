@@ -799,8 +799,10 @@ def _resolve_custom_ollama(reference, input_fn, catalog_path=MODEL_CATALOG_PATH,
 def _choose_other_ollama(input_fn, tr, catalog_path=MODEL_CATALOG_PATH,
                          urlopen_fn=urllib.request.urlopen):
     """One secondary screen for live discovery and exact Ollama references."""
+    vram_mb, _gpus = model_discovery.local_vram()
     discovered, rows, header, legend, errors = model_discovery.live_candidates(
-        catalog_path, translate=tr.t, urlopen_fn=urlopen_fn)
+        catalog_path, translate=tr.t, urlopen_fn=urlopen_fn,
+        memory_bytes=(vram_mb + hardware.ram_available_mb()) * 1024 * 1024)
     # Printing the causes here and then drawing a screen put them on the page the
     # alternate screen replaces, so on a real terminal nobody ever read them.
     # A candidate that failed explains why the list is shorter and belongs in
@@ -1131,6 +1133,7 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
     try:
         discovered, errors = model_discovery.discover_models(
             catalog_path, urlopen_fn=urlopen_fn,
+            memory_bytes=cli_kaggle.ACCELERATORS["NvidiaTeslaT4"]["vram_mb"] * 1024 * 1024,
         )
     except model_discovery.DiscoveryError as error:
         discovered, errors = [], [str(error)]

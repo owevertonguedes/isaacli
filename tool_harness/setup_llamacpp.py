@@ -372,8 +372,12 @@ def _choose_from_hub(tr, input_fn, urlopen_fn=urllib.request.urlopen):
 
     curated = curated_gguf_models()
     try:
+        # Card plus the RAM a partial offload spills into: what this machine
+        # can load at all, which is the only filter worth putting on the list.
+        vram_mb, _gpus = model_discovery.local_vram()
         found, errors = model_discovery.discover_models(
-            MODEL_CATALOG_PATH, urlopen_fn=urlopen_fn)
+            MODEL_CATALOG_PATH, urlopen_fn=urlopen_fn,
+            memory_bytes=(vram_mb + hardware.ram_available_mb()) * 1024 * 1024)
     except model_discovery.DiscoveryError as error:
         found, errors = [], [str(error)]
     for error in errors:

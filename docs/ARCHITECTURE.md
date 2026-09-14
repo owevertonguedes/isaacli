@@ -62,7 +62,7 @@ worked on.
 | `tool_harness/installation.py` | per-user launcher install, uninstall and explicitly confirmed purge | It never removes a launcher owned by another checkout or an unrecognised Ollama installation. |
 | `tool_harness/cli_kaggle.py` | installs a private Kaggle CLI, stores and manually selects multiple accounts, reports per-account quota, prepares private account-owned assets, pushes a generated kernel, discovers the tunnel and saves a profile | Setup, `isaacli kaggle`, `/model` and `/kaggle` call this one flow. Every Kaggle command receives the selected `KAGGLE_CONFIG_DIR`; kernels and assets stay scoped to that account. |
 | `tool_harness/i18n.py`, `locales/` | every user-facing string, in English and Portuguese | A new key has to exist in both catalogs, with the same placeholders. |
-| `tool_harness/model_catalog.json` | curated Ollama and Kaggle candidates with public evidence and exact GGUF metadata | It does not represent installed models. Kaggle candidates are filtered by hardware at runtime. |
+| `tool_harness/model_catalog.json` | reviewed Ollama and Kaggle candidates with public evidence, measurements taken here and exact GGUF metadata; the offline seed | It does not represent installed models. The model screens also read the SWE-bench Verified and SWE-bench Pro leaderboards on Hugging Face live (`model_discovery.leaderboard_evidence`), so a new model reaches the list without a catalog edit; a catalog entry stays the authority for the model it names. |
 
 ## Language boundary
 
