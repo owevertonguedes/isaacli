@@ -1953,6 +1953,14 @@ def kernel_log_path(slug, config_file=None):
     return home / "kaggle-logs" / f"{slug.replace('/', '-')}.log"
 
 
+# What the Kaggle CLI prints when the log stream itself fails, as against a
+# line the kernel wrote.
+STREAM_ERROR_PATTERN = re.compile(r"^\d{3} (?:Client|Server) Error: ")
+# Reopenings in a row that returned only that error before the user is told.
+# One is a hiccup; three is several minutes of quota with no way to a URL.
+STREAM_FAILURES_BEFORE_WARNING = 3
+
+
 def discover_tunnel_url(executable, slug, timeout=SESSION_TIMEOUT_SECONDS,
                         popen_fn=subprocess.Popen, env=None,
                         run_fn=subprocess.run, log_path=None):
@@ -2021,7 +2029,16 @@ def _follow_for_url(executable, slug, timeout, popen_fn, env, run_fn, sink):
     # that environment is what isolates which Kaggle account this speaks for.
     stream_env = dict(os.environ if env is None else env)
     stream_env["PYTHONUNBUFFERED"] = "1"
+    # Kaggle's log stream answering an error every time it is opened, while the
+    # kernel is RUNNING, is a wait that can never end in a URL. Measured on
+    # 2026-09-14: 36 reopenings in 42 minutes, each `500 Server Error` for
+    # `/kernels/logs/stream/`, with nothing on screen and the GPU billing. The
+    # user is told once, with the error, and decides; deleting is theirs.
+    failing_streams = 0
+    warned_stream = False
     while time.monotonic() < deadline:
+        stream_error = None
+        stream_lines = 0
         if sink is not None:
             # Reopening replays what Kaggle still holds, so the file carries the
             # same lines more than once. The boundary is written down rather
@@ -2048,6 +2065,10 @@ def _follow_for_url(executable, slug, timeout, popen_fn, env, run_fn, sink):
                         break
                     time.sleep(0.1)
                     continue
+                if STREAM_ERROR_PATTERN.search(line):
+                    stream_error = line.strip()
+                else:
+                    stream_lines += 1
                 match = URL_PATTERN.search(line)
                 if match:
                     return match.group(1)
@@ -2078,6 +2099,13 @@ def _follow_for_url(executable, slug, timeout, popen_fn, env, run_fn, sink):
         state = _kernel_state(executable, slug, run_fn, env)
         if state in TERMINAL_STATES:
             raise RuntimeError(t("cli.kaggle.url.ended", slug=slug, state=state))
+        failing_streams = (failing_streams + 1
+                           if stream_error and not stream_lines else 0)
+        if (failing_streams >= STREAM_FAILURES_BEFORE_WARNING
+                and state == "RUNNING" and not warned_stream):
+            warned_stream = True
+            say(t("cli.kaggle.url.stream_failing", slug=slug,
+                  count=failing_streams, error=stream_error))
         debug.note("cli_kaggle.discover_tunnel_url",
                    f"{slug} has not published a URL yet, state {state or 'unknown'}")
         time.sleep(10)

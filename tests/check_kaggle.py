@@ -3726,6 +3726,44 @@ check(slow_url == "https://slow-but-alive.trycloudflare.com" and slow_clock.now 
 check("using the attached weight" in slow_screen.getvalue(),
       "the stages the kernel prints while it loads reach the screen during the wait")
 
+check("log stream" not in slow_screen.getvalue() and "stream de log" not in slow_screen.getvalue(),
+      "a stream that carries kernel lines raises no stream warning")
+
+# Kaggle's log stream answered `500 Server Error` on every reopening for 42
+# minutes on 2026-09-14 while the kernel was RUNNING and billing, and the screen
+# said nothing. It now says so once, and the wait goes on.
+failing_attempts = []
+
+
+def failing_popen(command, **kwargs):
+    failing_attempts.append(command)
+    if len(failing_attempts) < 6:
+        return _FakeLog(["500 Server Error: Internal Server Error for url: "
+                         "https://api.kaggle.com/v1/kernels/logs/stream/owner/x\n"])
+    return _FakeLog(["TUNNEL_URL=https://late.trycloudflare.com\n"])
+
+
+failing_screen = io.StringIO()
+failing_clock = _Clock(60)
+try:
+    cli_kaggle.time.sleep = lambda _seconds: None
+    cli_kaggle.time.monotonic = failing_clock
+    cli_kaggle.select.select = lambda streams, _w, _x, _timeout=0: (
+        [stream for stream in streams if stream._lines], [], [])
+    with redirect_stdout(failing_screen):
+        failing_url = cli_kaggle.discover_tunnel_url(
+            "/fake/kaggle", "owner/isaacli-gpu-failing",
+            popen_fn=failing_popen, run_fn=running_status)
+finally:
+    cli_kaggle.time.sleep = original_sleep
+    cli_kaggle.time.monotonic = original_monotonic
+    cli_kaggle.select.select = original_select
+failing_text = failing_screen.getvalue()
+check(failing_url == "https://late.trycloudflare.com"
+      and failing_text.count("500 Server Error") == 1
+      and "kaggle --stop" in failing_text,
+      f"a log stream that keeps failing while the kernel runs is reported once, and the wait continues ({failing_text!r})")
+
 # Giving up has to name the cause. Saying the log ended describes the symptom of
 # a stream that always ends while the kernel is queued, and the user reads it as
 # a kernel that died when it is alive and spending quota.
