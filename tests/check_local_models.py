@@ -118,6 +118,34 @@ check(shortconv_shape["recurrent_bytes"] == 655360,
       f"and its ten convolution layers are billed the 0.62 MiB llama.cpp "
       f"allocates for them, not zero: {shortconv_shape['recurrent_bytes']}")
 
+# The gated-linear-attention hybrid, with the header Ornith-1.5-9B Q4_K_M
+# actually carries: 33 blocks of which one is the unused MTP head, a full
+# attention layer every 4, and the ssm keys that size the other 24. llama.cpp
+# loaded that file declaring `llama_kv_cache: ... 8 layers` and
+# `llama_memory_recurrent: size = 201.00 MiB`, which is 210763776 bytes.
+qwen35_keys = dense_keys(architecture="qwen35", layers=33, kv_heads=4, heads=16,
+                         embedding=4096, context=262144)
+for name, value in {"attention.key_length": 256, "nextn_predict_layers": 1,
+                    "full_attention_interval": 4, "ssm.conv_kernel": 4,
+                    "ssm.state_size": 128, "ssm.group_count": 16,
+                    "ssm.time_step_rank": 32, "ssm.inner_size": 4096}.items():
+    qwen35_keys[f"qwen35.{name}"] = (UINT32, struct.pack("<I", value))
+qwen35 = write_gguf(root / "qwen35-Q4_K_M.gguf", qwen35_keys)
+qwen35_shape = gguf.geometry(qwen35)
+check((qwen35_shape["n_layers"], qwen35_shape["block_count"],
+       qwen35_shape["recurrent_bytes"]) == (8, 32, 210763776),
+      f"a qwen35 hybrid is billed 8 cached layers of 32 and the recurrent state llama.cpp allocates "
+      f"({qwen35_shape['n_layers']}, {qwen35_shape['block_count']}, {qwen35_shape['recurrent_bytes']})")
+qwen35_item = local_models.describe(qwen35)
+check(qwen35_item.get("recurrent_bytes") == 210763776,
+      f"and the file description carries that state to the ceiling ({qwen35_item.get('recurrent_bytes')})")
+unsized_keys = {name: value for name, value in qwen35_keys.items()
+                if name != "qwen35.ssm.group_count"}
+unsized_shape = gguf.geometry(write_gguf(root / "qwen35-unsized.gguf", unsized_keys))
+check((unsized_shape["n_layers"], unsized_shape["recurrent_bytes"]) == (32, 0),
+      f"without the key that sizes the state, the discount is declined and every layer billed "
+      f"({unsized_shape['n_layers']}, {unsized_shape['recurrent_bytes']})")
+
 # The discount is for hybrids and must not reach a dense model, where every
 # block caches and there is no recurrent state to add back. Planting a discount
 # on its own does not reach here, and that is the design working rather than

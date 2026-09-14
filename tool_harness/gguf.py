@@ -257,6 +257,21 @@ def _recurrent_bytes(key, recurrent_layers, embedding_length):
     if conv_kernel and embedding_length:
         return hardware.shortconv_state_bytes(
             recurrent_layers, conv_kernel, embedding_length)
+    # Gated linear attention (qwen35). The header names the config.json fields
+    # differently: group_count is the key heads, time_step_rank the value
+    # heads, state_size the head dim, inner_size the value heads times their
+    # dim. For Ornith-1.5-9B this gives 210763776 bytes, and llama.cpp declared
+    # `llama_memory_recurrent: size = 201.00 MiB`, the same number.
+    key_heads = _first_int(key("ssm.group_count"))
+    value_heads = _first_int(key("ssm.time_step_rank"))
+    state = _first_int(key("ssm.state_size"))
+    inner = _first_int(key("ssm.inner_size"))
+    conv = _first_int(key("ssm.conv_kernel"))
+    if (key_heads and value_heads and state and inner and conv
+            and inner % value_heads == 0):
+        return hardware.recurrent_state_bytes(
+            recurrent_layers, key_heads, value_heads, state,
+            inner // value_heads, conv)
     return None
 
 
@@ -294,8 +309,18 @@ def geometry(path):
         if remainder:
             head_dim = None
 
+    # A multi-token-prediction head is written as extra blocks that llama.cpp
+    # loads and never runs, and it keeps no cache. Ornith-1.5-9B declares 33
+    # blocks with one of these; llama.cpp reported 8 cached layers of 32.
+    nextn = _first_int(key("nextn_predict_layers")) or 0
+    if block_count and 0 < nextn < block_count:
+        block_count -= nextn
     n_layers = (_attention_layers(raw_kv_heads, block_count)
                 if block_count else None)
+    interval = _first_int(key("full_attention_interval"))
+    if n_layers == block_count and block_count and interval:
+        # The other way a hybrid says it, the same field its config.json uses.
+        n_layers = max(1, block_count // interval)
     recurrent_bytes = 0
     if n_layers and block_count:
         recurrent_bytes = _recurrent_bytes(

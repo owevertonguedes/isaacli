@@ -135,6 +135,9 @@ def describe(path, name=None, source=None, reference=None):
     else:
         item.update({
             "n_layers": shape["n_layers"],
+            # Resident whatever the context; dropped here, the ceiling billed a
+            # hybrid file's cache for every layer or its state for none.
+            "recurrent_bytes": shape["recurrent_bytes"] or 0,
             "n_kv_heads": shape["n_kv_heads"],
             "head_dim": shape["head_dim"],
         })
