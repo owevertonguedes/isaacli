@@ -592,7 +592,7 @@ def discover_models(catalog_path, search=None, limit=6,
 
 
 def fit_report(model, vram_mb, overhead_mb=hardware.DEFAULT_OVERHEAD_MB,
-               context=DEFAULT_CONTEXT):
+               context=DEFAULT_CONTEXT, ram_mb=None):
     kv_bytes = hardware.kv_cache_bytes(
         model["n_layers"], model["n_kv_heads"], model["head_dim"], context,
     )
@@ -616,7 +616,23 @@ def fit_report(model, vram_mb, overhead_mb=hardware.DEFAULT_OVERHEAD_MB,
             model["model_bytes"], model.get("active_ratio", 1.0),
         ),
     })
+    # Local screens only pass `ram_mb`: a borrowed Kaggle GPU is not helped by
+    # this machine's RAM. Both local engines split a model that is too big for
+    # the card, so "No" there read as "cannot run", which was false.
+    result["partial"] = bool(ram_mb) and not result["fits"] and hardware.fits(
+        model["model_bytes"], kv_bytes, vram_mb + ram_mb,
+        overhead_mb=overhead_mb, fixed_bytes=fixed_bytes)
     return result
+
+
+def fit_cell(report, translate=None):
+    """The card column: Yes, part on CPU, or No."""
+    translate = translate or text
+    if report["fits"]:
+        return translate("model.fit.yes_cell")
+    if report.get("partial"):
+        return translate("model.fit.partial_cell")
+    return translate("model.fit.no_cell")
 
 
 def format_fit(report, translate=None, state_key="model.discovery.fit",
@@ -1050,16 +1066,17 @@ def rank_against_machine(models, translate=None):
             # the throughput either.
             ranked.append((dict(item, fits=False), EMPTY_CELL, None))
             continue
-        report = fit_report(item, vram_mb, overhead_mb=overhead_mb)
+        report = fit_report(item, vram_mb, overhead_mb=overhead_mb,
+                            ram_mb=hardware.ram_available_mb())
         if not gpu_count:
             # No card, so nothing was computed against one. The column heading
             # says CPU already, and a yes here would be a claim about this
             # machine's RAM that nobody made.
             ranked.append((report, EMPTY_CELL, None))
             continue
-        ranked.append((report, translate("model.fit.yes_cell" if report["fits"]
-                                         else "model.fit.no_cell"), report["fits"]))
-    ranked.sort(key=lambda entry: not entry[0]["fits"])
+        ranked.append((report, fit_cell(report, translate), report["fits"]))
+    ranked.sort(key=lambda entry: (not entry[0]["fits"],
+                                   not entry[0].get("partial")))
     row_machine = machine(**local)
     table = model_table(
         [model_row(dict(report, name=resolved_row_name(report)), row_machine,

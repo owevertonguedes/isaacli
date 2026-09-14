@@ -625,6 +625,7 @@ def _resolved_local_catalog(task, profile, tr):
         elif complete:
             report = model_discovery.fit_report(
                 resolved, vram_mb, overhead_mb=overhead_mb,
+                ram_mb=hardware.ram_available_mb(),
             )
             item["fit_report"] = report
             item["fit_label"] = model_discovery.format_fit(
@@ -635,8 +636,7 @@ def _resolved_local_catalog(task, profile, tr):
             # question and nothing else. The arithmetic behind it, weights
             # against cache against what the card has left, is what --debug is
             # for: on the row it cost a hundred and twenty columns per model.
-            item["fit_cell"] = tr.t("model.fit.yes_cell" if report["fits"]
-                                    else "model.fit.no_cell")
+            item["fit_cell"] = model_discovery.fit_cell(report, tr.t)
         else:
             item["fit_label"] = tr.t("model.fit.unknown")
             # Nothing resolved, so the size cell is a dash too and the pair

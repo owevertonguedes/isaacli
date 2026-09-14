@@ -569,6 +569,10 @@ check("metade" not in pt.t("llamacpp.cache.option.q8_0", context="12,7K").casefo
       and "dobro" not in pt.t("llamacpp.cache.explain").casefold(),
       "the Portuguese cache screen makes the same bounded promise")
 GTX1650, OVERHEAD = 4096, 768
+# The rows read available RAM to tell "part on CPU" from "does not fit". Fixed
+# here to this machine's measured figure, so the rows do not change with the
+# machine running the check.
+hardware.ram_available_mb = lambda: 8000
 gtx = model_discovery.machine(vram_mb=GTX1650, gpu_count=1,
                               bandwidth_gbs=128.0, name="NVIDIA GeForce GTX 1650")
 
@@ -616,6 +620,11 @@ check(huge["fit"].lower().startswith("does not fit"),
 # reading "does not fit" beside a confident throughput was on screen.
 check(huge["tps"] == model_discovery.EMPTY_CELL,
       f"and it claims no throughput on a card that cannot hold it ({huge['tps']})")
+spill_item, spill = cells_for(model_bytes=5_780_090_816, n_layers=33,
+                              n_kv_heads=4, head_dim=256, context_length=262144)
+check(spill["fit"].endswith("part on CPU") and spill_item["context_ceiling"]
+      and spill["tps"] == model_discovery.EMPTY_CELL,
+      f"weights bigger than the card but not than card plus RAM read part on CPU, with no GPU throughput ({spill['fit']}, {spill['tps']})")
 _item, blind = cells_for(geometry_missing=["n_layers"])
 check(blind["fit"] == tr.t("model.fit.unknown"),
       "a model whose geometry could not be read claims no context it cannot compute")

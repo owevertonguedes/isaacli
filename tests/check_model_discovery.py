@@ -727,8 +727,11 @@ check(bare_error and "500" in bare_error and "org/Bare-GGUF/resolve" in bare_err
 # this machine and the ones that fit come first.
 fit_screens = []
 original_detect = setup_ollama.hardware.detect
+original_ram = setup_ollama.hardware.ram_available_mb
 original_ui = setup_ollama.terminal_ui.select
 try:
+    # No RAM to spill into, so "No" stays "No" whatever machine runs this.
+    setup_ollama.hardware.ram_available_mb = lambda: 0
     setup_ollama.hardware.detect = lambda: {
         "gpus": [{"name": "NVIDIA GeForce GTX 1650", "vram_mb": 16384,
                   "bandwidth_gbs": 128.0}],
@@ -742,6 +745,7 @@ try:
             fake_urlopen)
 finally:
     setup_ollama.hardware.detect = original_detect
+    setup_ollama.hardware.ram_available_mb = original_ram
     setup_ollama.terminal_ui.select = original_ui
 title, options = fit_screens[-1]
 rows = options[:-2]
@@ -930,6 +934,18 @@ owned_row = model_discovery.ranking_cell(
     {"scores": {"swebench_verified": 70.6}, "benchmark_owner": "ornith-ai"})
 check("70.6" in owned_row and "ornith-ai" in owned_row,
       f"the row shows the score together with its owner ({owned_row})")
+
+# Both local engines split a model too big for the card, so the card column
+# says so instead of "No". Ornith-1.5-9B Q4_K_M geometry, on a 4 GB card.
+ornith_9b = {"model_bytes": 5_780_090_816, "n_layers": 8, "n_kv_heads": 4,
+             "head_dim": 256, "recurrent_bytes": 210_763_776}
+spilled = model_discovery.fit_report(ornith_9b, 4096, ram_mb=8000)
+stranded = model_discovery.fit_report(ornith_9b, 4096)
+check(not spilled["fits"] and spilled["partial"]
+      and model_discovery.fit_cell(spilled) == model_discovery.text("model.fit.partial_cell")
+      and not stranded["partial"]
+      and model_discovery.fit_cell(stranded) == model_discovery.text("model.fit.no_cell"),
+      "a model bigger than the card but not than card plus RAM reads part on CPU, and only when RAM was offered")
 
 # A SWE-bench number is not a property of the weights. Measured against the
 # public submissions on 2026-08-23: Devstral Small 2507 scores 53.6 on the

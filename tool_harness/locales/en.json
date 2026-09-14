@@ -661,6 +661,7 @@
   "model.table.uniform": "Identical on every row: {fields}.",
   "model.table.uniform.absent": "empty",
   "model.fit.yes_cell": "Yes",
+  "model.fit.partial_cell": "Part on CPU",
   "model.fit.no_cell": "No",
   "model.table.installed": "ON DISK",
   "model.table.installed_yes": "yes",

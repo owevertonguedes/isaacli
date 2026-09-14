@@ -661,6 +661,7 @@
   "model.table.uniform": "Igual em todas as linhas: {fields}.",
   "model.table.uniform.absent": "vazio",
   "model.fit.yes_cell": "Sim",
+  "model.fit.partial_cell": "Parte na CPU",
   "model.fit.no_cell": "Não",
   "model.table.installed": "NO DISCO",
   "model.table.installed_yes": "sim",
