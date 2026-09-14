@@ -365,6 +365,7 @@
   "cli.error.api_no_response": "ERROR: the API did not respond ({error}).",
   "cli.error.ollama_started": "Ollama has started now; try the request again.",
   "cli.error.ollama_no_response": "ERROR: Ollama did not respond ({error}) and the automatic start failed.",
+  "cli.error.no_input": "Input ended before this screen got an answer. Run it in a terminal, or feed the answers on stdin.",
   "cli.error.interrupted": "interrupted",
   "cli.error.empty_answer": "ERROR: the model finished with no visible answer and no tool call.",
   "cli.error.step_limit": "I stopped after {steps} steps, which is this session's ceiling, so the work is unfinished rather than wrong. Ask for a smaller piece of it, or raise the ceiling with --max-steps.",

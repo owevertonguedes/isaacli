@@ -1262,6 +1262,12 @@ def entrypoint(argv=None):
     except KeyboardInterrupt:
         say("\n" + t("cli.error.interrupted"))
         return 130
+    except EOFError:
+        # A screen asked a question and stdin had already closed: a script, a
+        # pipe, `< /dev/null`. That is a missing answer, not a crash, and a
+        # traceback here buried the question that went unanswered.
+        say("\n" + t("cli.error.no_input"))
+        return 1
 
 
 if __name__ == "__main__":

@@ -1444,6 +1444,28 @@ check(interrupted_code == 130
       and app.t("cli.error.interrupted") in interrupted_out.getvalue(),
       "Ctrl+C in any top-level command exits 130 without a traceback")
 
+# Stdin that closed before a screen got its answer (a pipe, a script,
+# `< /dev/null`) printed a traceback that buried the unanswered question.
+# Driven through the real executable with a throwaway HOME.
+import subprocess as _subprocess
+_eof_home = Path(tempfile.mkdtemp(prefix="isaacli-eof-"))
+_eof_env = {key: value for key, value in os.environ.items()
+            if not key.startswith("XDG_")}
+_eof_env.update(HOME=str(_eof_home), ISAACLI_RUNTIME_DIR=str(_eof_home / "run"))
+try:
+    _eof = _subprocess.run(
+        [sys.executable, str(HERE.parent / "tool_harness" / "cli.py"), "setup"],
+        stdin=_subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+        env=_eof_env)
+    _eof_result = (_eof.returncode, _eof.stdout + _eof.stderr)
+except _subprocess.TimeoutExpired as error:
+    _eof_result = (None, f"timed out: {error}")
+check(_eof_result[0] == 1 and "Traceback" not in _eof_result[1]
+      and (app.t("cli.error.no_input") in _eof_result[1]
+           or "A entrada acabou" in _eof_result[1]),
+      f"a screen whose stdin already closed ends with a sentence, not a traceback "
+      f"({_eof_result[0]}, {_eof_result[1][-300:]!r})")
+
 cli.resume_transcript = [("user", "old message"), ("assistant", "old answer")]
 builtins.input = lambda _prompt="": (_ for _ in ()).throw(KeyboardInterrupt())
 cli.ensure_ollama = lambda warn=False: "test"
