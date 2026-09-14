@@ -683,12 +683,12 @@ def bare_urlopen(request, timeout=None):
 
 
 try:
-    bare = model_discovery.resolve_hf_model(
+    suffixless = model_discovery.resolve_hf_model(
         "org/Bare-GGUF", catalog_path=catalog, urlopen_fn=bare_urlopen)
 except model_discovery.DiscoveryError as error:
     print(f"resolve failed: {error}")
-    bare = {"n_layers": None, "scores": None, "benchmark": None}
-check(bare["n_layers"] == 40 and bare["scores"] == {} and bare["benchmark"] == "",
+    suffixless = {"n_layers": None, "scores": None, "benchmark": None}
+check(suffixless["n_layers"] == 40 and suffixless["scores"] == {} and suffixless["benchmark"] == "",
       "a GGUF repo without config.json reads geometry from its suffix-less name, not its score")
 
 
@@ -1069,6 +1069,31 @@ finally:
     cli_kaggle._load_model_candidates = original_candidates
     model_discovery.discover_models = original_discover
     cli_i18n.set_language("en")
+
+# The exact-reference row on Kaggle asks one question, like the local paths:
+# the reference. The file comes from it, or from the quantization screen.
+exact_prompts = []
+try:
+    cli_kaggle._choose = lambda _title, options, _input_fn: len(options) - 1
+    model_discovery.discover_models = lambda *args, **kwargs: ([], [])
+    cli_kaggle._load_model_candidates = lambda *args, **kwargs: []
+    with redirect_stdout(io.StringIO()):
+        exact_model = setup_ollama._dynamic_kaggle_selector(
+            lambda prompt="": exact_prompts.append(prompt) or "org/Bare-GGUF",
+            urlopen_fn=bare_urlopen)
+except Exception as error:  # reported by the check below, not as a traceback
+    print(f"exact reference path failed: {error!r}")
+    exact_model = {"file": None}
+finally:
+    cli_kaggle._choose = original_choose
+    cli_kaggle._load_model_candidates = original_candidates
+    model_discovery.discover_models = original_discover
+check(len(exact_prompts) == 1 and exact_model["file"] == "bare-Q4_K_M.gguf",
+      f"the Kaggle exact reference asks only for the reference ({exact_prompts})")
+check(model_discovery.parse_hf_reference(
+          "https://huggingface.co/org/Repo-GGUF?show_file_info=Repo-Q6_K.gguf")
+      == ("org/Repo-GGUF", "Repo-Q6_K.gguf"),
+      "a repository URL with the file info panel open names that file")
 
 pt_title = setup_ollama.Translator("pt-BR").t("model.quantization.title")
 en_title = setup_ollama.Translator("en").t("model.quantization.title")

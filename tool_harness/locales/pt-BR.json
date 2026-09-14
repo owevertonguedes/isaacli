@@ -416,7 +416,6 @@
   "model.discovery.failed": "A descoberta no Hugging Face falhou: {error}",
   "model.discovery.prompt": "Referência do modelo: ",
   "model.discovery.prompt.explain": "Três formas funcionam: org/repo, que pega o arquivo Q4_K_M (exemplo: unsloth/Qwen3-4B-Instruct-2507-GGUF); org/repo arquivo.gguf, para nomear o arquivo você mesmo; ou o endereço da página do modelo no huggingface.co, copiado do navegador.",
-  "model.discovery.file_prompt": "Arquivo GGUF: ",
   "model.discovery.unresolved": "Não foi possível resolver o cabimento antes de baixar: {error}",
   "model.discovery.fit": "Cabe: {fits}. Pesos {weights} GiB, cache KV a 16K {kv} GiB, total {total} GiB, VRAM disponível depois da folga do runtime {available} GiB.",
   "model.discovery.fit_yes": "sim",

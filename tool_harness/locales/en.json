@@ -416,7 +416,6 @@
   "model.discovery.failed": "Hugging Face discovery failed: {error}",
   "model.discovery.prompt": "Model reference: ",
   "model.discovery.prompt.explain": "Three forms work: org/repo, which takes the Q4_K_M file (example: unsloth/Qwen3-4B-Instruct-2507-GGUF); org/repo file.gguf, to name the file yourself; or the address of the model page on huggingface.co, copied from the browser.",
-  "model.discovery.file_prompt": "GGUF file: ",
   "model.discovery.unresolved": "Could not resolve fit before download: {error}",
   "model.discovery.fit": "Fits: {fits}. Weights {weights} GiB, KV cache at 16K {kv} GiB, total {total} GiB, available VRAM after runtime overhead {available} GiB.",
   "model.discovery.fit_yes": "yes",

@@ -113,7 +113,10 @@ def parse_hf_reference(reference, file_name=None):
         repo = "/".join(parts[:2])
         if len(parts) >= 5 and parts[2] in {"blob", "resolve"}:
             return repo, "/".join(parts[4:])
-        return repo, file_name
+        # The file info panel of the repository page puts the file in the query
+        # (?show_file_info=name.gguf), which is what the browser hands over.
+        shown = urllib.parse.parse_qs(parsed.query).get("show_file_info")
+        return repo, file_name or (shown[0] if shown else None)
     if raw.startswith("hf.co/"):
         raw = raw[len("hf.co/"):]
         repo, separator, selector = raw.partition(":")

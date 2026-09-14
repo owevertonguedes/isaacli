@@ -1198,15 +1198,15 @@ def _dynamic_kaggle_selector(input_fn, catalog_path=MODEL_CATALOG_PATH,
         model = _kaggle_fit(model, accelerator)
         cli_kaggle.print_model_evidence(model)
         return model
+    # The reference alone is enough, as on the local paths: without a file the
+    # repository's Q4_K_M is resolved and the quantization screen below offers
+    # the whole shelf with size and fit. Asking for a file name first made the
+    # person type what that screen already lists.
+    say(model_discovery.text("model.discovery.prompt.explain"))
     reference = input_fn(model_discovery.text("model.discovery.prompt")).strip()
     try:
-        repo, selected_file = model_discovery.parse_hf_reference(reference)
-        if selected_file is None:
-            selected_file = input_fn(
-                model_discovery.text("model.discovery.file_prompt")
-            ).strip()
         model = model_discovery.resolve_hf_model(
-            repo, selected_file, catalog_path, urlopen_fn=urlopen_fn,
+            reference, catalog_path=catalog_path, urlopen_fn=urlopen_fn,
         )
     except model_discovery.DiscoveryError as error:
         raise RuntimeError(str(error)) from error
