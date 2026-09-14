@@ -69,18 +69,40 @@ def _json_request(url, timeout=DEFAULT_TIMEOUT, urlopen_fn=urllib.request.urlope
         )) from error
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+_HEAD_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _content_length(url, timeout=DEFAULT_TIMEOUT,
                     urlopen_fn=urllib.request.urlopen):
+    """The file size Hugging Face declares, read without following the file.
+
+    A weight on Xet storage answers HEAD with a 302 to a URL signed for GET, and
+    following it ends in HTTP 400 (Ornith-1.5-397B-Q4_K_M.gguf, measured
+    2026-09-14). The 302 itself carries X-Linked-Size, the real size, so the
+    redirect is not followed.
+    """
     request = urllib.request.Request(
         url, method="HEAD", headers={"User-Agent": agent.USER_AGENT},
     )
+    if urlopen_fn is urllib.request.urlopen:
+        urlopen_fn = _HEAD_OPENER.open
     try:
         with urlopen_fn(request, timeout=timeout) as response:
-            value = response.headers.get("Content-Length")
+            value = (response.headers.get("X-Linked-Size")
+                     or response.headers.get("Content-Length"))
     except urllib.error.HTTPError as error:
-        raise DiscoveryError(text(
-            "model.discovery.error.size_http", code=error.code,
-        )) from error
+        linked = error.headers.get("X-Linked-Size") if error.headers else None
+        if 300 <= error.code < 400 and linked:
+            value = linked
+        else:
+            raise DiscoveryError(text(
+                "model.discovery.error.size_http", code=error.code,
+            )) from error
     except urllib.error.URLError as error:
         raise DiscoveryError(text(
             "model.discovery.error.size_request", reason=error.reason,
@@ -354,6 +376,11 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
         # a kernel is already spending quota. Ask now, while it is still free.
         raise DiscoveryError(text("model.discovery.error.gated", repo=repo))
     selected_file = _select_gguf(_gguf_files(repo_payload), selector)
+    if SPLIT_GGUF.search(selected_file):
+        # Sized from its first shard, a 240 GiB model read as 36 GiB, and the
+        # download and the Kaggle kernel fetch one file. Refused with the
+        # reason until shards are handled end to end.
+        raise DiscoveryError(text("model.discovery.error.split", file=selected_file))
     upstream = _base_model(repo_payload)
     # A repository that declares a base model and does not merely requantize it
     # is a changed model: Uncensored, abliterated, a merge, an aggressive MTP

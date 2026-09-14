@@ -240,6 +240,50 @@ check(by_repo["test/MoE-30B-GGUF"]["benchmark"] == ""
       "an uncurated model reports no public accepted score instead of inventing one")
 
 
+# A model split into shards was sized by its first shard (36 GiB for a
+# 240 GiB model) and would be fetched as one file. Refused, with the reason.
+repos["test/Split-GGUF"] = {
+    "id": "test/Split-GGUF", "cardData": {"base_model": "source/Dense-20B"},
+    "siblings": [{"rfilename": "split-Q4_K_M-00001-of-00002.gguf"},
+                 {"rfilename": "split-Q4_K_M-00002-of-00002.gguf"}],
+}
+sizes["split-Q4_K_M-00001-of-00002.gguf"] = 36 * GB
+try:
+    model_discovery.resolve_hf_model("test/Split-GGUF", catalog_path=catalog,
+                                     urlopen_fn=fake_urlopen)
+    split_refusal = "resolved"
+except model_discovery.DiscoveryError as error:
+    split_refusal = str(error)
+check("00001-of-00002" in split_refusal and "shard" in split_refusal,
+      f"a split GGUF is refused with the reason, not sized by its first shard ({split_refusal})")
+
+# A weight on Xet storage answers HEAD with a 302 whose target, followed, says
+# HTTP 400. The size is on the 302 itself.
+def xet_head(request, timeout=None):
+    raise urllib.error.HTTPError(request.full_url, 302, "Found",
+                                 {"X-Linked-Size": "244309803808"}, None)
+
+
+def refused_head(request, timeout=None):
+    raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, None)
+
+
+try:
+    xet_size = model_discovery._content_length(
+        "https://huggingface.co/x/y/resolve/main/a.gguf", urlopen_fn=xet_head)
+except model_discovery.DiscoveryError as error:
+    xet_size = str(error)
+check(xet_size == 244309803808,
+      f"a file size is read from the redirect Hugging Face answers, not from where it points ({xet_size})")
+try:
+    model_discovery._content_length("https://huggingface.co/x/y/resolve/main/a.gguf",
+                                    urlopen_fn=refused_head)
+    refused_size = "no error"
+except model_discovery.DiscoveryError as error:
+    refused_size = str(error)
+check("400" in refused_size,
+      f"a refused size request still fails with its code ({refused_size})")
+
 original_local_vram = model_discovery.local_vram
 try:
     model_discovery.local_vram = lambda: (4096, 1)
