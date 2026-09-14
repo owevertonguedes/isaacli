@@ -660,6 +660,53 @@ except model_discovery.DiscoveryError as error:
 check(gated_error and "org/Gated-GGUF" in gated_error,
       "a gated repository is refused while it is still free to find out")
 
+# A GGUF repository with no base_model and no config.json of its own was
+# refused with a 404 (ornith-ai/Ornith-1.5-35B-A3B-GGUF). The geometry lives in
+# the same name without the suffix; the score does not transfer.
+bare_seen = []
+
+
+def bare_urlopen(request, timeout=None):
+    url = request.full_url
+    bare_seen.append(url)
+    if url == model_discovery.HF_API + "/org/Bare-GGUF":
+        return FakeResponse({"id": "org/Bare-GGUF",
+                             "siblings": [{"rfilename": "bare-Q4_K_M.gguf"}]})
+    if url.endswith("/org/Bare-GGUF/resolve/main/config.json"):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    if url.endswith("/org/Bare/resolve/main/config.json"):
+        return FakeResponse({"num_hidden_layers": 40, "num_key_value_heads": 2,
+                             "head_dim": 256, "full_attention_interval": 4})
+    if request.get_method() == "HEAD":
+        return FakeResponse(length=20 * GB)
+    raise AssertionError(f"unexpected fake URL {url}")
+
+
+try:
+    bare = model_discovery.resolve_hf_model(
+        "org/Bare-GGUF", catalog_path=catalog, urlopen_fn=bare_urlopen)
+except model_discovery.DiscoveryError as error:
+    print(f"resolve failed: {error}")
+    bare = {"n_layers": None, "scores": None, "benchmark": None}
+check(bare["n_layers"] == 40 and bare["scores"] == {} and bare["benchmark"] == "",
+      "a GGUF repo without config.json reads geometry from its suffix-less name, not its score")
+
+
+def bare_other_error(request, timeout=None):
+    if request.full_url.endswith("/config.json"):
+        raise urllib.error.HTTPError(request.full_url, 500, "Boom", {}, None)
+    return bare_urlopen(request, timeout)
+
+
+bare_error = None
+try:
+    model_discovery.resolve_hf_model(
+        "org/Bare-GGUF", catalog_path=catalog, urlopen_fn=bare_other_error)
+except model_discovery.DiscoveryError as error:
+    bare_error = str(error)
+check(bare_error and "500" in bare_error and "org/Bare-GGUF/resolve" in bare_error,
+      "only a 404 moves on to the suffix-less repo; any other error surfaces with its cause")
+
 # The local discovery screen answers "what can I run", so it is drawn against
 # this machine and the ones that fit come first.
 fit_screens = []

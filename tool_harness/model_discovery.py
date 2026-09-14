@@ -362,12 +362,29 @@ def resolve_hf_model(reference, file_name=None, catalog_path=None,
     evidence = by_gguf.get(repo.casefold())
     if evidence and not upstream:
         upstream = evidence.get("upstream_repo")
+    guessed = re.sub(r"-gguf$", "", repo, flags=re.I)
     if not upstream:
-        guessed = re.sub(r"-gguf$", "", repo, flags=re.I)
         upstream = guessed if guessed.casefold() in by_upstream else None
-    config_repo = upstream or repo
-    config_url = f"{HF_ROOT}/{urllib.parse.quote(config_repo, safe='/')}/resolve/main/config.json"
-    config_payload = _json_request(config_url, timeout=timeout, urlopen_fn=urlopen_fn)
+    config_repos = [upstream or repo]
+    # A GGUF repository usually ships no config.json and often declares no base
+    # (ornith-ai/Ornith-1.5-35B-A3B-GGUF did both). The same name without the
+    # suffix, in the same org, is where the architecture lives. Only geometry
+    # comes from it: `upstream` stays unset, so no score is inherited.
+    if not upstream and guessed != repo:
+        config_repos.append(guessed)
+    for index, config_repo in enumerate(config_repos):
+        config_url = (f"{HF_ROOT}/{urllib.parse.quote(config_repo, safe='/')}"
+                      "/resolve/main/config.json")
+        try:
+            config_payload = _json_request(
+                config_url, timeout=timeout, urlopen_fn=urlopen_fn)
+            break
+        except DiscoveryError as error:
+            missing = getattr(error.__cause__, "code", None) == 404
+            if not missing or index == len(config_repos) - 1:
+                raise
+            debug.note("model_discovery.config",
+                       f"{config_url} answered 404, reading geometry from {config_repos[index + 1]}")
     shape = _geometry(config_payload)
     # Geometry may come from the upstream model, because a derivative keeps the
     # architecture. A score may not. An uncensored or otherwise modified build
