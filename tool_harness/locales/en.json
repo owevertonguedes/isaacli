@@ -368,6 +368,7 @@
   "cli.error.no_input": "Input ended before this screen got an answer. Run it in a terminal, or feed the answers on stdin.",
   "cli.error.interrupted": "interrupted",
   "cli.error.empty_answer": "ERROR: the model finished with no visible answer and no tool call.",
+  "cli.error.empty_answer_cut_off": "ERROR: the server stopped the answer at its token limit (finish_reason \"length\") before any visible text or tool call. The context window or the output ceiling ran out, which a reasoning model can spend entirely on thinking. Start a new session, ask for a smaller piece, or give the model a larger context.",
   "cli.error.step_limit": "I stopped after {steps} steps, which is this session's ceiling, so the work is unfinished rather than wrong. Ask for a smaller piece of it, or raise the ceiling with --max-steps.",
   "cli.error.constrained_output": "ERROR: the schema-constrained answer could not be executed safely: {cause}",
   "cli.error.constrained_output.invalid_response": "the endpoint returned an outcome outside the requested schema",

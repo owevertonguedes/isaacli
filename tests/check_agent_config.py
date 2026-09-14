@@ -116,6 +116,33 @@ assert msg["content"] == "Hello" and tokens == ["Hello"]
 assert msg["_usage"]["prompt_eval_count"] == 12
 print("AGENT API OK: OpenAI-compatible endpoint, streaming and tools are configurable")
 
+# A reasoning model can spend the whole window thinking: llama-server streams
+# reasoning_content only and closes with finish_reason "length". Measured on
+# 2026-09-14 against a live server. The turn has to carry that cause out, or the
+# screen says the model chose to answer nothing.
+original = agent.urllib.request.urlopen
+try:
+    agent.urllib.request.urlopen = lambda req, timeout=0: Response(
+        b'data: {"choices":[{"delta":{"reasoning_content":"Let me"}}]}\n\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    cut_msg = agent.call_stream_api(
+        "m", [{"role": "user", "content": "hi"}], api_key="k",
+        base_url="https://api.example.test/v1")
+    agent.urllib.request.urlopen = lambda req, timeout=0: Response(json.dumps({
+        "choices": [{"message": {"role": "assistant", "content": ""},
+                     "finish_reason": "length"}]}).encode())
+    cut_result = agent.run(
+        "test", "m", verbose=False,
+        provider={"provider": "openai_compatible", "api_key": "k",
+                  "base_url": "https://api.example.test/v1"})
+finally:
+    agent.urllib.request.urlopen = original
+assert cut_msg["content"] == "" and cut_msg.get("_finish_reason") == "length", cut_msg
+assert cut_result.get("cut_off") is True and not cut_result.get("final"), cut_result
+print("AGENT CUT OFF OK: finish_reason length reaches the turn result")
+
 api_capture.clear()
 original = agent.urllib.request.urlopen
 try:

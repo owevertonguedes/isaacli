@@ -368,6 +368,7 @@
   "cli.error.no_input": "A entrada acabou antes de esta tela receber resposta. Rode num terminal, ou mande as respostas pela entrada padrão.",
   "cli.error.interrupted": "interrompido",
   "cli.error.empty_answer": "ERRO: o modelo terminou sem resposta visível e sem chamada de ferramenta.",
+  "cli.error.empty_answer_cut_off": "ERRO: o servidor cortou a resposta no limite de tokens (finish_reason \"length\") antes de qualquer texto visível ou chamada de ferramenta. A janela de contexto ou o teto de saída acabou, o que um modelo de raciocínio pode gastar inteiro pensando. Comece uma sessão nova, peça um pedaço menor, ou dê ao modelo um contexto maior.",
   "cli.error.step_limit": "Parei depois de {steps} passos, que é o teto desta sessão, então o trabalho está inacabado e não errado. Peça um pedaço menor, ou aumente o teto com --max-steps.",
   "cli.error.constrained_output": "ERRO: a resposta restringida por schema não pôde ser executada com segurança: {cause}",
   "cli.error.constrained_output.invalid_response": "o endpoint devolveu um resultado fora do schema solicitado",

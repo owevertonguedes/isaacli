@@ -1296,6 +1296,24 @@ finally:
 check(empty_answer_code == 1 and "no visible answer" in out.getvalue(),
       "the CLI reports an empty answer after a tool attempt instead of returning success")
 
+# A reasoning model that spends the whole window thinking ends with no content
+# and finish_reason "length". Telling the user it "finished with no visible
+# answer" blames the model for a limit the server hit.
+try:
+    cli.ensure_ollama = lambda warn=False: "test"
+    app.agent.run = lambda *_a, **_kw: {
+        "final": "", "calls": [], "cut_off": True, "usage": {"eval_count": 3},
+    }
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cut_off_code = cli.ask("cut off test")
+finally:
+    app.agent.run = original_agent_run
+    cli.ensure_ollama = original_ensure
+check(cut_off_code == 1 and "token limit" in out.getvalue()
+      and "no visible answer" not in out.getvalue(),
+      "an answer cut at the token limit is reported as that, not as an empty answer")
+
 # Running out of steps is unfinished work, not an empty or wrong answer, and
 # "(step limit reached)" read like a freeze in whatever language the user is not
 # using.

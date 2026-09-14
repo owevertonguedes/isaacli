@@ -564,6 +564,7 @@ def call_api(model, messages, use_tools=True, temperature=0.0,
                      "eval_count": int(usage.get("completion_tokens") or 0),
                      "total_duration": 0}
     msg["_thinking_rejected"] = thinking_rejected
+    msg["_finish_reason"] = data["choices"][0].get("finish_reason")
     return msg
 
 
@@ -590,6 +591,7 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
     content, tc_acc = [], {}
     usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
     thinking_rejected = False
+    finish_reason = None
     try:
         response = _urlopen_api(payload, api_key, base_url)
     except urllib.error.HTTPError as e:
@@ -626,6 +628,7 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
+            finish_reason = choices[0].get("finish_reason") or finish_reason
             chunk = delta.get("content")
             if chunk:
                 content.append(chunk)
@@ -657,6 +660,7 @@ def call_stream_api(model, messages, use_tools=True, temperature=0.0,
         msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
     msg["_usage"] = usage
     msg["_thinking_rejected"] = thinking_rejected
+    msg["_finish_reason"] = finish_reason
     return _normalize_msg(msg)
 
 
@@ -683,6 +687,7 @@ def call(model, messages, use_tools=True, temperature=0.0, tools_schema=None,
         data = json.load(r)
         msg = _normalize_msg(data["message"])
         msg["_usage"] = _usage(data)
+        msg["_finish_reason"] = data.get("done_reason")
         return msg
 
 
@@ -711,6 +716,7 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
     thoughts = []
     tc_acc = {}  # index -> accumulated tool_call (whole name, arguments in chunks)
     usage = {"prompt_eval_count": 0, "eval_count": 0, "total_duration": 0}
+    finish_reason = None
     with urllib.request.urlopen(req, timeout=600) as r:
         for line in r:
             line = line.decode("utf-8", errors="replace").strip()
@@ -723,6 +729,7 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
                 continue
             if data.get("done"):
                 usage = _usage(data)
+                finish_reason = data.get("done_reason")
             thought = delta.get("thinking")
             if thought:
                 thoughts.append(thought)
@@ -772,6 +779,7 @@ def call_stream(model, messages, use_tools=True, temperature=0.0, on_token=None,
     if tc_acc:
         msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc)]
     msg["_usage"] = usage
+    msg["_finish_reason"] = finish_reason
     return _normalize_msg(msg)
 
 
@@ -1164,6 +1172,11 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
         if msg.pop("_thinking_rejected", False):
             thinking = None
             thinking_adjusted = True
+        # "length" is the server saying the window or the output ceiling ran
+        # out mid-answer. A reasoning model can spend all of it thinking and
+        # end with no content, which otherwise reads as a model that chose
+        # to say nothing.
+        cut_off = msg.pop("_finish_reason", None) == "length"
 
         if not tc:
             if structured_step and _is_json_object(msg.get("content")):
@@ -1201,6 +1214,7 @@ def run(request, model, max_steps=8, use_tools=True, verbose=True,
             if verbose:
                 print(f"[step {step}] FINAL ANSWER:\n{msg.get('content')}")
             return {"final": msg.get("content"), "calls": calls, "steps": step,
+                    "cut_off": cut_off,
                     "usage": total_usage, "thinking_adjusted": thinking_adjusted,
                     "changing_calls": changing_calls,
                     "successful_changes": successful_changes}

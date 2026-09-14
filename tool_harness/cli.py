@@ -753,6 +753,8 @@ class IsaacCLI(SessionsMixin, CommandsMixin, ConfigMixin, OllamaMixin,
             # forward is a smaller request or a higher ceiling.
             say(t("cli.error.step_limit",
                     steps=(r or {}).get("step_limit")), "warn")
+        elif empty_answer and (r or {}).get("cut_off"):
+            say(_color(t("cli.error.empty_answer_cut_off"), "bad"))
         elif empty_answer:
             say(_color(t("cli.error.empty_answer"), "bad"))
         eval_count = int(usage.get("eval_count") or 0)
